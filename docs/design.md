@@ -41,16 +41,21 @@ Rationale:
 
 ## Morton Physical Layout
 
-Morton ordering (Z-order curve) is used to arrange data physically:
+Morton ordering (Z-order curve) is used within each superblock to arrange leaf blocks:
 
 ```
-superblock_physical_id = morton3D(sb_x, sb_y, sb_z)
 leaf_physical_id = morton3D(lb_x, lb_y, lb_z)
 ```
 
+Superblocks are arranged in sequential Z-Y-X row-major order to avoid sparse file holes when the superblock grid dimensions are not powers of two.
+
+```
+superblock_offset = (sz * gridY + sy) * gridX + sx
+```
+
 Benefits:
-- Avoids strong preference for a single physical axis
-- Provides good spatial locality
+- Morton ordering within superblocks provides balanced axis access
+- Sequential superblock layout eliminates sparse holes for non-power-of-two grids
 - Enables formula-based offset calculation
 
 ## Boundary Handling

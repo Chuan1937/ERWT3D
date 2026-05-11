@@ -124,17 +124,19 @@ ERWT3D uses a custom binary format:
 
 ## Storage Layout
 
-Data is organized in Morton order (Z-order curve):
+Data is organized in two levels:
 
-```
-superblock_physical_id = morton3D(super_x, super_y, super_z)
-leaf_physical_id = morton3D(leaf_x, leaf_y, leaf_z)
+- **Superblocks**: arranged in Z-Y-X row-major order (sequential)
+- **Leaf blocks**: within each superblock, arranged in Morton order (Z-order curve)
+
+```text
+superblock_offset = (sz * gridY + sy) * gridX + sx
+leaf_offset  = morton3D(lx, ly, lz) * leaf_bytes
 ```
 
 This provides:
-- Balanced access for all axes
-- Good spatial locality
-- Formula-based offset calculation
+- Balanced leaf-level access for all axes via Morton ordering
+- Simple sequential superblock layout avoids sparse holes for non-power-of-two grids
 
 ## Performance
 

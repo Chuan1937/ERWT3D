@@ -17,10 +17,12 @@ struct SliceRequest {
 };
 
 struct SlicePlan {
+    SliceAxis axis;
+    
     // Extents to read from file
     std::vector<Extent> extents;
     
-    // Output dimensions
+    // Output dimensions (for slice: 2D, for full restore: 3D)
     uint64_t out_dim0;
     uint64_t out_dim1;
     uint64_t out_dim2;

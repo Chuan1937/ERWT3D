@@ -28,8 +28,25 @@ morton: z2 y2 x2 z1 y1 x1 z0 y0 x0
 
 ### Usage in ERWT3D
 
-1. **Superblock ID**: `morton3D(super_x, super_y, super_z)`
-2. **Leaf ID within superblock**: `morton3D(leaf_x, leaf_y, leaf_z)`
+Morton ordering is used for leaf blocks within each superblock:
+
+```
+leaf_id = morton3D(leaf_x, leaf_y, leaf_z)
+file_offset = superblock_offset + leaf_id * leaf_bytes
+```
+
+Superblocks are arranged sequentially in Z-Y-X row-major order to ensure dense file packing for non-power-of-two grids.
+
+## Offset Calculation
+
+File offset for accessing a specific leaf block:
+
+```
+superblock_offset = header.data_offset + ((sz * super_grid_y + sy) * super_grid_x + sx) * superblock_bytes
+leaf_offset = superblock_offset + morton3D(lx, ly, lz) * leaf_bytes
+```
+
+No explicit index table is needed.
 
 ## Slice Compiler
 

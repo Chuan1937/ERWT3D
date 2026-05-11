@@ -11,7 +11,7 @@ The writer converts raw float32 data to ERWT3D format:
 2. **Process Superblocks**
    - Iterate through superblock grid in Z-Y-X order
    - For each superblock:
-     a. Extract data from raw volume
+     a. Extract data from raw volume (streaming from file)
      b. Fill superblock buffer (with padding if needed)
      c. Write leaf blocks in Morton order
 
