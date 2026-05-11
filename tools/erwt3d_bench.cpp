@@ -97,7 +97,14 @@ int main(int argc, char* argv[]) {
     }
     
     // Create output directory
-    std::filesystem::create_directories(outputDir);
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(outputDir, ec);
+        if (ec) {
+            std::cerr << "Error: Cannot create output directory: " << ec.message() << std::endl;
+            return 1;
+        }
+    }
     
     // Open reader
     erwt3d::ERWT3DReader reader(inputPath, cacheMB);
@@ -108,14 +115,18 @@ int main(int argc, char* argv[]) {
     std::cout << "Dimensions: " << header.nx << " x " << header.ny << " x " << header.nz << std::endl;
     std::cout << "Random slices: " << randomCount << " per axis" << std::endl;
     std::cout << "Continuous slices: " << continuousCount << " per axis" << std::endl;
+    std::cout << "Threads: " << numThreads << std::endl;
+    std::cout << "Memory limit: " << memoryLimitMB << " MB" << std::endl;
+    std::cout << "Cache: " << cacheMB << " MB" << std::endl;
     std::cout << std::endl;
     
     std::vector<BenchmarkResult> results;
     std::mt19937 rng(seed);
+    bool benchOk = true;
     
     // Benchmark function
     auto benchmarkSlice = [&](erwt3d::SliceAxis axis, const std::string& axisName, 
-                              const std::vector<uint64_t>& indices, const std::string& mode) {
+                               const std::vector<uint64_t>& indices, const std::string& mode) -> bool {
         std::vector<double> times;
         uint64_t outputBytes = 0;
         
@@ -145,19 +156,19 @@ int main(int argc, char* argv[]) {
             
             if (!reader.readSlice(axis, idx, output.data())) {
                 std::cerr << "Error: Failed to read slice" << std::endl;
-                return;
+                return false;
             }
             
             // Write to file
             std::ofstream outFile(outPath, std::ios::binary);
             if (!outFile) {
                 std::cerr << "Error: Cannot open output file: " << outPath << std::endl;
-                return;
+                return false;
             }
             outFile.write(reinterpret_cast<const char*>(output.data()), sliceSize * sizeof(float));
             if (!outFile.good()) {
                 std::cerr << "Error: Failed to write output file: " << outPath << std::endl;
-                return;
+                return false;
             }
             
             auto end = std::chrono::high_resolution_clock::now();
@@ -188,6 +199,8 @@ int main(int argc, char* argv[]) {
         
         std::cout << axisName << " " << mode << ": avg=" << std::fixed << std::setprecision(2) 
                   << avgTime << "ms, min=" << minTime << "ms, max=" << maxTime << "ms" << std::endl;
+        
+        return true;
     };
     
     // Generate random indices
@@ -216,16 +229,21 @@ int main(int argc, char* argv[]) {
     
     // Run benchmarks
     std::cout << "\nRunning random slice benchmarks..." << std::endl;
-    benchmarkSlice(erwt3d::SliceAxis::X, "x", randomX, "random");
-    benchmarkSlice(erwt3d::SliceAxis::Y, "y", randomY, "random");
-    benchmarkSlice(erwt3d::SliceAxis::Z, "z", randomZ, "random");
+    benchmarkSlice(erwt3d::SliceAxis::X, "x", randomX, "random") || (benchOk = false);
+    benchmarkSlice(erwt3d::SliceAxis::Y, "y", randomY, "random") || (benchOk = false);
+    benchmarkSlice(erwt3d::SliceAxis::Z, "z", randomZ, "random") || (benchOk = false);
     
     std::cout << "\nRunning continuous slice benchmarks..." << std::endl;
-    benchmarkSlice(erwt3d::SliceAxis::X, "x", continuousX, "continuous");
-    benchmarkSlice(erwt3d::SliceAxis::Y, "y", continuousY, "continuous");
-    benchmarkSlice(erwt3d::SliceAxis::Z, "z", continuousZ, "continuous");
+    benchmarkSlice(erwt3d::SliceAxis::X, "x", continuousX, "continuous") || (benchOk = false);
+    benchmarkSlice(erwt3d::SliceAxis::Y, "y", continuousY, "continuous") || (benchOk = false);
+    benchmarkSlice(erwt3d::SliceAxis::Z, "z", continuousZ, "continuous") || (benchOk = false);
     
     // Write CSV
+    if (!benchOk) {
+        std::cerr << "Warning: benchmark completed with errors" << std::endl;
+        return 1;
+    }
+    
     std::string csvPath = outputDir + "/bench_result.csv";
     writeCSV(csvPath, results);
     std::cout << "\nResults written to " << csvPath << std::endl;
