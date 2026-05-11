@@ -1,6 +1,7 @@
 #include "erwt3d/reader.hpp"
 #include "erwt3d/morton.hpp"
 #include "erwt3d/thread_pool.hpp"
+#include <algorithm>
 #include <fstream>
 #include <vector>
 #include <cstring>
