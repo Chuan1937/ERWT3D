@@ -9,6 +9,7 @@
 #include <cstring>
 #include <iomanip>
 #include <sys/stat.h>
+#include <filesystem>
 
 struct BenchmarkResult {
     std::string method;
@@ -96,8 +97,7 @@ int main(int argc, char* argv[]) {
     }
     
     // Create output directory
-    std::string mkdirCmd = "mkdir -p " + outputDir;
-    system(mkdirCmd.c_str());
+    std::filesystem::create_directories(outputDir);
     
     // Open reader
     erwt3d::ERWT3DReader reader(inputPath, cacheMB);
@@ -150,7 +150,15 @@ int main(int argc, char* argv[]) {
             
             // Write to file
             std::ofstream outFile(outPath, std::ios::binary);
+            if (!outFile) {
+                std::cerr << "Error: Cannot open output file: " << outPath << std::endl;
+                return;
+            }
             outFile.write(reinterpret_cast<const char*>(output.data()), sliceSize * sizeof(float));
+            if (!outFile.good()) {
+                std::cerr << "Error: Failed to write output file: " << outPath << std::endl;
+                return;
+            }
             
             auto end = std::chrono::high_resolution_clock::now();
             double timeMs = std::chrono::duration<double, std::milli>(end - start).count();

@@ -31,6 +31,7 @@ SlicePlan planSlice(const ERWT3DHeader& header, const SliceRequest& request) {
     
     switch (request.axis) {
         case SliceAxis::X: {
+            plan.axis = SliceAxis::X;
             plan.out_dim0 = ny;
             plan.out_dim1 = nz;
             plan.out_dim2 = 1;
@@ -76,6 +77,7 @@ SlicePlan planSlice(const ERWT3DHeader& header, const SliceRequest& request) {
         }
         
         case SliceAxis::Y: {
+            plan.axis = SliceAxis::Y;
             plan.out_dim0 = nx;
             plan.out_dim1 = nz;
             plan.out_dim2 = 1;
@@ -121,6 +123,7 @@ SlicePlan planSlice(const ERWT3DHeader& header, const SliceRequest& request) {
         }
         
         case SliceAxis::Z: {
+            plan.axis = SliceAxis::Z;
             plan.out_dim0 = nx;
             plan.out_dim1 = ny;
             plan.out_dim2 = 1;
@@ -173,6 +176,8 @@ void executeSlice(const ERWT3DHeader& header, const SlicePlan& plan,
                   const void* readBuffer, void* outputBuffer) {
     const uint64_t lx = header.leaf_x;
     const uint64_t ly = header.leaf_y;
+    const uint64_t nx = header.nx;
+    const uint64_t ny = header.ny;
     
     float* out = static_cast<float*>(outputBuffer);
     const uint8_t* readBuf = static_cast<const uint8_t*>(readBuffer);
@@ -204,9 +209,24 @@ void executeSlice(const ERWT3DHeader& header, const SlicePlan& plan,
             for (uint64_t dy = 0; dy < copy.size_y; ++dy) {
                 for (uint64_t dx = 0; dx < copy.size_x; ++dx) {
                     uint64_t srcIdx = ((copy.src_off_z + dz) * ly + (copy.src_off_y + dy)) * lx + (copy.src_off_x + dx);
-                    // 2D index: base + dz*out_dim0 + dy*(out_dim2>1?out_dim1:1) + dx
-                    uint64_t d = copy.base_dst_idx + dz * plan.out_dim0 + dy * (plan.out_dim2 > 1 ? plan.out_dim1 : 1) + dx;
-                    out[d] = src[srcIdx];
+                    uint64_t dstIdx = 0;
+                    
+                    switch (plan.axis) {
+                        case SliceAxis::X:
+                            // output layout: z * ny + y
+                            dstIdx = ((copy.base_dst_idx / ny) + dz) * ny + (copy.base_dst_idx % ny + dy);
+                            break;
+                        case SliceAxis::Y:
+                            // output layout: z * nx + x
+                            dstIdx = ((copy.base_dst_idx / nx) + dz) * nx + (copy.base_dst_idx % nx + dx);
+                            break;
+                        case SliceAxis::Z:
+                            // output layout: y * nx + x
+                            dstIdx = ((copy.base_dst_idx / nx) + dy) * nx + (copy.base_dst_idx % nx + dx);
+                            break;
+                    }
+                    
+                    out[dstIdx] = src[srcIdx];
                 }
             }
         }
