@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <sys/stat.h>
 #include <filesystem>
+#include <sstream>
 
 struct BenchmarkResult {
     std::string method;
@@ -121,6 +122,7 @@ int main(int argc, char* argv[]) {
     std::cout << std::endl;
     
     std::vector<BenchmarkResult> results;
+    std::vector<std::string> detailLines;  // per-slice detail for bench_detail.csv
     std::mt19937 rng(seed);
     bool benchOk = true;
     
@@ -128,6 +130,8 @@ int main(int argc, char* argv[]) {
     auto benchmarkSlice = [&](erwt3d::SliceAxis axis, const std::string& axisName, 
                                const std::vector<uint64_t>& indices, const std::string& mode) -> bool {
         std::vector<double> times;
+        std::vector<uint64_t> detailIndices;
+        std::vector<double> detailTimes;
         uint64_t outputBytes = 0;
         
         for (size_t i = 0; i < indices.size(); ++i) {
@@ -136,25 +140,18 @@ int main(int argc, char* argv[]) {
             // Calculate output size
             uint64_t sliceSize;
             switch (axis) {
-                case erwt3d::SliceAxis::X:
-                    sliceSize = header.ny * header.nz;
-                    break;
-                case erwt3d::SliceAxis::Y:
-                    sliceSize = header.nx * header.nz;
-                    break;
-                case erwt3d::SliceAxis::Z:
-                    sliceSize = header.nx * header.ny;
-                    break;
+                case erwt3d::SliceAxis::X: sliceSize = header.ny * header.nz; break;
+                case erwt3d::SliceAxis::Y: sliceSize = header.nx * header.nz; break;
+                case erwt3d::SliceAxis::Z: sliceSize = header.nx * header.ny; break;
             }
             
             std::vector<float> output(sliceSize);
             
-            // Write output file
             std::string outPath = outputDir + "/" + axisName + "_" + mode + "_" + std::to_string(i) + ".raw";
             
             auto start = std::chrono::high_resolution_clock::now();
             
-            if (!reader.readSlice(axis, idx, output.data())) {
+            if (!reader.readSlice(axis, idx, output.data(), numThreads, memoryLimitMB)) {
                 std::cerr << "Error: Failed to read slice" << std::endl;
                 return false;
             }
@@ -166,6 +163,7 @@ int main(int argc, char* argv[]) {
                 return false;
             }
             outFile.write(reinterpret_cast<const char*>(output.data()), sliceSize * sizeof(float));
+            outFile.close();
             if (!outFile.good()) {
                 std::cerr << "Error: Failed to write output file: " << outPath << std::endl;
                 return false;
@@ -175,6 +173,17 @@ int main(int argc, char* argv[]) {
             double timeMs = std::chrono::duration<double, std::milli>(end - start).count();
             
             times.push_back(timeMs);
+            detailIndices.push_back(idx);
+            detailTimes.push_back(timeMs);
+            
+            // Append to detail CSV lines
+            std::ostringstream dl;
+            dl << axisName << "," << mode << "," << i << "," << idx << ","
+               << std::fixed << std::setprecision(3) << timeMs << ","
+               << (sliceSize * sizeof(float)) << ","
+               << numThreads << "," << cacheMB << "," << memoryLimitMB;
+            detailLines.push_back(dl.str());
+            
             outputBytes = sliceSize * sizeof(float);
         }
         
@@ -247,6 +256,18 @@ int main(int argc, char* argv[]) {
     std::string csvPath = outputDir + "/bench_result.csv";
     writeCSV(csvPath, results);
     std::cout << "\nResults written to " << csvPath << std::endl;
+    
+    // Write detail CSV
+    std::string detailPath = outputDir + "/bench_detail.csv";
+    std::ofstream df(detailPath);
+    df << "axis,mode,iteration,index,time_ms,output_bytes,threads,cache_mb,memory_limit_mb" << std::endl;
+    for (const auto& line : detailLines) {
+        df << line << std::endl;
+    }
+    if (!df.good()) {
+        std::cerr << "Warning: Failed to write detail CSV" << std::endl;
+    }
+    std::cout << "Detail results written to " << detailPath << std::endl;
     
     // Print summary
     std::cout << "\nSummary" << std::endl;

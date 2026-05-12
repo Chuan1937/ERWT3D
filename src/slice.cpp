@@ -233,4 +233,41 @@ void executeSlice(const ERWT3DHeader& header, const SlicePlan& plan,
     }
 }
 
+void prepareSlicePlan(SlicePlan& plan) {
+    if (plan.prepared) return;
+    plan.prepared = true;
+    plan.merged_extents = mergeExtents(plan.extents);
+    
+    // Compute buffer offset for each merged extent
+    plan.merged_buffer_offsets.resize(plan.merged_extents.size());
+    uint64_t total = 0;
+    for (size_t i = 0; i < plan.merged_extents.size(); ++i) {
+        plan.merged_buffer_offsets[i] = total;
+        total += plan.merged_extents[i].size;
+    }
+    
+    // Precompute mapping: for each copy, which merged extent + offset within it
+    plan.copy_merged_idx.resize(plan.copies.size());
+    plan.copy_merged_offset.resize(plan.copies.size());
+    
+    for (size_t ci = 0; ci < plan.copies.size(); ++ci) {
+        const Extent& orig = plan.extents[plan.copies[ci].src_offset];
+        bool found = false;
+        for (size_t mi = 0; mi < plan.merged_extents.size(); ++mi) {
+            if (orig.offset >= plan.merged_extents[mi].offset &&
+                orig.offset < plan.merged_extents[mi].end()) {
+                plan.copy_merged_idx[ci] = static_cast<uint32_t>(mi);
+                plan.copy_merged_offset[ci] = plan.merged_buffer_offsets[mi] + 
+                    (orig.offset - plan.merged_extents[mi].offset);
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            plan.copy_merged_idx[ci] = 0;
+            plan.copy_merged_offset[ci] = 0;
+        }
+    }
+}
+
 } // namespace erwt3d
