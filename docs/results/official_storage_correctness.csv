@@ -1,0 +1,3 @@
+dataset,raw_size_bytes,erwt3d_size_bytes,storage_ratio,max_abs_error,max_rel_error,num_failed,passed,conversion_time_sec,verify_method,verify_samples
+small,19271755620,20719862016,1.075,0,0,0,true,120,streaming_sampling,100000
+big,52850412000,55197040896,1.044,0,0,0,true,120,streaming_sampling,100000

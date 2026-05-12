@@ -86,13 +86,13 @@ Read arbitrary slices:
 
 ### erwt3d_verify
 
-Verify correctness:
+Verify correctness (supports streaming sampling for large datasets):
 
 ```bash
-./build/tools/erwt3d_verify \
+./build/erwt3d_verify \
   --raw data.raw \
   --erwt3d data.erwt3d \
-  --nx 1024 --ny 1024 --nz 512 \
+  --nx 2001 --ny 2201 --nz 3000 \
   --samples 100000
 ```
 
@@ -101,14 +101,28 @@ Verify correctness:
 Run benchmarks:
 
 ```bash
-./build/tools/erwt3d_bench \
+# Development / high-resource mode (faster iteration):
+./build/erwt3d_bench \
   --input data.erwt3d \
-  --output-dir bench_out \
+  --output-dir dev_bench \
+  --random-count 20 \
+  --continuous-count 5 \
+  --threads 8 \
+  --memory-limit-mb 8192 \
+  --cache-mb 0 \
+  --io-backend sb \
+  --seed 20260511
+
+# Final competition mode (recommended for submission):
+./build/erwt3d_bench \
+  --input data.erwt3d \
+  --output-dir final_bench \
   --random-count 100 \
   --continuous-count 10 \
-  --threads 16 \
-  --memory-limit-mb 2048 \
-  --cache-mb 512 \
+  --threads 1 \
+  --memory-limit-mb 8192 \
+  --cache-mb 0 \
+  --io-backend sb \
   --seed 20260511
 ```
 
@@ -146,14 +160,22 @@ This provides:
 
 ### Key Optimizations
 
-1. **Extent merging**: Adjacent reads are merged
-2. **Multi-threaded I/O**: Parallel pread/preadv
-3. **LRU cache**: Optional cache for repeated access
-4. **Morton ordering**: Balanced axis performance
+1. **Superblock I/O backend**: Reads whole 1 MiB superblocks, reducing syscall count by 100–800x vs per-extent pread
+2. **Morton ordering**: Balanced leaf-level access for all axes
+3. **Single-threaded recommended**: On real data, threads hurt or do not help; t1 has better axis balance and lower variance
+4. **No cache needed**: File system page cache handles sequential access; app-level leaf cache adds overhead without benefit for SB reads
 
-### Benchmark Results
+### Official Benchmark Results (100 random + 10 continuous slices)
 
-See [docs/benchmark.md](docs/benchmark.md) for detailed results.
+| Dataset | Backend | Threads | T_total | Storage Ratio | Correctness |
+|---------|---------|---------|---------|---------------|-------------|
+| **20G** (801x2405x2501) | **sb** | **1** | **249ms** | 1.075x | passed |
+| **50G** (2001x2201x3000) | **sb** | **1** | **770ms** | 1.044x | passed |
+| 20G | pread | 1 | DNF | — | — |
+
+**SB backend is the only viable choice for real data.** PRead backend times out (~389k syscalls per X-slice). For 20G, t1 and t8 are nearly tied on T_total (248.87ms vs 248.71ms), but t1 has 3.4x better axis balance. For 50G, t1 is strictly faster (770ms vs 1008ms). Therefore `--threads 1` is the final recommendation for robustness and consistency.
+
+**Storage budget**: Current ratio is 1.044x–1.075x, well below the 1.5x limit. Future optimization may add index/layout data (up to <1.5x) if it improves speed.
 
 ## Documentation
 

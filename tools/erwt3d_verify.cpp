@@ -1,10 +1,15 @@
 #include "erwt3d/reader.hpp"
+#include "erwt3d/morton.hpp"
 #include <iostream>
 #include <fstream>
 #include <vector>
 #include <cmath>
 #include <algorithm>
 #include <cstring>
+#include <fcntl.h>
+#include <unistd.h>
+#include <unordered_map>
+#include <map>
 
 void printUsage(const char* progName) {
     std::cerr << "Usage:" << std::endl;
@@ -62,50 +67,141 @@ int main(int argc, char* argv[]) {
         // Compare raw file with ERWT3D
         std::cout << "Comparing raw file with ERWT3D..." << std::endl;
         
-        // Read raw file
-        std::ifstream rawFile(rawPath, std::ios::binary);
-        if (!rawFile) {
-            std::cerr << "Error: Cannot open raw file" << std::endl;
-            return 1;
-        }
-        
-        std::vector<float> rawData(totalElements);
-        rawFile.read(reinterpret_cast<char*>(rawData.data()), totalElements * sizeof(float));
-        if (!rawFile) {
-            std::cerr << "Error: Failed to read raw file" << std::endl;
-            return 1;
-        }
-        
-        // Read ERWT3D
-        erwt3d::ERWT3DReader reader(erwt3dPath);
-        std::vector<float> erwt3dData(totalElements);
-        if (!reader.readFull(erwt3dData.data())) {
-            std::cerr << "Error: Failed to read ERWT3D file" << std::endl;
-            return 1;
-        }
-        
-        // Compare
         double maxAbsError = 0.0;
         double maxRelError = 0.0;
         uint64_t numFailed = 0;
         
         if (numSamples > 0 && numSamples < totalElements) {
-            // Random sampling
+            // Streaming random sampling (does not load full files into RAM)
+            std::cout << "Using streaming sampling mode (" << numSamples << " samples)" << std::endl;
+            
+            // Open raw file for pread
+            int rawFd = open(rawPath.c_str(), O_RDONLY);
+            if (rawFd < 0) {
+                std::cerr << "Error: Cannot open raw file" << std::endl;
+                return 1;
+            }
+            
+            // Open ERWT3D file for superblock reads
+            erwt3d::ERWT3DReader reader(erwt3dPath);
+            const auto& hdr = reader.getHeader();
+            uint64_t superBytes = erwt3d::getSuperblockBytes(hdr);
+            uint64_t leafBytes = erwt3d::getLeafBytes(hdr);
+            uint64_t gridX = erwt3d::getSuperGridX(hdr);
+            uint64_t gridY = erwt3d::getSuperGridY(hdr);
+            
+            int erwt3dFd = open(erwt3dPath.c_str(), O_RDONLY);
+            if (erwt3dFd < 0) {
+                std::cerr << "Error: Cannot open ERWT3D file" << std::endl;
+                close(rawFd);
+                return 1;
+            }
+            
+            // Generate sample indices and group by superblock
             srand(42);
-            for (uint64_t i = 0; i < numSamples; ++i) {
+            std::map<uint64_t, std::vector<std::pair<uint64_t, uint64_t>>> sbGroups;
+            
+            uint64_t nxy = static_cast<uint64_t>(nx) * ny;
+            for (uint64_t s = 0; s < numSamples; ++s) {
                 uint64_t idx = rand() % totalElements;
-                double diff = std::abs(rawData[idx] - erwt3dData[idx]);
-                double relDiff = diff / (std::abs(rawData[idx]) + 1e-10);
                 
-                maxAbsError = std::max(maxAbsError, diff);
-                maxRelError = std::max(maxRelError, relDiff);
+                // Convert linear index to (x, y, z)
+                uint64_t x = idx % nx;
+                uint64_t y = (idx / nx) % ny;
+                uint64_t z = idx / nxy;
                 
-                if (diff > 1e-3) {
-                    ++numFailed;
+                // Compute superblock
+                uint64_t sx = x / hdr.super_x;
+                uint64_t sy_local = y / hdr.super_y;
+                uint64_t sz = z / hdr.super_z;
+                uint64_t sbIdx = (sz * gridY + sy_local) * gridX + sx;
+                
+                // Local coords within superblock
+                uint64_t lx = x % hdr.super_x;
+                uint64_t ly = y % hdr.super_y;
+                uint64_t lz = z % hdr.super_z;
+                
+                // Leaf index within superblock
+                uint64_t leafLx = lx / hdr.leaf_x;
+                uint64_t leafLy = ly / hdr.leaf_y;
+                uint64_t leafLz = lz / hdr.leaf_z;
+                uint64_t leafMorton = erwt3d::morton3D(static_cast<uint32_t>(leafLx),
+                                                        static_cast<uint32_t>(leafLy),
+                                                        static_cast<uint32_t>(leafLz));
+                
+                // Element offset within leaf
+                uint64_t inLeafX = lx % hdr.leaf_x;
+                uint64_t inLeafY = ly % hdr.leaf_y;
+                uint64_t inLeafZ = lz % hdr.leaf_z;
+                uint64_t elemOff = (inLeafZ * hdr.leaf_y + inLeafY) * hdr.leaf_x + inLeafX;
+                
+                // byte offset within superblock
+                uint64_t byteOffsetInSb = leafMorton * leafBytes + elemOff * sizeof(float);
+                
+                sbGroups[sbIdx].push_back({idx, byteOffsetInSb});
+            }
+            
+            std::vector<uint8_t> sbBuf(superBytes);
+            
+            for (const auto& [sbIdx, samples] : sbGroups) {
+                // Read entire superblock from ERWT3D
+                uint64_t sbOff = hdr.data_offset + sbIdx * superBytes;
+                if (pread(erwt3dFd, sbBuf.data(), superBytes, sbOff) != static_cast<ssize_t>(superBytes)) {
+                    std::cerr << "Error: failed to read superblock " << sbIdx << std::endl;
+                    close(erwt3dFd);
+                    close(rawFd);
+                    return 1;
+                }
+                
+                for (const auto& [linIdx, byteOffSb] : samples) {
+                    // Read raw value
+                    float rawVal;
+                    if (pread(rawFd, &rawVal, sizeof(float), linIdx * sizeof(float)) != sizeof(float)) {
+                        std::cerr << "Error: failed to read raw index " << linIdx << std::endl;
+                        close(erwt3dFd);
+                        close(rawFd);
+                        return 1;
+                    }
+                    
+                    // Extract ERWT3D value from superblock buffer
+                    float erwt3dVal = *reinterpret_cast<const float*>(sbBuf.data() + byteOffSb);
+                    
+                    double diff = std::abs(rawVal - erwt3dVal);
+                    double relDiff = diff / (std::abs(rawVal) + 1e-10);
+                    
+                    maxAbsError = std::max(maxAbsError, diff);
+                    maxRelError = std::max(maxRelError, relDiff);
+                    
+                    if (diff > 1e-3) {
+                        ++numFailed;
+                    }
                 }
             }
+            
+            close(erwt3dFd);
+            close(rawFd);
         } else {
-            // Full comparison
+            // Full comparison (loads both files into RAM)
+            std::ifstream rawFile(rawPath, std::ios::binary);
+            if (!rawFile) {
+                std::cerr << "Error: Cannot open raw file" << std::endl;
+                return 1;
+            }
+            
+            std::vector<float> rawData(totalElements);
+            rawFile.read(reinterpret_cast<char*>(rawData.data()), totalElements * sizeof(float));
+            if (!rawFile) {
+                std::cerr << "Error: Failed to read raw file" << std::endl;
+                return 1;
+            }
+            
+            erwt3d::ERWT3DReader reader(erwt3dPath);
+            std::vector<float> erwt3dData(totalElements);
+            if (!reader.readFull(erwt3dData.data())) {
+                std::cerr << "Error: Failed to read ERWT3D file" << std::endl;
+                return 1;
+            }
+            
             for (uint64_t i = 0; i < totalElements; ++i) {
                 double diff = std::abs(rawData[i] - erwt3dData[i]);
                 double relDiff = diff / (std::abs(rawData[i]) + 1e-10);
