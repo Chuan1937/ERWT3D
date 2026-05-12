@@ -20,7 +20,7 @@ struct SBTaskPlan {
     // leaf_data: 4 uint64_t per leaf + output packing info
     // [mortar, leafD0, leafD1, param | out_base_hi<<32|out_base_lo, out_stride, vx, vy]
     std::vector<uint64_t> leaf_data;
-    std::vector<uint32_t> leaf_out; // [out_base, out_stride, v_outer, v_inner]
+    std::vector<uint32_t> leaf_out; // [out_base, out_stride, v_inner, v_outer]
     int axis = 0;
 };
 
@@ -28,6 +28,8 @@ struct IOProfile {
     double plan_time_ms = 0;
     double read_time_ms = 0;
     double unpack_time_ms = 0;
+    double read_time_sum_ms = 0;
+    double unpack_time_sum_ms = 0;
     uint64_t superblocks_touched = 0;
     uint64_t pread_calls = 0;
     uint64_t bytes_read = 0;

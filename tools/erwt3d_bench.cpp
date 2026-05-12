@@ -237,7 +237,9 @@ int main(int argc, char* argv[]) {
                    << p.superblocks_touched << "," << p.pread_calls << "," << p.bytes_read << ","
                    << p.output_bytes << ","
                    << std::fixed << std::setprecision(3) << p.plan_time_ms << ","
-                   << p.read_time_ms << "," << p.unpack_time_ms << "," << timeMs;
+                   << p.read_time_ms << "," << p.unpack_time_ms << ","
+                   << p.read_time_sum_ms << "," << p.unpack_time_sum_ms << ","
+                   << timeMs;
                 profileLines.push_back(pl.str());
             }
             
@@ -319,9 +321,10 @@ int main(int argc, char* argv[]) {
     {
         std::ofstream cf(csvPath);
         if (!cf) { std::cerr << "Error: Cannot write " << csvPath << std::endl; return 1; }
-        cf << "method,io_backend,axis,mode,count,avg_time_ms,min_time_ms,max_time_ms,total_time_ms,output_bytes" << std::endl;
+        cf << "method,io_backend,sb_parallel_mode,axis,mode,count,avg_time_ms,min_time_ms,max_time_ms,total_time_ms,output_bytes" << std::endl;
         for (const auto& r : results) {
-            cf << r.method << "," << r.ioBackend << "," << r.axis << "," << r.mode << "," << r.count << ","
+            cf << r.method << "," << r.ioBackend << "," << sbParallelModeStr << ","
+               << r.axis << "," << r.mode << "," << r.count << ","
                << std::fixed << std::setprecision(3) << r.avgTimeMs << ","
                << r.minTimeMs << "," << r.maxTimeMs << "," << r.totalTimeMs << ","
                << r.outputBytes << std::endl;
@@ -347,7 +350,7 @@ int main(int argc, char* argv[]) {
         std::string profilePath = outputDir + "/io_profile.csv";
         std::ofstream pf(profilePath);
         if (!pf) { std::cerr << "Error: Cannot write " << profilePath << std::endl; return 1; }
-        pf << "axis,mode,index,backend,threads,sb_parallel_mode,superblocks_touched,pread_calls,bytes_read,output_bytes,plan_time_ms,read_time_ms,unpack_time_ms,total_time_ms" << std::endl;
+        pf << "axis,mode,index,backend,threads,sb_parallel_mode,superblocks_touched,pread_calls,bytes_read,output_bytes,plan_time_ms,read_time_wall_ms,unpack_time_wall_ms,read_time_sum_ms,unpack_time_sum_ms,total_time_ms" << std::endl;
         for (const auto& line : profileLines) pf << line << std::endl;
         pf.close();
         std::cout << "IO profile written to " << profilePath << std::endl;

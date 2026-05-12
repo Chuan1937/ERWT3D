@@ -246,6 +246,8 @@ bool executeSBPlanSerial(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr
     if (profile) {
         profile->read_time_ms = rd;
         profile->unpack_time_ms = up;
+        profile->read_time_sum_ms = rd;
+        profile->unpack_time_sum_ms = up;
         profile->superblocks_touched = plan.superblocks_touched;
         profile->pread_calls = plan.pread_calls;
         profile->bytes_read = plan.bytes_read;
@@ -263,6 +265,8 @@ bool executeSBPlanParallelRead(int fd, const SBTaskPlan& plan, const ERWT3DHeade
 
     ThreadPool pool(static_cast<size_t>(numThreads));
     std::vector<std::future<bool>> futures;
+    std::vector<double> threadReadMs(numThreads, 0);
+    std::vector<double> threadUnpackMs(numThreads, 0);
 
     for (int t = 0; t < numThreads; ++t) {
         futures.push_back(pool.submit([&, t]() -> bool {
@@ -271,15 +275,23 @@ bool executeSBPlanParallelRead(int fd, const SBTaskPlan& plan, const ERWT3DHeade
             if (start >= end) return true;
 
             std::vector<uint8_t> buf(sbBV);
+            double localRd = 0, localUp = 0;
+
             for (size_t i = start; i < end; ++i) {
                 const auto& task = plan.tasks[i];
                 auto tr0 = std::chrono::high_resolution_clock::now();
                 if (pread(fd, buf.data(), sbBV, task.file_offset) != static_cast<ssize_t>(sbBV))
                     return false;
-                (void)tr0; // no per-thread timing for parallel mode
+                auto tr1 = std::chrono::high_resolution_clock::now();
+                localRd += std::chrono::duration<double, std::milli>(tr1 - tr0).count();
 
+                auto tu0 = std::chrono::high_resolution_clock::now();
                 unpackLeaves(hdr, plan, task, buf.data(), output);
+                auto tu1 = std::chrono::high_resolution_clock::now();
+                localUp += std::chrono::duration<double, std::milli>(tu1 - tu0).count();
             }
+            threadReadMs[t] = localRd;
+            threadUnpackMs[t] = localUp;
             return true;
         }));
     }
@@ -290,8 +302,17 @@ bool executeSBPlanParallelRead(int fd, const SBTaskPlan& plan, const ERWT3DHeade
     }
 
     if (profile) {
-        profile->read_time_ms = 0;
-        profile->unpack_time_ms = 0;
+        double maxRd = 0, maxUp = 0, sumRd = 0, sumUp = 0;
+        for (int t = 0; t < numThreads; ++t) {
+            maxRd = std::max(maxRd, threadReadMs[t]);
+            maxUp = std::max(maxUp, threadUnpackMs[t]);
+            sumRd += threadReadMs[t];
+            sumUp += threadUnpackMs[t];
+        }
+        profile->read_time_ms = maxRd;
+        profile->unpack_time_ms = maxUp;
+        profile->read_time_sum_ms = sumRd;
+        profile->unpack_time_sum_ms = sumUp;
         profile->superblocks_touched = plan.superblocks_touched;
         profile->pread_calls = plan.pread_calls;
         profile->bytes_read = plan.bytes_read;

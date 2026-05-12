@@ -478,7 +478,13 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
 bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
                                 int numThreads, size_t memoryLimitMB) {
     const uint64_t sbBytesVal = getSuperblockBytes(header_);
-    if (sbBytesVal > memoryLimitMB * 1024ULL * 1024ULL) return false;
+    size_t maxBytes = memoryLimitMB * 1024ULL * 1024ULL;
+    if (sbBytesVal > maxBytes) return false;
+    size_t required = sbBytesVal;
+    if (sbParallelMode_ == SBParallelMode::ParallelRead && numThreads > 1) {
+        required *= static_cast<size_t>(numThreads);
+    }
+    if (required > maxBytes) return false;
 
     auto planStart = std::chrono::high_resolution_clock::now();
 

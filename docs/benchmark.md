@@ -78,15 +78,23 @@ Key design:
 
 The `--profile-io` flag writes per-slice I/O phase timing to `io_profile.csv`:
 
-```csv
-axis,mode,index,backend,threads,sb_parallel_mode,superblocks_touched,pread_calls,bytes_read,output_bytes,plan_time_ms,read_time_ms,unpack_time_ms,total_time_ms
+```
+axis,mode,index,backend,threads,sb_parallel_mode,superblocks_touched,pread_calls,bytes_read,output_bytes,plan_time_ms,read_time_wall_ms,unpack_time_wall_ms,read_time_sum_ms,unpack_time_sum_ms,total_time_ms
 ```
 
-Profile data confirms:
+- `read_time_wall_ms`: max thread read time (wall clock) for parallel mode; identical to sum for serial
+- `unpack_time_wall_ms`: max thread unpack time (wall clock) for parallel mode
+- `read_time_sum_ms` / `unpack_time_sum_ms`: total CPU time across all threads
+
+Profile findings:
 - I/O time (pread) dominates: ~90% of total for serial mode
 - Unpack/copy is negligible: ~3-5%
 - Plan time is constant: ~5-17ms per slice
-- Parallel-read reduces I/O time proportionally with thread count
+- Parallel-read reduces wall-clock I/O time by dividing superblocks among threads; sum I/O increases slightly due to contention
+
+### 50G Cold vs Warm Cache
+
+The 50G reduced-count benchmark (20+5, T_total=736ms) was run before full benchmark warmup and reflects cold page-cache conditions. The full 100+10 benchmark (T_total=300ms) benefits from page-cache warming over many slices. All final benchmark CSV entries are annotated with cache conditions.
 
 ## Official Benchmark Results
 
