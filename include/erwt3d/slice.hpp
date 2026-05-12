@@ -55,4 +55,10 @@ void prepareSlicePlan(SlicePlan& plan);
 void executeSlice(const ERWT3DHeader& header, const SlicePlan& plan, 
                   const void* readBuffer, void* outputBuffer);
 
+// Execute a prepared slice using precomputed merged extent mapping (no duplicate merge)
+void executePreparedSlice(const ERWT3DHeader& header, const SlicePlan& plan,
+                          const void* readBuffer, const std::vector<uint64_t>& mergedStarts,
+                          const std::vector<Extent>& mergedExtents,
+                          size_t batchStart, size_t batchEnd, void* outputBuffer);
+
 } // namespace erwt3d

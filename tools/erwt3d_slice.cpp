@@ -79,6 +79,11 @@ int main(int argc, char* argv[]) {
         }
         
         outFile.write(reinterpret_cast<const char*>(output.data()), header.nx * sizeof(float));
+        outFile.close();
+        if (!outFile.good()) {
+            std::cerr << "Error: Failed to write output file" << std::endl;
+            return 1;
+        }
         std::cout << "Line written to " << outputPath << std::endl;
     } else {
         // Read slice
@@ -133,6 +138,11 @@ int main(int argc, char* argv[]) {
         }
         
         outFile.write(reinterpret_cast<const char*>(output.data()), outputSize * sizeof(float));
+        outFile.close();
+        if (!outFile.good()) {
+            std::cerr << "Error: Failed to write output file" << std::endl;
+            return 1;
+        }
         std::cout << "Slice written to " << outputPath << std::endl;
     }
     

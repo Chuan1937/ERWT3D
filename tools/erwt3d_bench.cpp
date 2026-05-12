@@ -224,16 +224,19 @@ int main(int argc, char* argv[]) {
         randomZ.push_back(distZ(rng));
     }
     
-    // Generate continuous indices
+    // Generate continuous indices (safe against underflow)
+    auto safeStart = [](uint64_t dim, int cnt) -> uint64_t {
+        if (static_cast<uint64_t>(cnt) >= dim) return 0;
+        return dim / 2 - cnt / 2;
+    };
     std::vector<uint64_t> continuousX, continuousY, continuousZ;
-    uint64_t startX = header.nx / 2 - continuousCount / 2;
-    uint64_t startY = header.ny / 2 - continuousCount / 2;
-    uint64_t startZ = header.nz / 2 - continuousCount / 2;
-    
+    uint64_t sX = safeStart(header.nx, continuousCount);
+    uint64_t sY = safeStart(header.ny, continuousCount);
+    uint64_t sZ = safeStart(header.nz, continuousCount);
     for (int i = 0; i < continuousCount; ++i) {
-        continuousX.push_back(startX + i);
-        continuousY.push_back(startY + i);
-        continuousZ.push_back(startZ + i);
+        continuousX.push_back(sX + i);
+        continuousY.push_back(sY + i);
+        continuousZ.push_back(sZ + i);
     }
     
     // Run benchmarks
@@ -254,18 +257,30 @@ int main(int argc, char* argv[]) {
     }
     
     std::string csvPath = outputDir + "/bench_result.csv";
-    writeCSV(csvPath, results);
+    {
+        std::ofstream cf(csvPath);
+        if (!cf) { std::cerr << "Error: Cannot write " << csvPath << std::endl; return 1; }
+        cf << "method,axis,mode,count,avg_time_ms,min_time_ms,max_time_ms,total_time_ms,output_bytes" << std::endl;
+        for (const auto& r : results) {
+            cf << r.method << "," << r.axis << "," << r.mode << "," << r.count << ","
+               << std::fixed << std::setprecision(3) << r.avgTimeMs << ","
+               << r.minTimeMs << "," << r.maxTimeMs << "," << r.totalTimeMs << ","
+               << r.outputBytes << std::endl;
+        }
+        cf.close();
+        if (!cf.good()) { std::cerr << "Error: Failed to write " << csvPath << std::endl; return 1; }
+    }
     std::cout << "\nResults written to " << csvPath << std::endl;
     
     // Write detail CSV
     std::string detailPath = outputDir + "/bench_detail.csv";
-    std::ofstream df(detailPath);
-    df << "axis,mode,iteration,index,time_ms,output_bytes,threads,cache_mb,memory_limit_mb" << std::endl;
-    for (const auto& line : detailLines) {
-        df << line << std::endl;
-    }
-    if (!df.good()) {
-        std::cerr << "Warning: Failed to write detail CSV" << std::endl;
+    {
+        std::ofstream df(detailPath);
+        if (!df) { std::cerr << "Error: Cannot write " << detailPath << std::endl; return 1; }
+        df << "axis,mode,iteration,index,time_ms,output_bytes,threads,cache_mb,memory_limit_mb" << std::endl;
+        for (const auto& line : detailLines) df << line << std::endl;
+        df.close();
+        if (!df.good()) { std::cerr << "Error: Failed to write " << detailPath << std::endl; return 1; }
     }
     std::cout << "Detail results written to " << detailPath << std::endl;
     

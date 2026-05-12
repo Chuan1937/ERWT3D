@@ -233,6 +233,47 @@ void executeSlice(const ERWT3DHeader& header, const SlicePlan& plan,
     }
 }
 
+void executePreparedSlice(const ERWT3DHeader& header, const SlicePlan& plan,
+                          const void* readBuffer, const std::vector<uint64_t>& mergedStarts,
+                          const std::vector<Extent>& mergedExtents,
+                          size_t batchStart, size_t batchEnd, void* outputBuffer) {
+    const uint64_t lx = header.leaf_x;
+    const uint64_t ly = header.leaf_y;
+    const uint64_t nx = header.nx;
+    
+    float* out = static_cast<float*>(outputBuffer);
+    const uint8_t* readBuf = static_cast<const uint8_t*>(readBuffer);
+    
+    for (size_t ci = 0; ci < plan.copies.size(); ++ci) {
+        uint32_t mi = plan.copy_merged_idx[ci];
+        if (mi < batchStart || mi >= batchEnd) continue;
+        
+        const auto& copy = plan.copies[ci];
+        const uint8_t* src = readBuf + (plan.copy_merged_offset[ci] - mergedStarts[batchStart]);
+        
+        for (uint64_t dz = 0; dz < copy.size_z; ++dz) {
+            for (uint64_t dy = 0; dy < copy.size_y; ++dy) {
+                for (uint64_t dx = 0; dx < copy.size_x; ++dx) {
+                    uint64_t srcIdx = ((copy.src_off_z + dz) * ly + (copy.src_off_y + dy)) * lx + (copy.src_off_x + dx);
+                    uint64_t d = 0;
+                    switch (plan.axis) {
+                        case SliceAxis::X:
+                            d = ((copy.base_dst_idx / header.ny) + dz) * header.ny + (copy.base_dst_idx % header.ny + dy);
+                            break;
+                        case SliceAxis::Y:
+                            d = ((copy.base_dst_idx / nx) + dz) * nx + (copy.base_dst_idx % nx + dx);
+                            break;
+                        case SliceAxis::Z:
+                            d = ((copy.base_dst_idx / nx) + dy) * nx + (copy.base_dst_idx % nx + dx);
+                            break;
+                    }
+                    out[d] = reinterpret_cast<const float*>(src)[srcIdx];
+                }
+            }
+        }
+    }
+}
+
 void prepareSlicePlan(SlicePlan& plan) {
     if (plan.prepared) return;
     plan.prepared = true;
