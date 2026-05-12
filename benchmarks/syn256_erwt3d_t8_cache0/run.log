@@ -1,0 +1,44 @@
+ERWT3D Benchmark
+===============
+Dimensions: 256 x 256 x 256
+Random slices: 100 per axis
+Continuous slices: 10 per axis
+Threads: 8
+Memory limit: 4096 MB
+Cache: 0 MB
+
+
+Running random slice benchmarks...
+  x random (100 slices):
+    [1/100]    [11/100]    [21/100]    [31/100]    [41/100]    [51/100]    [61/100]    [71/100]    [81/100]    [91/100]    [100/100]  x random: avg=69.01ms, min=59.36ms, max=91.28ms
+  y random (100 slices):
+    [1/100]    [11/100]    [21/100]    [31/100]    [41/100]    [51/100]    [61/100]    [71/100]    [81/100]    [91/100]    [100/100]  y random: avg=53.51ms, min=30.15ms, max=1652.16ms
+  z random (100 slices):
+    [1/100]    [11/100]    [21/100]    [31/100]    [41/100]    [51/100]    [61/100]    [71/100]    [81/100]    [91/100]    [100/100]  z random: avg=18.98ms, min=12.09ms, max=26.78ms
+
+Running continuous slice benchmarks...
+  x continuous (10 slices):
+    [1/10]    [2/10]    [3/10]    [4/10]    [5/10]    [6/10]    [7/10]    [8/10]    [9/10]    [10/10]  x continuous: avg=70.56ms, min=64.47ms, max=78.58ms
+  y continuous (10 slices):
+    [1/10]    [2/10]    [3/10]    [4/10]    [5/10]    [6/10]    [7/10]    [8/10]    [9/10]    [10/10]  y continuous: avg=40.49ms, min=34.82ms, max=49.24ms
+  z continuous (10 slices):
+    [1/10]    [2/10]    [3/10]    [4/10]    [5/10]    [6/10]    [7/10]    [8/10]    [9/10]    [10/10]  z continuous: avg=21.06ms, min=19.91ms, max=21.71ms
+
+Results written to benchmarks/syn256_erwt3d_t8_cache0/bench_result.csv
+Detail results written to benchmarks/syn256_erwt3d_t8_cache0/bench_detail.csv
+
+Summary
+=======
+T_x_random: 69.01 ms
+T_y_random: 53.51 ms
+T_z_random: 18.98 ms
+T_random_avg: 47.17 ms
+
+T_x_continuous: 70.56 ms
+T_y_continuous: 40.49 ms
+T_z_continuous: 21.06 ms
+T_cont_avg: 44.04 ms
+
+T_total: 45.60 ms
+
+Storage ratio: 1.000x

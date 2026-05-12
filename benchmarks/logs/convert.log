@@ -1,0 +1,12 @@
+=== Convert CUP small data to ERWT3D ===
+Start: Tue May 12 02:08:52 PM CST 2026
+Input: /home/yuan/code/ERWT3D/CUP/cup_3d_small.dat (801 x 2405 x 2501)
+
+Converting raw to ERWT3D...
+Dimensions: 801 x 2405 x 2501
+Conversion complete: /home/yuan/code/ERWT3D/CUP/cup_3d_small.erwt3d
+
+End: Tue May 12 02:10:57 PM CST 2026
+
+Raw size: 19271755620 bytes
+ERWT3D size: 20719862016 bytes

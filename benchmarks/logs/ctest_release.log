@@ -1,0 +1,12 @@
+Internal ctest changing into directory: /home/yuan/code/ERWT3D/build
+Test project /home/yuan/code/ERWT3D/build
+    Start 1: test_morton
+1/3 Test #1: test_morton ......................   Passed    0.00 sec
+    Start 2: test_roundtrip
+2/3 Test #2: test_roundtrip ...................   Passed    0.11 sec
+    Start 3: test_slice
+3/3 Test #3: test_slice .......................   Passed    0.58 sec
+
+100% tests passed, 0 tests failed out of 3
+
+Total Test time (real) =   0.70 sec

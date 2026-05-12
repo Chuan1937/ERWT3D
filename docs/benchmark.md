@@ -95,28 +95,35 @@ Storage ratio: 2.1 / 2.0 = 1.05x
 ## Current Measured Results
 
 ### Test Environment
+- CPU: Intel i7-13700F, 24 threads (WSL2)
+- RAM: 64 GB
+- OS: Fedora Linux 43
+- Compiler: g++ 15.2.1
 
-- OS: Fedora Linux 43 (WSL)
-- CPU: [To be filled]
-- RAM: [To be filled]
-- Storage: [To be filled]
+### Synthetic 256×256×256
 
-### Results
+| Config | X rand | Y rand | Z rand | T_random_avg | X cont | Y cont | Z cont | T_total | Balance |
+|--------|--------|--------|--------|-------------|--------|--------|--------|---------|---------|
+| ERWT3D t1 | 5.22 | 3.03 | 1.92 | 3.39 | 4.52 | 2.83 | 2.05 | 3.26 | 2.72× |
+| ERWT3D t8 | 69.01 | 53.51 | 18.98 | 47.17 | 70.56 | 40.49 | 21.06 | 45.60 | 3.64× |
+| Raw row-major | 19.12 | 0.70 | 0.49 | 6.77 | 20.08 | 0.43 | 0.75 | 6.93 | 39.0× |
 
-```
-T_x_random: [To be filled] ms
-T_y_random: [To be filled] ms
-T_z_random: [To be filled] ms
-T_random_avg: [To be filled] ms
+### CUP Real Data (small: 801×2405×2501)
 
-T_x_continuous: [To be filled] ms
-T_y_continuous: [To be filled] ms
-T_z_continuous: [To be filled] ms
-T_cont_avg: [To be filled] ms
+| Metric | Value |
+|--------|-------|
+| Raw size | 18.0 GB |
+| ERWT3D size | 19.3 GB |
+| Storage ratio | 1.075× |
+| Correctness (100k samples) | passed=true, max_abs_error=0 |
+| Full benchmarks | Infeasible at current I/O throughput (~389k pread/slice) |
 
-T_total: [To be filled] ms
-Storage ratio: [To be filled]x
-```
+### Analysis
+
+- **Storage**: Well within 1.5× target (1.075× for CUP, 1.000× for aligned cubic)
+- **Balance**: ERWT3D is 14× more balanced than raw row-major (2.72 vs 39.0)
+- **Thread scaling**: Performance decreases with threads (mutex contention); single-threaded recommended for current implementation
+- **Bottleneck**: Per-extent pread() syscall overhead; ~1000+ calls per 256³ slice, ~120k per CUP Z-slice. Next: preadv() batched reads
 
 ## Benchmark Commands
 

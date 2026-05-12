@@ -1,3 +1,4 @@
 /CUP/
 /build/
 /build_dbg
+/benchmarks/benchmarks/*/*.raw

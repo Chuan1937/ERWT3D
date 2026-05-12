@@ -134,7 +134,12 @@ int main(int argc, char* argv[]) {
         std::vector<double> detailTimes;
         uint64_t outputBytes = 0;
         
+        std::cout << "  " << axisName << " " << mode << " (" << indices.size() << " slices):" << std::endl;
+        
         for (size_t i = 0; i < indices.size(); ++i) {
+            if (i % std::max(size_t(1), indices.size() / 10) == 0 || i == indices.size() - 1) {
+                std::cout << "    [" << (i+1) << "/" << indices.size() << "]" << std::flush;
+            }
             uint64_t idx = indices[i];
             
             // Calculate output size
@@ -206,7 +211,7 @@ int main(int argc, char* argv[]) {
         
         results.push_back(result);
         
-        std::cout << axisName << " " << mode << ": avg=" << std::fixed << std::setprecision(2) 
+        std::cout << "\r  " << axisName << " " << mode << ": avg=" << std::fixed << std::setprecision(2) 
                   << avgTime << "ms, min=" << minTime << "ms, max=" << maxTime << "ms" << std::endl;
         
         return true;
