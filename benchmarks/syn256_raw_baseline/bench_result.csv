@@ -1,7 +1,0 @@
-method,axis,mode,count,avg_time_ms,min_time_ms,max_time_ms,total_time_ms,output_bytes
-raw_row_major,x,random,100,19.123,13.139,24.258,1912.279,262144
-raw_row_major,y,random,100,0.701,0.387,10.938,70.086,262144
-raw_row_major,z,random,100,0.487,0.293,1.639,48.737,262144
-raw_row_major,x,continuous,10,20.085,15.307,24.247,200.849,262144
-raw_row_major,y,continuous,10,0.432,0.353,0.582,4.318,262144
-raw_row_major,z,continuous,10,0.753,0.335,1.529,7.531,262144
