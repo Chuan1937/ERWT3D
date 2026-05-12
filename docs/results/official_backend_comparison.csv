@@ -1,5 +1,5 @@
 dataset,backend,threads,cache_mb,memory_limit_mb,T_x_random,T_y_random,T_z_random,T_random_avg,T_x_cont,T_y_cont,T_z_cont,T_cont_avg,T_total,random_balance,cont_balance,storage_ratio,passed,notes
-small,pred,1,0,8192,DNF,DNF,DNF,DNF,DNF,DNF,DNF,DNF,DNF,DNF,DNF,1.075,true,pread timed out after 10min on reduced counts (20+5); ~389k syscalls per X-slice
+small,pread,1,0,8192,DNF,DNF,DNF,DNF,DNF,DNF,DNF,DNF,DNF,DNF,DNF,1.075,true,pread timed out after 10min on reduced counts (20+5); ~389k syscalls per X-slice
 small,sb,1,0,8192,373.49,149.11,198.53,240.38,422.79,179.08,170.20,257.35,248.87,2.50,2.48,1.075,true,recommended: sb t1 cache0; 100+10 full benchmark
 small,sb,8,0,8192,718.41,83.61,125.26,309.09,348.69,109.19,107.09,188.32,248.71,8.59,3.26,1.075,true,threads hurt X-axis but help Y/Z; T_total similar to t1
 small,raw,1,0,N/A,6425.80,150.55,5.88,2194.08,2488.21,8.55,6.19,834.32,1514.20,1093.16,401.98,N/A,N/A,20+5 reduced counts; raw is extremely unbalanced

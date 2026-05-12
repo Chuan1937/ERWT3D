@@ -86,13 +86,13 @@ Read arbitrary slices:
 
 ### erwt3d_verify
 
-Verify correctness:
+Verify correctness (supports streaming sampling for large datasets):
 
 ```bash
-./build/tools/erwt3d_verify \
+./build/erwt3d_verify \
   --raw data.raw \
   --erwt3d data.erwt3d \
-  --nx 1024 --ny 1024 --nz 512 \
+  --nx 2001 --ny 2201 --nz 3000 \
   --samples 100000
 ```
 
@@ -101,10 +101,22 @@ Verify correctness:
 Run benchmarks:
 
 ```bash
-# Final recommended command for competition submission:
+# Development / high-resource mode (faster iteration):
 ./build/erwt3d_bench \
   --input data.erwt3d \
-  --output-dir bench_out \
+  --output-dir dev_bench \
+  --random-count 20 \
+  --continuous-count 5 \
+  --threads 8 \
+  --memory-limit-mb 8192 \
+  --cache-mb 0 \
+  --io-backend sb \
+  --seed 20260511
+
+# Final competition mode (recommended for submission):
+./build/erwt3d_bench \
+  --input data.erwt3d \
+  --output-dir final_bench \
   --random-count 100 \
   --continuous-count 10 \
   --threads 1 \
@@ -115,18 +127,6 @@ Run benchmarks:
 ```
 
 Outputs `bench_result.csv` (summary) and `bench_detail.csv` (per-slice timing).
-
-### erwt3d_verify
-
-Verify correctness (supports streaming sampling for large datasets):
-
-```bash
-./build/erwt3d_verify \
-  --raw data.raw \
-  --erwt3d data.erwt3d \
-  --nx 2001 --ny 2201 --nz 3000 \
-  --samples 100000
-```
 
 ## File Format
 
@@ -162,8 +162,8 @@ This provides:
 
 1. **Superblock I/O backend**: Reads whole 1 MiB superblocks, reducing syscall count by 100–800x vs per-extent pread
 2. **Morton ordering**: Balanced leaf-level access for all axes
-3. **Single-threaded recommended**: Mutex contention outweighs parallelism on real data
-4. **No cache needed**: File system page cache handles sequential access; app-level cache adds overhead
+3. **Single-threaded recommended**: On real data, threads hurt or do not help; t1 has better axis balance and lower variance
+4. **No cache needed**: File system page cache handles sequential access; app-level leaf cache adds overhead without benefit for SB reads
 
 ### Official Benchmark Results (100 random + 10 continuous slices)
 
@@ -173,7 +173,9 @@ This provides:
 | **50G** (2001x2201x3000) | **sb** | **1** | **770ms** | 1.044x | passed |
 | 20G | pread | 1 | DNF | — | — |
 
-**SB backend is the recommended choice for competition submission.** PRead backend times out on real data (~389k syscalls per X-slice).
+**SB backend is the only viable choice for real data.** PRead backend times out (~389k syscalls per X-slice). For 20G, t1 and t8 are nearly tied on T_total (248.87ms vs 248.71ms), but t1 has 3.4x better axis balance. For 50G, t1 is strictly faster (770ms vs 1008ms). Therefore `--threads 1` is the final recommendation for robustness and consistency.
+
+**Storage budget**: Current ratio is 1.044x–1.075x, well below the 1.5x limit. Future optimization may add index/layout data (up to <1.5x) if it improves speed.
 
 ## Documentation
 
