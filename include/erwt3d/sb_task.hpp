@@ -34,6 +34,7 @@ struct IOProfile {
     uint64_t pread_calls = 0;
     uint64_t bytes_read = 0;
     uint64_t output_bytes = 0;
+    bool panel_hit = false;
 };
 
 SBTaskPlan buildSBPlanZ(const ERWT3DHeader& hdr, uint64_t z);
@@ -44,5 +45,11 @@ bool executeSBPlanSerial(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr
                          float* output, IOProfile* profile);
 bool executeSBPlanParallelRead(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr,
                                 float* output, int numThreads, IOProfile* profile);
+
+bool tryReadSliceXPanels(int fd, const ERWT3DHeader& hdr, uint64_t x,
+                          float* output, IOProfile* profile);
+
+bool tryReadSliceXPanelsParallel(int fd, const ERWT3DHeader& hdr, uint64_t x,
+                                  float* output, int numThreads, IOProfile* profile);
 
 } // namespace erwt3d

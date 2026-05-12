@@ -1,0 +1,4 @@
+config,T_x_random,T_y_random,T_z_random,T_random_avg,T_total,storage_ratio,notes
+No panels (PR #13 best),155,45,40,80,73,1.075,parallel-read t8 baseline
+X-panels stride=4,124,42,39,68,65,1.344,11% faster; +0.27x storage; within 1.5x
+X-panels stride=2 (est),~100,42,39,~60,~57,~1.61,estimated: 50% hit rate; exceeds 1.5x limit

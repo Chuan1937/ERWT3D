@@ -239,6 +239,7 @@ int main(int argc, char* argv[]) {
                    << std::fixed << std::setprecision(3) << p.plan_time_ms << ","
                    << p.read_time_ms << "," << p.unpack_time_ms << ","
                    << p.read_time_sum_ms << "," << p.unpack_time_sum_ms << ","
+                   << (p.panel_hit ? "true" : "false") << ","
                    << timeMs;
                 profileLines.push_back(pl.str());
             }
@@ -350,7 +351,7 @@ int main(int argc, char* argv[]) {
         std::string profilePath = outputDir + "/io_profile.csv";
         std::ofstream pf(profilePath);
         if (!pf) { std::cerr << "Error: Cannot write " << profilePath << std::endl; return 1; }
-        pf << "axis,mode,index,backend,threads,sb_parallel_mode,superblocks_touched,pread_calls,bytes_read,output_bytes,plan_time_ms,read_time_wall_ms,unpack_time_wall_ms,read_time_sum_ms,unpack_time_sum_ms,total_time_ms" << std::endl;
+        pf << "axis,mode,index,backend,threads,sb_parallel_mode,superblocks_touched,pread_calls,bytes_read,output_bytes,plan_time_ms,read_time_wall_ms,unpack_time_wall_ms,read_time_sum_ms,unpack_time_sum_ms,panel_hit,total_time_ms" << std::endl;
         for (const auto& line : profileLines) pf << line << std::endl;
         pf.close();
         std::cout << "IO profile written to " << profilePath << std::endl;

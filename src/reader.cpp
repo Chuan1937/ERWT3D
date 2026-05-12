@@ -488,6 +488,25 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
 
     auto planStart = std::chrono::high_resolution_clock::now();
 
+    // Try X-panel fast path
+    if (axis == SliceAxis::X && hasXPanels(header_)) {
+        bool panelOk;
+        if (sbParallelMode_ == SBParallelMode::ParallelRead && numThreads > 1) {
+            panelOk = tryReadSliceXPanelsParallel(fd_, header_, index, output, numThreads,
+                                                   profileIO_ ? &lastProfile_ : nullptr);
+        } else {
+            panelOk = tryReadSliceXPanels(fd_, header_, index, output,
+                                           profileIO_ ? &lastProfile_ : nullptr);
+        }
+        if (panelOk) {
+            auto planEnd = std::chrono::high_resolution_clock::now();
+            double planMs = std::chrono::duration<double, std::milli>(planEnd - planStart).count();
+            lastProfile_.plan_time_ms = planMs;
+            return true;
+        }
+        // Fall through to SB if panel miss
+    }
+
     SBTaskPlan plan;
     switch (axis) {
         case SliceAxis::Z: plan = buildSBPlanZ(header_, index); break;

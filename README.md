@@ -178,14 +178,13 @@ This provides:
 
 | Dataset | Backend | Threads | T_total | Storage Ratio | Correctness | Speedup |
 |---------|---------|---------|---------|---------------|-------------|---------|
-| **20G** (801x2405x2501) | **sb parallel-read** | **8** | **73ms** | 1.075x | passed | **3.41x** |
+| **20G** (801x2405x2501) | **sb parallel-read** | **8** | **65ms** | 1.344x | passed | **3.83x** |
 | **50G** (2001x2201x3000) | **sb parallel-read** | **8** | **300ms** | 1.044x | passed | **2.57x** |
-| 20G (old) | sb serial | 1 | 249ms | 1.075x | passed | 1.00x |
-| 50G (old) | sb serial | 1 | 770ms | 1.044x | passed | 1.00x |
+| 20G (+X-panels) | sb parallel-read | 8 | 65ms | 1.344x | passed | 3.83x |
 
-**SB parallel-read is the recommended final mode.** It fixes the previous multithreading bottleneck by partitioning superblock tasks per thread with independent buffers and zero shared-mutex hot paths. Parallel-read is bit-identical to serial SB.
+**20G recommended**: sb parallel-read t8 with X-panels stride=4. **50G**: sb parallel-read t8 (panels not yet benchmarked on 50G).
 
-**Storage budget**: Current ratio is 1.044x–1.075x, well below the 1.5x limit. Future optimization may add index/layout data (up to <1.5x) if it improves speed.
+**Storage budget**: 1.044x–1.344x, below the 1.5x limit.
 
 ## Documentation
 
