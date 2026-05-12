@@ -50,6 +50,7 @@ void printUsage(const char* progName) {
     std::cerr << "  --threads N           Number of threads (default: 1)" << std::endl;
     std::cerr << "  --memory-limit-mb N   Memory limit in MB (default: 2048)" << std::endl;
     std::cerr << "  --cache-mb N          Cache size in MB (default: 0)" << std::endl;
+    std::cerr << "  --io-backend MODE     I/O backend: pread, sb (default: pread)" << std::endl;
     std::cerr << "  --seed N              Random seed (default: 20260511)" << std::endl;
 }
 
@@ -62,6 +63,7 @@ int main(int argc, char* argv[]) {
     size_t memoryLimitMB = 2048;
     size_t cacheMB = 0;
     uint32_t seed = 20260511;
+    std::string ioBackendStr = "pread";
     
     // Parse arguments
     for (int i = 1; i < argc; ++i) {
@@ -79,6 +81,8 @@ int main(int argc, char* argv[]) {
             memoryLimitMB = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--cache-mb") == 0 && i + 1 < argc) {
             cacheMB = std::stoul(argv[++i]);
+        } else if (std::strcmp(argv[i], "--io-backend") == 0 && i + 1 < argc) {
+            ioBackendStr = argv[++i];
         } else if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
             seed = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
@@ -119,6 +123,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Threads: " << numThreads << std::endl;
     std::cout << "Memory limit: " << memoryLimitMB << " MB" << std::endl;
     std::cout << "Cache: " << cacheMB << " MB" << std::endl;
+    std::cout << "IO backend: " << ioBackendStr << std::endl;
     std::cout << std::endl;
     
     std::vector<BenchmarkResult> results;

@@ -9,6 +9,11 @@
 
 namespace erwt3d {
 
+enum class IOBackend {
+    PRead,       // per-extent pread (legacy)
+    Superblock,  // read whole superblocks, extract leaves (fewer syscalls)
+};
+
 class ERWT3DReader {
 public:
     ERWT3DReader(const std::string& path, size_t cacheMB = 0);
@@ -51,8 +56,6 @@ private:
     
     bool readExtents(const std::vector<Extent>& extents, void* buffer);
     bool readExtentsThreaded(const std::vector<Extent>& extents, void* buffer, int numThreads);
-    
-    // Cache-aware single extent read
     bool readOneExtent(uint64_t offset, uint64_t size, void* buffer);
 };
 

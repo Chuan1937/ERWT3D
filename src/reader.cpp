@@ -74,6 +74,7 @@ bool ERWT3DReader::readSlice(SliceAxis axis, uint64_t index, float* output,
                               int numThreads, size_t memoryLimitMB) {
     if (fd_ < 0) return false;
     
+    // --- PRead backend with contiguous batching ---
     switch (axis) {
         case SliceAxis::X: if (index >= header_.nx) return false; break;
         case SliceAxis::Y: if (index >= header_.ny) return false; break;
@@ -461,14 +462,28 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
     return true;
 }
 
-// --- Sequential extent read ---
+// --- Sequential extent read with contiguous batching ---
 bool ERWT3DReader::readExtents(const std::vector<Extent>& extents, void* buffer) {
     uint8_t* buf = static_cast<uint8_t*>(buffer);
-    uint64_t offset = 0;
     
-    for (const auto& ext : extents) {
-        if (!readOneExtent(ext.offset, ext.size, buf + offset)) return false;
-        offset += ext.size;
+    size_t ei = 0;
+    uint64_t bufOff = 0;
+    while (ei < extents.size()) {
+        // Find contiguous run starting at ei
+        uint64_t batchBase = extents[ei].offset;
+        uint64_t batchSize = extents[ei].size;
+        size_t batchCount = 1;
+        ++ei;
+        
+        while (ei < extents.size() && extents[ei].offset == batchBase + batchSize) {
+            batchSize += extents[ei].size;
+            ++batchCount;
+            ++ei;
+        }
+        
+        // Read entire contiguous batch in one pread
+        if (!readOneExtent(batchBase, batchSize, buf + bufOff)) return false;
+        bufOff += batchSize;
     }
     
     return true;
@@ -482,7 +497,6 @@ bool ERWT3DReader::readExtentsThreaded(const std::vector<Extent>& extents, void*
     
     uint8_t* buf = static_cast<uint8_t*>(buffer);
     
-    // Compute buffer offsets
     std::vector<uint64_t> offsets(extents.size());
     uint64_t total = 0;
     for (size_t i = 0; i < extents.size(); ++i) {
