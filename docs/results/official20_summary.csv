@@ -1,0 +1,5 @@
+config,T_x_random,T_y_random,T_z_random,T_random_avg,T_x_cont,T_y_cont,T_z_cont,T_cont_avg,T_total,random_balance,cont_balance,random_count,cont_count,threads,cache_mb,memory_limit_mb,io_backend
+erwt3d_sb_t1,373.49,149.11,198.53,240.38,422.79,179.08,170.20,257.35,248.87,2.50,2.48,100,10,1,0,8192,sb
+erwt3d_sb_t8,718.41,83.61,125.26,309.09,348.69,109.19,107.09,188.32,248.71,8.59,3.26,100,10,8,0,8192,sb
+erwt3d_sb_t1_cache512,1118.72,95.67,94.08,436.16,307.72,109.57,112.81,176.70,306.43,11.89,2.82,100,10,1,512,8192,sb
+erwt3d_sb_t4,5239.62,272.38,182.12,1898.04,394.08,93.95,75.31,187.78,1042.91,28.77,5.23,20,5,4,0,8192,sb

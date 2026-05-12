@@ -1,0 +1,7 @@
+dataset,backend,threads,cache_mb,memory_limit_mb,T_x_random,T_y_random,T_z_random,T_random_avg,T_x_cont,T_y_cont,T_z_cont,T_cont_avg,T_total,random_balance,cont_balance,notes
+small,sb,1,0,8192,373.49,149.11,198.53,240.38,422.79,179.08,170.20,257.35,248.87,2.50,2.48,Best overall T_total
+small,sb,1,512,8192,1118.72,95.67,94.08,436.16,307.72,109.57,112.81,176.70,306.43,11.89,2.82,Cache hurts random; helps continuous but not enough
+small,sb,4,0,8192,5239.62,272.38,182.12,1898.04,394.08,93.95,75.31,187.78,1042.91,28.77,5.23,Threads severely hurt X-axis; mutex contention
+small,sb,8,0,8192,718.41,83.61,125.26,309.09,348.69,109.19,107.09,188.32,248.71,8.59,3.26,Threads help Y/Z but hurt X; T_total ~same as t1
+big,sb,1,0,8192,2158.77,940.70,531.76,1210.41,298.95,513.18,177.40,329.84,770.13,4.06,2.89,Best overall; recommended
+big,sb,8,0,8192,2631.33,1310.32,767.55,1569.73,720.76,384.38,235.45,446.87,1008.30,3.43,3.06,Threads worsen all axes; t1 preferred

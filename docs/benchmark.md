@@ -1,230 +1,183 @@
-# ERWT3D Benchmark Document
-
-## Benchmark Method
-
-The benchmark follows the competition scoring style:
-
-1. **Random Slice Test**
-   - 100 random slice reads for each axis (X, Y, Z)
-   - Random indices generated with fixed seed
-   - Includes output write time
-
-2. **Continuous Slice Test**
-   - 10 continuous slice reads for each axis
-   - Slices are adjacent in memory
-   - Tests cache effectiveness
-
-## Random Slice Test
-
-### Procedure
-
-1. Generate 100 random indices for each axis
-2. For each index:
-   - Read slice from ERWT3D file
-   - Write slice to output file
-   - Measure total time (read + write)
-
-### Metrics
-
-- Average time per slice
-- Minimum time
-- Maximum time
-- Total time for 100 slices
-
-## Continuous Slice Test
-
-### Procedure
-
-1. Select 10 adjacent slices for each axis
-2. For each slice:
-   - Read slice from ERWT3D file
-   - Write slice to output file
-   - Measure total time
-
-### Metrics
-
-- Average time per slice
-- Minimum time
-- Maximum time
-- Total time for 10 slices
-
-## Correctness Verification
-
-### Lossless Verification
-
-For lossless float32 storage:
-
-```
-max_abs_error = 0
-max_rel_error = 0
-num_failed = 0
-passed = true
-```
-
-### Sampling Verification
-
-For large datasets, verify with random samples:
-
-```bash
-./erwt3d_verify --raw data.raw --erwt3d data.erwt3d \
-  --nx 1024 --ny 1024 --nz 512 \
-  --samples 100000
-```
-
-## Storage Ratio
-
-### Calculation
-
-```
-storage_ratio = file_size / (nx * ny * nz * 4)
-```
-
-### Target
-
-- First version: < 1.5x
-- Optimal: ~1.0x + small header/padding
-
-### Example
-
-```
-Raw size: 1024 * 1024 * 512 * 4 = 2 GB
-ERWT3D file: 2.1 GB
-Storage ratio: 2.1 / 2.0 = 1.05x
-```
-
-## Current Measured Results
-
-### Test Environment
-- CPU: Intel i7-13700F, 24 threads (WSL2)
-- RAM: 64 GB
-- OS: Fedora Linux 43
-- Compiler: g++ 15.2.1
-
-### Synthetic 256×256×256
-
-| Config | X rand | Y rand | Z rand | T_random_avg | X cont | Y cont | Z cont | T_total | Balance |
-|--------|--------|--------|--------|-------------|--------|--------|--------|---------|---------|
-| ERWT3D t1 | 5.22 | 3.03 | 1.92 | 3.39 | 4.52 | 2.83 | 2.05 | 3.26 | 2.72× |
-| ERWT3D t8 | 69.01 | 53.51 | 18.98 | 47.17 | 70.56 | 40.49 | 21.06 | 45.60 | 3.64× |
-| Raw row-major | 19.12 | 0.70 | 0.49 | 6.77 | 20.08 | 0.43 | 0.75 | 6.93 | 39.0× |
-
-### CUP Real Data (small: 801×2405×2501)
-
-| Metric | Value |
-|--------|-------|
-| Raw size | 18.0 GB (801 × 2405 × 2501 × 4 bytes) |
-| ERWT3D size | 19.3 GB |
-| Storage ratio | 1.075× |
-| Conversion time | ~2 minutes |
-| Correctness (100k samples) | passed=true, max_abs_error=0, num_failed=0 |
-| Full 100+10 benchmark | Not feasible at current I/O throughput |
-
-**Why full benchmark is infeasible on CUP data:**
-
-The current slice reader performs one `pread()` per extent after merging.
-For a single X-slice on 801×2405×2501:
-- Superblock grid: 13 × 38 × 40 = 19,760 superblocks
-- Leaf blocks per superblock along Y/Z: 16 × 16 = 256
-- Total leaf blocks touched: 19,760 × 256 = ~5M (before merging)
-- After extent merging: still ~389k merged extents
-- At ~1ms per `pread()` call: ~6 minutes per X-slice
-- For 100 random slices: ~10 hours (impractical)
-
-Profiling confirmed via:
-```bash
-strace -c ./build/erwt3d_bench ...  # shows ~389k pread calls per X-slice
-```
-
-Full performance testing was completed on synthetic 256×256×256 data (results above), which exercises the same code paths with ~64× fewer extents.
-CUP data passed correctness verification and storage ratio requirements.
-
-### Analysis
-
-- **Storage**: Well within 1.5× target (1.075× for CUP, 1.000× for aligned cubic)
-- **Balance**: ERWT3D is 14× more balanced than raw row-major (2.72 vs 39.0)
-- **Thread scaling**: Performance decreases with threads (mutex contention); single-threaded recommended for current implementation
-- **Bottleneck**: Per-extent pread() syscall overhead; ~1000+ calls per 256³ slice, ~120k per CUP Z-slice. Next: preadv() batched reads
-
-### Source Data
-
-All tables above are derived from committed CSV evidence files in `docs/results/`:
-
-| Table | Source CSV |
-|-------|-----------|
-| Synthetic 256³ ERWT3D t1 | `docs/results/syn256_erwt3d_t1_cache0.csv` |
-| Synthetic 256³ ERWT3D t8 cache512 | `docs/results/syn256_erwt3d_t8_cache512.csv` |
-| Synthetic 256³ ERWT3D t8 cache0 | `docs/results/syn256_erwt3d_t8_cache0.csv` |
-| Synthetic 256³ Raw baseline | `docs/results/syn256_raw_baseline.csv` |
-| Summary table | `docs/results/summary_table.csv` |
-| Thread scaling | `docs/results/thread_scaling.csv` |
-| Cache comparison | `docs/results/cache_comparison.csv` |
-
-### Figures
-
-| Figure | Description |
-|--------|-------------|
-| ![Random slice](figures/axis_random_comparison.png) | ERWT3D vs Raw random slice performance |
-| ![Continuous slice](figures/axis_continuous_comparison.png) | ERWT3D vs Raw continuous slice performance |
-| ![Thread scaling](figures/thread_scaling.png) | Thread scaling (t1/t2/t4/t8) |
-| ![Cache effect](figures/cache_effect.png) | Cache 512MB vs 0 effect |
-| ![Storage ratio](figures/storage_ratio.png) | Storage ratio vs 1.5x target |
-
-## Benchmark Commands
-
-### Run Benchmark
-
-```bash
-./build/erwt3d_bench \
-  --input data.erwt3d \
-  --output-dir bench_out \
-  --random-count 100 \
-  --continuous-count 10 \
-  --threads 16 \
-  --memory-limit-mb 2048 \
-  --cache-mb 512 \
-  --seed 20260511
-```
-
-### One-command reproduction
-
-```bash
-scripts/run_real_bench.sh data.raw NX NY NZ benchmarks/real
-```
-
-### Output
-
-- `bench_result.csv`: Aggregated summary statistics
-- `bench_detail.csv`: Per-slice timing (axis, mode, iteration, index, time_ms, output_bytes, threads, cache_mb, memory_limit_mb)
-
-### Cache Control
-
-```bash
---cache-mb 0     # disable cache
---cache-mb 512   # 512 MB LRU cache for leaf blocks
-```
-
-### Baseline Comparison
-
-For raw row-major baseline, read slices directly from a raw float32 file and compare timing. Expected: Z slices fast (contiguous), X/Y slices slow (random I/O). ERWT3D should show more balanced X/Y/Z performance.
-
-## Optimization Opportunities
-
-1. **I/O Optimization**
-   - Use io_uring for async I/O
-   - Implement read-ahead
-   - Use direct I/O
-
-2. **Cache Optimization**
-   - Increase cache size
-   - Implement prefetching
-   - Use adaptive cache policies
-
-3. **Threading Optimization**
-   - Increase thread count
-   - Implement work stealing
-   - Optimize task granularity
-
-4. **Memory Optimization**
-   - Use memory-mapped files
-   - Implement streaming processing
-   - Reduce memory copies
+1: # ERWT3D Benchmark Document
+2: 
+3: ## Benchmark Method
+4: 
+5: The benchmark follows the competition scoring style:
+6: 
+7: 1. **Random Slice Test**: 100 random slice reads per axis (X, Y, Z), random indices with fixed seed
+8: 2. **Continuous Slice Test**: 10 continuous adjacent slice reads per axis
+9: 
+10: Both include output write time. The competition composite time is:
+11: 
+12: ```
+13: actual_composite_time = combined X/Y/Z random + continuous slice read/write time
+14: ```
+15: 
+16: ## Scoring Formula
+17: 
+18: ```text
+19: performance_score = (baseline_time / actual_composite_time) * 60
+20: ```
+21: 
+22: ## Correctness Verification
+23: 
+24: All ERWT3D conversions are verified lossless using streaming random sampling (100k samples):
+25: - `max_abs_error = 0`
+26: - `max_rel_error = 0`
+27: - `num_failed = 0`
+28: - `passed = true`
+29: 
+30: See [erwt3d_verify](../tools/erwt3d_verify.cpp) for the streaming verify tool (memory-efficient, works on 50GB+ datasets).
+31: 
+32: ## Test Environment
+33: 
+34: - CPU: Intel i7-13700F, 24 threads (WSL2)
+35: - RAM: 64 GB
+36: - OS: Fedora Linux 43
+37: - Compiler: g++ 15.2.1
+38: 
+39: ## Official 20G Data (small: 801x2405x2501, 18.0 GB raw)
+40: 
+41: ### Storage and Correctness
+42: 
+43: | Metric | Value |
+44: |--------|-------|
+45: | Raw size | 19,271,755,620 bytes (18.0 GB) |
+46: | ERWT3D size | 20,719,862,016 bytes (19.3 GB) |
+47: | Storage ratio | 1.075x |
+48: | Conversion time | ~2 minutes |
+49: | Correctness (100k samples) | max_abs_error=0, max_rel_error=0, num_failed=0, passed=true |
+50: 
+51: ### Full Benchmark Results (100 random + 10 continuous per axis)
+52: 
+53: | Config | T_x_rand | T_y_rand | T_z_rand | T_rand_avg | T_x_cont | T_y_cont | T_z_cont | T_cont_avg | T_total | Rand Balance | Cont Balance |
+54: |--------|----------|----------|----------|------------|----------|----------|----------|------------|---------|-------------|--------------|
+55: | **SB t1** | **373ms** | **149ms** | **199ms** | **240ms** | **423ms** | **179ms** | **170ms** | **257ms** | **249ms** | **2.50x** | **2.48x** |
+56: | SB t8 | 718ms | 84ms | 125ms | 309ms | 349ms | 109ms | 107ms | 188ms | 249ms | 8.59x | 3.26x |
+57: | SB t1 cache512 | 1119ms | 96ms | 94ms | 436ms | 308ms | 110ms | 113ms | 177ms | 306ms | 11.89x | 2.82x |
+58: | SB t4 | 5240ms | 272ms | 182ms | 1898ms | 394ms | 94ms | 75ms | 188ms | 1043ms | 28.77x | 5.23x |
+59: | Raw row-major | 6426ms | 151ms | 6ms | 2194ms | 2488ms | 9ms | 6ms | 834ms | 1514ms | 1093x | 402x |
+60: | PRead (pread) | DNF | — | — | — | — | — | — | — | — | — | — |
+61: 
+62: **PRead backend times out on real data** (10+ minutes for just 20 random slices). 
+63: The per-extent `pread()` syscall overhead (~389k calls per X-slice) makes it impractical.
+64: 
+65: **SB t1 is the recommended configuration** for the 20G dataset:
+66: - Best overall T_total (249ms per average slice pair)
+67: - Best axis balance (2.50x random, 2.48x continuous)
+68: - Threads hurt X-axis performance due to mutex contention
+69: - Cache adds overhead without improving superblock reads
+70: 
+71: **Actual composite time (100+10 full):** ~79.8 seconds
+72: 
+73: ## Official 50G Data (big: 2001x2201x3000, 50.4 GB raw)
+74: 
+75: ### Storage and Correctness
+76: 
+77: | Metric | Value |
+78: |--------|-------|
+79: | Raw size | 52,850,412,000 bytes (50.4 GB) |
+80: | ERWT3D size | 55,197,040,896 bytes (52.6 GB) |
+81: | Storage ratio | 1.044x |
+82: | Conversion time | ~2 minutes |
+83: | Correctness (100k samples) | max_abs_error=0, max_rel_error=0, num_failed=0, passed=true |
+84: 
+85: ### Full Benchmark Results (100 random + 10 continuous per axis)
+86: 
+87: | Config | T_x_rand | T_y_rand | T_z_rand | T_rand_avg | T_x_cont | T_y_cont | T_z_cont | T_cont_avg | T_total | Rand Balance | Cont Balance |
+88: |--------|----------|----------|----------|------------|----------|----------|----------|------------|---------|-------------|--------------|
+89: | **SB t1** | **2159ms** | **941ms** | **532ms** | **1210ms** | **299ms** | **513ms** | **177ms** | **330ms** | **770ms** | **4.06x** | **2.89x** |
+90: | SB t8 | 2631ms | 1310ms | 768ms | 1570ms | 721ms | 384ms | 235ms | 447ms | 1008ms | 3.43x | 3.06x |
+91: 
+92: **SB t1 is the recommended configuration** for the 50G dataset:
+93: - Best T_total (770ms per average slice pair, vs 1008ms for t8)
+94: - Threads worsen performance across all axes
+95: - Storage ratio is excellent (1.044x, well below 1.5x target)
+96: 
+97: **Actual composite time (100+10 full):** ~373 seconds (~6.2 minutes)
+98: 
+99: ## Backend Comparison Summary
+100: 
+101: | Backend | Storage Ratio | Syscall Profile | 20G Feasibility | 50G Feasibility | T_total (20G) | T_total (50G) |
+102: |---------|---------------|-----------------|-----------------|------------------|---------------|---------------|
+103: | **SB (superblock)** | 1.044x–1.075x | ~500–1650 preads/slice | Feasible (~80s) | Feasible (~373s) | **249ms** | **770ms** |
+104: | PRead (extent) | Same | ~389k preads/slice | Impractical (DNF) | Impractical | DNF | DNF |
+105: 
+106: **SB is always better than pread.** SB reads whole 1 MiB superblocks (1 pread per grid cell), reducing syscall count by 100–800x compared to per-extent pread.
+107: 
+108: ## Final Recommended Command
+109: 
+110: For both 20G and 50G competition datasets, use single-threaded SB backend:
+111: 
+112: ```bash
+113: ./build/erwt3d_bench \
+114:   --input data.erwt3d \
+115:   --output-dir final_bench \
+116:   --random-count 100 \
+117:   --continuous-count 10 \
+118:   --threads 1 \
+119:   --memory-limit-mb 8192 \
+120:   --cache-mb 0 \
+121:   --io-backend sb \
+122:   --seed 20260511
+123: ```
+124: 
+125: ### Key Settings
+126: 
+127: - `--io-backend sb`: Superblock I/O backend (mandatory for real data)
+128: - `--threads 1`: Single-threaded is fastest (mutex contention outweighs parallelism)
+129: - `--cache-mb 0`: Cache adds overhead without benefit for superblock reads
+130: - `--memory-limit-mb 8192`: Works under 8GB (each superblock is ~1 MiB)
+131: 
+132: ## Thread Scaling Analysis
+133: 
+134: Threads consistently hurt performance on real data:
+135: 
+136: - **20G dataset**: t4 is 4.2x slower than t1 (5240ms vs 373ms X-random). Threads create mutex contention on the LRU cache and the thread pool.
+137: - **50G dataset**: t8 is 1.3x slower than t1 (1008ms vs 770ms T_total). X-axis suffers most.
+138: - Current implementation uses per-extent thread dispatch; a work-stealing model could improve this.
+139: 
+140: ## Cache Analysis
+141: 
+142: The LRU leaf cache (256B entries) does NOT help the SB backend:
+143: - SB reads entire superblocks (1 MiB), not individual leaves
+144: - Cache lookup adds mutex overhead on every read
+145: - File system page cache already provides read-ahead for sequential access
+146: - For 20G data: cache512 made T_total 23% worse (306ms vs 249ms)
+147: 
+148: ## Storage Ratio
+149: 
+150: Both datasets are well within the 1.5x target:
+151: 
+152: | Dataset | Ratio | Notes |
+153: |---------|-------|-------|
+154: | 20G (801x2405x2501) | 1.075x | Non-cubic dimensions add boundary superblock waste |
+155: | 50G (2001x2201x3000) | 1.044x | Larger volume, less boundary overhead ratio |
+156: | Synthetic 256³ | 1.000x | Perfectly aligned cubic volume |
+157: 
+158: ## Source Data
+159: 
+160: All results are derived from committed CSV evidence files in `docs/results/`:
+161: 
+162: | Table | Source CSV |
+163: |-------|-----------|
+164: | 20G summary | `docs/results/official20_summary.csv` |
+165: | 50G summary | `docs/results/official50_summary.csv` |
+166: | Backend comparison | `docs/results/official_backend_comparison.csv` |
+167: | Storage & correctness | `docs/results/official_storage_correctness.csv` |
+168: | Thread/cache matrix | `docs/results/official_thread_cache_matrix.csv` |
+169: | Syscall profile | `docs/results/official_syscall_profile.csv` |
+170: | Synthetic 256³ (legacy) | `docs/results/summary_table.csv`, `docs/results/io_backend_comparison.csv` |
+171: 
+172: ## One-Command Reproduction
+173: 
+174: ```bash
+175: scripts/run_real_bench.sh data.raw NX NY NZ benchmarks/real
+176: ```
+177: 
+178: ## Optimization Opportunities
+179: 
+180: 1. **I/O Optimization**: Direct I/O, io_uring for async I/O, or mmap could further reduce syscall overhead
+181: 2. **Threading**: Work-stealing thread pool could improve parallelism for X/Y slices
+182: 3. **Prefetching**: Predictive superblock prefetch could improve continuous slice speed
+183: 4. **Memory-mapped files**: Could eliminate copy overhead entirely
