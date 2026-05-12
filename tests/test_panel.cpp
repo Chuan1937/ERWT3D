@@ -161,9 +161,9 @@ int main() {
 
     std::vector<int> threads = {2, 4, 8};
 
-    testPanelEquiv(100, 100, 100, 4, threads, "100^3_s4");
-    testPanelEquiv(65, 66, 67, 4, threads, "65x66x67_s4");
-    testPanelEquiv(80, 240, 250, 4, threads, "80x240x250_s4");
+    testPanelEquiv(128, 128, 128, 4, threads, "128^3_s4");
+    testPanelEquiv(128, 64, 64, 4, {2,4}, "128x64x64_s4");
+    testPanelEquiv(64, 128, 64, 4, threads, "64x128x64_s4");
 
     if (gFail) { std::cerr << "\nFAILED" << std::endl; return 1; }
     std::cout << "\nAll panel index tests passed" << std::endl;

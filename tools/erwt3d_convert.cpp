@@ -22,6 +22,8 @@ void printUsage(const char* progName) {
     std::cerr << "  --memory-limit-mb N Memory limit in MB (default: 2048)" << std::endl;
     std::cerr << "  --super-size N      Superblock size (default: 64)" << std::endl;
     std::cerr << "  --leaf-size N       Leaf block size (default: 4)" << std::endl;
+    std::cerr << "  --panel-axis x       Enable X micro-panels (only x supported)" << std::endl;
+    std::cerr << "  --panel-stride N     Store every Nth local X plane (must divide super-size)" << std::endl;
 }
 
 int main(int argc, char* argv[]) {

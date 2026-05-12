@@ -93,9 +93,10 @@ bool writeERWT3D(const std::string& outputPath,
     double projectedRatio=static_cast<double>(projectedSize)/rawSize;
 
     if (doPanels && projectedRatio > 1.45) {
-        std::cerr << "Warning: projected storage ratio " << projectedRatio
-                  << "x exceeds 1.45x (main=" << mainSize << " panel=" << panelDataSize+panelIndexBytes << ")"
+        std::cerr << "Error: projected storage ratio " << projectedRatio
+                  << "x exceeds 1.45x limit (main=" << mainSize << " panel=" << panelDataSize+panelIndexBytes << ")"
                   << std::endl;
+        return false;
     }
     if (doPanels) {
         std::cout << "Projected storage ratio: " << projectedRatio
@@ -137,6 +138,7 @@ bool writeERWT3D(const std::string& outputPath,
                     }
                 }
         uint64_t panelDataStart=panelIndexOff+panelIndexBytes;
+        uint64_t panelEnd=static_cast<uint64_t>(file.tellp());
         file.seekp(panelIndexOff);
         file.write(reinterpret_cast<const char*>(panelIndex.data()), panelIndexBytes);
         file.seekp(0);
@@ -144,7 +146,7 @@ bool writeERWT3D(const std::string& outputPath,
         header.reserved[0]=panelStride;
         header.reserved[3]=panelDataStart;
         header.reserved[4]=panelIndexOff;
-        header.reserved[5]=static_cast<uint64_t>(file.tellp())-panelDataStart; // approx
+        header.reserved[5]=panelEnd-panelDataStart;
         file.write(reinterpret_cast<const char*>(&header), sizeof(header));
     }
     return true;
@@ -178,9 +180,10 @@ bool writeERWT3DFromFile(const std::string& outputPath,
     double projectedRatio=static_cast<double>(projectedSize)/rawSize;
 
     if (doPanels && projectedRatio > 1.45) {
-        std::cerr << "Warning: projected storage ratio " << projectedRatio
-                  << "x exceeds 1.45x (main=" << mainSize << " panel=" << panelDataSize+panelIndexBytes << ")"
+        std::cerr << "Error: projected storage ratio " << projectedRatio
+                  << "x exceeds 1.45x limit (main=" << mainSize << " panel=" << panelDataSize+panelIndexBytes << ")"
                   << std::endl;
+        return false;
     }
     if (doPanels) {
         std::cout << "Projected storage ratio: " << projectedRatio
