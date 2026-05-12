@@ -360,7 +360,7 @@ bool tryReadSliceXPanels(int fd, const ERWT3DHeader& hdr, uint64_t x,
     }
 
     if (profile) {
-        profile->superblocks_touched = sbCount;
+        profile->superblocks_touched = sbCount; profile->panel_hit = true;
         profile->pread_calls = sbCount;
         profile->bytes_read = totalRead;
         profile->output_bytes = ny * nz * sizeof(float);
@@ -430,7 +430,7 @@ bool tryReadSliceXPanelsParallel(int fd, const ERWT3DHeader& hdr, uint64_t x,
     for (auto& f : futures) if (!f.get()) return false;
 
     if (profile) {
-        profile->superblocks_touched = total;
+        profile->superblocks_touched = total; profile->panel_hit = true;
         profile->pread_calls = total;
         profile->bytes_read = total * planeBytes;
         profile->output_bytes = ny * nz * sizeof(float);

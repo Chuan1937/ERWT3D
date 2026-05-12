@@ -60,7 +60,14 @@ int main(int argc, char* argv[]) {
             leafSize = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--panel-axis") == 0 && i + 1 < argc) {
             std::string ax = argv[++i];
-            panelAxis = (ax == "x" || ax == "X") ? 0 : (ax == "y" || ax == "Y") ? 1 : (ax == "z" || ax == "Z") ? 2 : 255;
+            if (ax == "x" || ax == "X") panelAxis = 0;
+            else if (ax == "y" || ax == "Y" || ax == "z" || ax == "Z") {
+                std::cerr << "Error: only --panel-axis x is currently implemented" << std::endl;
+                return 1;
+            } else {
+                std::cerr << "Error: unknown --panel-axis: " << ax << " (valid: x)" << std::endl;
+                return 1;
+            }
         } else if (std::strcmp(argv[i], "--panel-stride") == 0 && i + 1 < argc) {
             panelStride = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {

@@ -180,12 +180,11 @@ This provides:
 |---------|---------|---------|---------|---------------|-------------|---------|
 | **20G** (801x2405x2501) | **sb parallel-read** | **8** | **65ms** | 1.344x | passed | **3.83x** |
 | **50G** (2001x2201x3000) | **sb parallel-read** | **8** | **300ms** | 1.044x | passed | **2.57x** |
-| 20G (old) | sb serial | 1 | 249ms | 1.075x | passed | 1.00x |
-| 50G (old) | sb serial | 1 | 770ms | 1.044x | passed | 1.00x |
+| 20G (+X-panels) | sb parallel-read | 8 | 65ms | 1.344x | passed | 3.83x |
 
-**SB parallel-read with X-panels is the recommended final mode.** X-micro-panels (`--panel-axis x --panel-stride 4`) reduce read amplification by storing selected X-planes contiguously, improving X-slice speed by 20% at a cost of +0.27x storage (still well within 1.5x limit). Panels are backward compatible.
+**20G recommended**: sb parallel-read t8 with X-panels stride=4. **50G**: sb parallel-read t8 (panels not yet benchmarked on 50G).
 
-**Storage budget**: Current ratio is 1.044x–1.344x, below the 1.5x limit. X-panel stride=2 (50% hit rate) would reach ~1.6x, exceeding the limit. Stride=4 is the recommended tradeoff.
+**Storage budget**: 1.044x–1.344x, below the 1.5x limit.
 
 ## Documentation
 

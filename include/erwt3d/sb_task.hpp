@@ -34,6 +34,7 @@ struct IOProfile {
     uint64_t pread_calls = 0;
     uint64_t bytes_read = 0;
     uint64_t output_bytes = 0;
+    bool panel_hit = false;
 };
 
 SBTaskPlan buildSBPlanZ(const ERWT3DHeader& hdr, uint64_t z);
