@@ -14,6 +14,7 @@
 
 struct BenchmarkResult {
     std::string method;
+    std::string ioBackend;
     std::string axis;
     std::string mode;
     int count;
@@ -26,10 +27,10 @@ struct BenchmarkResult {
 
 void writeCSV(const std::string& path, const std::vector<BenchmarkResult>& results) {
     std::ofstream file(path);
-    file << "method,axis,mode,count,avg_time_ms,min_time_ms,max_time_ms,total_time_ms,output_bytes" << std::endl;
-    
+    file << "method,io_backend,axis,mode,count,avg_time_ms,min_time_ms,max_time_ms,total_time_ms,output_bytes" << std::endl;
     for (const auto& r : results) {
         file << r.method << ","
+             << r.ioBackend << ","
              << r.axis << ","
              << r.mode << ","
              << r.count << ","
@@ -213,6 +214,7 @@ int main(int argc, char* argv[]) {
         
         BenchmarkResult result;
         result.method = "erwt3d";
+        result.ioBackend = ioBackendStr;
         result.axis = axisName;
         result.mode = mode;
         result.count = indices.size();
@@ -279,9 +281,9 @@ int main(int argc, char* argv[]) {
     {
         std::ofstream cf(csvPath);
         if (!cf) { std::cerr << "Error: Cannot write " << csvPath << std::endl; return 1; }
-        cf << "method,axis,mode,count,avg_time_ms,min_time_ms,max_time_ms,total_time_ms,output_bytes" << std::endl;
+        cf << "method,io_backend,axis,mode,count,avg_time_ms,min_time_ms,max_time_ms,total_time_ms,output_bytes" << std::endl;
         for (const auto& r : results) {
-            cf << r.method << "," << r.axis << "," << r.mode << "," << r.count << ","
+            cf << r.method << "," << r.ioBackend << "," << r.axis << "," << r.mode << "," << r.count << ","
                << std::fixed << std::setprecision(3) << r.avgTimeMs << ","
                << r.minTimeMs << "," << r.maxTimeMs << "," << r.totalTimeMs << ","
                << r.outputBytes << std::endl;
@@ -296,7 +298,7 @@ int main(int argc, char* argv[]) {
     {
         std::ofstream df(detailPath);
         if (!df) { std::cerr << "Error: Cannot write " << detailPath << std::endl; return 1; }
-        df << "axis,mode,iteration,index,time_ms,output_bytes,threads,cache_mb,memory_limit_mb" << std::endl;
+        df << "axis,mode,iteration,index,time_ms,output_bytes,io_backend,threads,cache_mb,memory_limit_mb" << std::endl;
         for (const auto& line : detailLines) df << line << std::endl;
         df.close();
         if (!df.good()) { std::cerr << "Error: Failed to write " << detailPath << std::endl; return 1; }
