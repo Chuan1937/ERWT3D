@@ -111,6 +111,8 @@ Run benchmarks:
   --memory-limit-mb 8192 \
   --cache-mb 0 \
   --io-backend sb \
+  --sb-parallel-mode parallel-read \
+  --profile-io \
   --seed 20260511
 
 # Final competition mode (recommended for submission):
@@ -119,14 +121,21 @@ Run benchmarks:
   --output-dir final_bench \
   --random-count 100 \
   --continuous-count 10 \
-  --threads 1 \
+  --threads 8 \
   --memory-limit-mb 8192 \
   --cache-mb 0 \
   --io-backend sb \
+  --sb-parallel-mode parallel-read \
   --seed 20260511
 ```
 
-Outputs `bench_result.csv` (summary) and `bench_detail.csv` (per-slice timing).
+Outputs `bench_result.csv`, `bench_detail.csv`, and `io_profile.csv` (if `--profile-io` enabled).
+
+I/O profiling mode (`--profile-io`) writes per-slice phase timing: plan, read, unpack, total time.
+
+SB parallel modes (`--sb-parallel-mode`):
+- `serial`: Original single-threaded SB (default, stable baseline)
+- `parallel-read`: Per-thread superblock buffers, disjoint output regions, 2.6x–3.4x speedup
 
 ## File Format
 
@@ -161,19 +170,20 @@ This provides:
 ### Key Optimizations
 
 1. **Superblock I/O backend**: Reads whole 1 MiB superblocks, reducing syscall count by 100–800x vs per-extent pread
-2. **Morton ordering**: Balanced leaf-level access for all axes
-3. **Single-threaded recommended**: On real data, threads hurt or do not help; t1 has better axis balance and lower variance
-4. **No cache needed**: File system page cache handles sequential access; app-level leaf cache adds overhead without benefit for SB reads
+2. **SB parallel-read mode**: Partition superblocks among threads with per-thread buffers and zero shared mutex; 2.6x–3.4x speedup
+3. **Morton ordering**: Balanced leaf-level access for all axes
+4. **I/O phase profiling** (`--profile-io`): Per-slice plan/read/unpack timing to identify bottlenecks
 
 ### Official Benchmark Results (100 random + 10 continuous slices)
 
-| Dataset | Backend | Threads | T_total | Storage Ratio | Correctness |
-|---------|---------|---------|---------|---------------|-------------|
-| **20G** (801x2405x2501) | **sb** | **1** | **249ms** | 1.075x | passed |
-| **50G** (2001x2201x3000) | **sb** | **1** | **770ms** | 1.044x | passed |
-| 20G | pread | 1 | DNF | — | — |
+| Dataset | Backend | Threads | T_total | Storage Ratio | Correctness | Speedup |
+|---------|---------|---------|---------|---------------|-------------|---------|
+| **20G** (801x2405x2501) | **sb parallel-read** | **8** | **73ms** | 1.075x | passed | **3.41x** |
+| **50G** (2001x2201x3000) | **sb parallel-read** | **8** | **300ms** | 1.044x | passed | **2.57x** |
+| 20G (old) | sb serial | 1 | 249ms | 1.075x | passed | 1.00x |
+| 50G (old) | sb serial | 1 | 770ms | 1.044x | passed | 1.00x |
 
-**SB backend is the only viable choice for real data.** PRead backend times out (~389k syscalls per X-slice). For 20G, t1 and t8 are nearly tied on T_total (248.87ms vs 248.71ms), but t1 has 3.4x better axis balance. For 50G, t1 is strictly faster (770ms vs 1008ms). Therefore `--threads 1` is the final recommendation for robustness and consistency.
+**SB parallel-read is the recommended final mode.** It fixes the previous multithreading bottleneck by partitioning superblock tasks per thread with independent buffers and zero shared-mutex hot paths. Parallel-read is bit-identical to serial SB.
 
 **Storage budget**: Current ratio is 1.044x–1.075x, well below the 1.5x limit. Future optimization may add index/layout data (up to <1.5x) if it improves speed.
 

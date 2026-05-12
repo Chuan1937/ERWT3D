@@ -20,6 +20,7 @@ set(LIB_SOURCES
     src/extent.cpp
     src/cache.cpp
     src/thread_pool.cpp
+    src/sb_parallel.cpp
 )
 
 # Create library
@@ -66,4 +67,8 @@ if(ERWT3D_BUILD_TESTS)
     add_executable(test_backend tests/test_backend.cpp)
     target_link_libraries(test_backend PRIVATE erwt3d)
     add_test(NAME test_backend COMMAND test_backend)
+    
+    add_executable(test_sb_parallel_modes tests/test_sb_parallel_modes.cpp)
+    target_link_libraries(test_sb_parallel_modes PRIVATE erwt3d)
+    add_test(NAME test_sb_parallel_modes COMMAND test_sb_parallel_modes)
 endif()
