@@ -1,0 +1,7 @@
+method,axis,mode,count,avg_time_ms,min_time_ms,max_time_ms,total_time_ms,output_bytes
+erwt3d,x,random,20,5.224,4.170,6.583,104.473,262144
+erwt3d,y,random,20,3.031,2.543,4.349,60.610,262144
+erwt3d,z,random,20,1.920,1.571,2.455,38.399,262144
+erwt3d,x,continuous,5,4.523,4.307,4.808,22.617,262144
+erwt3d,y,continuous,5,2.826,2.576,3.133,14.128,262144
+erwt3d,z,continuous,5,2.045,1.874,2.225,10.226,262144
