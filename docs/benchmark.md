@@ -130,13 +130,25 @@ Storage ratio: [To be filled]x
   --continuous-count 10 \
   --threads 16 \
   --memory-limit-mb 2048 \
+  --cache-mb 512 \
   --seed 20260511
 ```
 
 ### Output
 
-- `bench_result.csv`: Detailed results
-- Console output: Summary statistics
+- `bench_result.csv`: Aggregated summary statistics
+- `bench_detail.csv`: Per-slice timing (axis, mode, iteration, index, time_ms, output_bytes, threads, cache_mb, memory_limit_mb)
+
+### Cache Control
+
+```bash
+--cache-mb 0     # disable cache
+--cache-mb 512   # 512 MB LRU cache for leaf blocks
+```
+
+### Baseline Comparison
+
+For raw row-major baseline, read slices directly from a raw float32 file and compare timing. Expected: Z slices fast (contiguous), X/Y slices slow (random I/O). ERWT3D should show more balanced X/Y/Z performance.
 
 ## Optimization Opportunities
 

@@ -18,6 +18,11 @@ bool LeafCache::get(uint64_t key, void* data, size_t size) {
         return false;
     }
     
+    // Validate size matches cached entry
+    if (it->second->data.size() != size) {
+        return false;
+    }
+    
     // Move to front of LRU list
     lruList_.splice(lruList_.begin(), lruList_, it->second);
     

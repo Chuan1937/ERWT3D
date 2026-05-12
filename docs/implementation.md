@@ -31,50 +31,24 @@ The reader converts ERWT3D format to raw float32:
 
 2. **Slice Reading**
    - Plan slice access using slice compiler
-   - Merge extents for efficient I/O
-   - Read data using pread/preadv
+   - Prepare precomputed merged-extent mapping (once per slice)
+   - Read extents in memory-bounded batches
+   - Multi-threaded pread via thread pool
    - Unpack leaf blocks to output buffer
 
 3. **Full Volume Reading**
-   - Read entire data region
-   - Process each superblock
+   - Process one superblock at a time (streaming)
    - Unpack leaf blocks to correct positions
-
-## Threading Model
-
-### Thread Pool
-
-```cpp
-class ThreadPool {
-    std::vector<std::thread> workers;
-    std::queue<std::function<void()>> tasks;
-    // ...
-};
-```
-
-### Pipeline Stages
-
-1. **Slice Planning**: Single-threaded
-2. **Extent Merging**: Single-threaded
-3. **I/O Operations**: Multi-threaded (pread/preadv)
-4. **Data Unpacking**: Multi-threaded
-5. **Output Writing**: Single-threaded
-
-### Thread Safety
-
-- Thread pool manages task distribution
-- Each thread has local buffers
-- Cache uses mutex for thread safety
-- File descriptors use pread (thread-safe)
+   - readFullToFile writes rows via pwrite without full allocation
 
 ## Memory Limit Control
 
 Memory usage is divided into:
 
-1. **I/O Buffers**: For reading extents
-2. **Output Slice Buffer**: For slice data
-3. **Cache**: Optional LRU cache for leaf blocks
-4. **Thread-Local Buffers**: Temporary storage
+1. **I/O Buffers**: For reading extents (batched by memory limit)
+2. **Output Slice Buffer**: For slice data (allocated by caller)
+3. **Cache**: Optional LRU cache for individual leaf blocks (256 bytes each)
+4. **Superblock Buffer**: For streaming restore (1 MiB default)
 
 ### Configuration
 
@@ -83,53 +57,35 @@ Memory usage is divided into:
 ```
 
 The implementation:
-- Checks memory requirements before allocation
-- Falls back to chunked processing if needed
-- Respects global memory budget
+- Checks superblock buffer requirements before allocation
+- Batches merged extents into groups that fit within budget
+- Falls back to single-extent reads if one extent alone exceeds budget
 
 ## Cache Strategy
 
 ### LRU Cache
 
-```cpp
-class LeafCache {
-    size_t maxSize;
-    std::list<CacheEntry> lruList;
-    std::unordered_map<uint64_t, iterator> index;
-};
-```
-
-### Cache Operations
-
-1. **Get**: Check if leaf block is cached
-2. **Put**: Store leaf block (evict if necessary)
-3. **Clear**: Remove all cached entries
+Leaf blocks are cached by file offset. Each entry is 256 bytes.
 
 ### Cache Integration
 
-- Cache is checked before I/O
-- Cache is updated after I/O
+- Cache is checked before I/O in readOneExtent()
+- Size validation prevents stale reads from mismatched merged extents
 - Cache respects memory limit
-- Cache is optional (size = 0 disables)
+- `--cache-mb 0` disables, output identical to no-cache
 
-## Error Handling
+### Multi-threaded I/O
 
-### Validation
-
-- Header magic and version
-- Dimension consistency
-- Block size divisibility
-
-### Recovery
-
-- Graceful degradation on I/O errors
-- Clear error messages
-- Return error codes to caller
+- ThreadPool manages parallel extent reads via pread
+- `--threads 1` uses sequential path
+- `--threads > 1` parallelizes independent extent reads
+- Results bit-identical to single-threaded output
 
 ## Performance Optimizations
 
 1. **Extent Merging**: Reduce syscall overhead
-2. **Multi-threaded I/O**: Parallel pread/preadv
-3. **Cache**: Reduce repeated I/O
-4. **Morton Ordering**: Balanced axis performance
-5. **Leaf Block Size**: 256 bytes for good read amplification
+2. **Precomputed Mapping**: O(1) lookup per copy instruction
+3. **Multi-threaded pread**: Parallel extent reads via thread pool
+4. **Memory-bounded batches**: Process large slices without full allocation
+5. **Leaf block cache**: Reduce repeated I/O for continuous slices
+6. **Morton Leaf Ordering**: Balanced axis performance

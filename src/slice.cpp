@@ -172,6 +172,7 @@ SlicePlan planSlice(const ERWT3DHeader& header, const SliceRequest& request) {
     return plan;
 }
 
+// Legacy path — not used in current performance readSlice path (use executePreparedSlice instead)
 void executeSlice(const ERWT3DHeader& header, const SlicePlan& plan, 
                   const void* readBuffer, void* outputBuffer) {
     const uint64_t lx = header.leaf_x;
@@ -229,6 +230,84 @@ void executeSlice(const ERWT3DHeader& header, const SlicePlan& plan,
                     out[dstIdx] = src[srcIdx];
                 }
             }
+        }
+    }
+}
+
+void executePreparedSlice(const ERWT3DHeader& header, const SlicePlan& plan,
+                          const void* readBuffer, const std::vector<uint64_t>& mergedStarts,
+                          const std::vector<Extent>& mergedExtents,
+                          size_t batchStart, size_t batchEnd, void* outputBuffer) {
+    const uint64_t lx = header.leaf_x;
+    const uint64_t ly = header.leaf_y;
+    const uint64_t nx = header.nx;
+    
+    float* out = static_cast<float*>(outputBuffer);
+    const uint8_t* readBuf = static_cast<const uint8_t*>(readBuffer);
+    
+    for (size_t ci = 0; ci < plan.copies.size(); ++ci) {
+        uint32_t mi = plan.copy_merged_idx[ci];
+        if (mi < batchStart || mi >= batchEnd) continue;
+        
+        const auto& copy = plan.copies[ci];
+        const uint8_t* src = readBuf + (plan.copy_merged_offset[ci] - mergedStarts[batchStart]);
+        
+        for (uint64_t dz = 0; dz < copy.size_z; ++dz) {
+            for (uint64_t dy = 0; dy < copy.size_y; ++dy) {
+                for (uint64_t dx = 0; dx < copy.size_x; ++dx) {
+                    uint64_t srcIdx = ((copy.src_off_z + dz) * ly + (copy.src_off_y + dy)) * lx + (copy.src_off_x + dx);
+                    uint64_t d = 0;
+                    switch (plan.axis) {
+                        case SliceAxis::X:
+                            d = ((copy.base_dst_idx / header.ny) + dz) * header.ny + (copy.base_dst_idx % header.ny + dy);
+                            break;
+                        case SliceAxis::Y:
+                            d = ((copy.base_dst_idx / nx) + dz) * nx + (copy.base_dst_idx % nx + dx);
+                            break;
+                        case SliceAxis::Z:
+                            d = ((copy.base_dst_idx / nx) + dy) * nx + (copy.base_dst_idx % nx + dx);
+                            break;
+                    }
+                    out[d] = reinterpret_cast<const float*>(src)[srcIdx];
+                }
+            }
+        }
+    }
+}
+
+void prepareSlicePlan(SlicePlan& plan) {
+    if (plan.prepared) return;
+    plan.prepared = true;
+    plan.merged_extents = mergeExtents(plan.extents);
+    
+    // Compute buffer offset for each merged extent
+    plan.merged_buffer_offsets.resize(plan.merged_extents.size());
+    uint64_t total = 0;
+    for (size_t i = 0; i < plan.merged_extents.size(); ++i) {
+        plan.merged_buffer_offsets[i] = total;
+        total += plan.merged_extents[i].size;
+    }
+    
+    // Precompute mapping: for each copy, which merged extent + offset within it
+    plan.copy_merged_idx.resize(plan.copies.size());
+    plan.copy_merged_offset.resize(plan.copies.size());
+    
+    for (size_t ci = 0; ci < plan.copies.size(); ++ci) {
+        const Extent& orig = plan.extents[plan.copies[ci].src_offset];
+        bool found = false;
+        for (size_t mi = 0; mi < plan.merged_extents.size(); ++mi) {
+            if (orig.offset >= plan.merged_extents[mi].offset &&
+                orig.offset < plan.merged_extents[mi].end()) {
+                plan.copy_merged_idx[ci] = static_cast<uint32_t>(mi);
+                plan.copy_merged_offset[ci] = plan.merged_buffer_offsets[mi] + 
+                    (orig.offset - plan.merged_extents[mi].offset);
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            plan.copy_merged_idx[ci] = 0;
+            plan.copy_merged_offset[ci] = 0;
         }
     }
 }

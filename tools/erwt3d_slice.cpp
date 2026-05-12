@@ -20,6 +20,8 @@ int main(int argc, char* argv[]) {
     uint64_t index = 0;
     bool lineX = false;
     uint64_t lineY = 0, lineZ = 0;
+    int numThreads = 1;
+    size_t memoryLimitMB = 2048;
     
     // Parse arguments
     for (int i = 1; i < argc; ++i) {
@@ -40,6 +42,10 @@ int main(int argc, char* argv[]) {
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             printUsage(argv[0]);
             return 0;
+        } else if (std::strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
+            numThreads = std::stoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--memory-limit-mb") == 0 && i + 1 < argc) {
+            memoryLimitMB = std::stoul(argv[++i]);
         } else {
             std::cerr << "Unknown option: " << argv[i] << std::endl;
             printUsage(argv[0]);
@@ -61,7 +67,7 @@ int main(int argc, char* argv[]) {
         std::cout << "Reading X line at y=" << lineY << ", z=" << lineZ << std::endl;
         
         std::vector<float> output(header.nx);
-        if (!reader.readLineX(lineY, lineZ, output.data())) {
+        if (!reader.readLineX(lineY, lineZ, output.data(), numThreads, memoryLimitMB)) {
             std::cerr << "Error: Failed to read line" << std::endl;
             return 1;
         }
@@ -73,6 +79,11 @@ int main(int argc, char* argv[]) {
         }
         
         outFile.write(reinterpret_cast<const char*>(output.data()), header.nx * sizeof(float));
+        outFile.close();
+        if (!outFile.good()) {
+            std::cerr << "Error: Failed to write output file" << std::endl;
+            return 1;
+        }
         std::cout << "Line written to " << outputPath << std::endl;
     } else {
         // Read slice
@@ -115,7 +126,7 @@ int main(int argc, char* argv[]) {
         }
         
         std::vector<float> output(outputSize);
-        if (!reader.readSlice(axis, index, output.data())) {
+        if (!reader.readSlice(axis, index, output.data(), numThreads, memoryLimitMB)) {
             std::cerr << "Error: Failed to read slice" << std::endl;
             return 1;
         }
@@ -127,6 +138,11 @@ int main(int argc, char* argv[]) {
         }
         
         outFile.write(reinterpret_cast<const char*>(output.data()), outputSize * sizeof(float));
+        outFile.close();
+        if (!outFile.good()) {
+            std::cerr << "Error: Failed to write output file" << std::endl;
+            return 1;
+        }
         std::cout << "Slice written to " << outputPath << std::endl;
     }
     

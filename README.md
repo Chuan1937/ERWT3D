@@ -10,10 +10,11 @@ ERWT3D is a C++ library and command-line toolset for efficient read/write access
 
 - **Single-copy storage**: No redundant copies for different axes
 - **Balanced performance**: Optimized for X, Y, and Z slice access
-- **Morton ordering**: Spatial locality for better cache performance
-- **Multi-threaded**: Parallel I/O and processing
-- **Memory control**: Configurable memory limits
-- **Cache support**: Optional LRU cache for repeated access
+- **Morton leaf ordering**: Balanced axis access within superblocks
+- **Multi-threaded I/O**: Parallel pread via thread pool (`--threads`)
+- **Memory-bounded batches**: Respects `--memory-limit-mb` for slice reads
+- **LRU leaf cache**: Reuse leaf blocks across continuous slices (`--cache-mb`)
+- **Streaming restore**: `readFullToFile` writes directly without full allocation
 
 ## Building
 
@@ -107,8 +108,11 @@ Run benchmarks:
   --continuous-count 10 \
   --threads 16 \
   --memory-limit-mb 2048 \
+  --cache-mb 512 \
   --seed 20260511
 ```
+
+Outputs `bench_result.csv` (summary) and `bench_detail.csv` (per-slice timing).
 
 ## File Format
 
