@@ -24,9 +24,9 @@ struct RawBenchResult {
     uint64_t outputBytes;
 };
 
-void writeCSV(const std::string& path, const std::vector<RawBenchResult>& results) {
+bool writeCSV(const std::string& path, const std::vector<RawBenchResult>& results) {
     std::ofstream file(path);
-    if (!file) { std::cerr << "Error: Cannot write " << path << std::endl; return; }
+    if (!file) { std::cerr << "Error: Cannot write " << path << std::endl; return false; }
     file << "method,axis,mode,count,avg_time_ms,min_time_ms,max_time_ms,total_time_ms,output_bytes" << std::endl;
     for (const auto& r : results) {
         file << "raw_row_major," << r.axis << "," << r.mode << "," << r.count << ","
@@ -34,6 +34,9 @@ void writeCSV(const std::string& path, const std::vector<RawBenchResult>& result
              << r.minTimeMs << "," << r.maxTimeMs << "," << r.totalTimeMs << ","
              << r.outputBytes << std::endl;
     }
+    file.close();
+    if (!file.good()) { std::cerr << "Error: Failed to write " << path << std::endl; return false; }
+    return true;
 }
 
 void printUsage(const char* prog) {
@@ -116,19 +119,19 @@ int main(int argc, char* argv[]) {
                     if (n != static_cast<ssize_t>(outD2 * sizeof(float))) { close(fd); return false; }
                 }
             } else if (isY) {
-                // Y slice: all x,z at fixed y. Need one x per line, skip to next z
+                // Y slice: all x,z at fixed y. Each z has one contiguous row of nx floats.
                 for (uint64_t z = 0; z < outD1; ++z) {
-                    for (uint64_t x = 0; x < outD2; ++x) {
-                        uint64_t off = ((z * ny + idx) * nx + x) * sizeof(float);
-                        pread(fd, &output[z * outD2 + x], sizeof(float), off);
-                    }
+                    uint64_t off = ((z * ny + idx) * nx) * sizeof(float);
+                    ssize_t n = pread(fd, output.data() + z * outD2, outD2 * sizeof(float), off);
+                    if (n != static_cast<ssize_t>(outD2 * sizeof(float))) { close(fd); return false; }
                 }
             } else {
-                // X slice: all y,z at fixed x
+                // X slice: all y,z at fixed x. One float at a time (non-contiguous in raw).
                 for (uint64_t z = 0; z < outD1; ++z) {
                     for (uint64_t y = 0; y < outD2; ++y) {
                         uint64_t off = ((z * ny + y) * nx + idx) * sizeof(float);
-                        pread(fd, &output[z * outD2 + y], sizeof(float), off);
+                        ssize_t n = pread(fd, &output[z * outD2 + y], sizeof(float), off);
+                        if (n != sizeof(float)) { close(fd); return false; }
                     }
                 }
             }
@@ -193,7 +196,7 @@ int main(int argc, char* argv[]) {
     
     // Write CSVs
     std::string csvPath = outputDir + "/bench_result.csv";
-    writeCSV(csvPath, results);
+    if (!writeCSV(csvPath, results)) return 1;
     std::string detPath = outputDir + "/bench_detail.csv";
     std::ofstream df(detPath);
     if (!df) { std::cerr << "Error: Cannot write detail CSV" << std::endl; return 1; }

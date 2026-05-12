@@ -288,8 +288,10 @@ bool ERWT3DReader::readLineX(uint64_t y, uint64_t z, float* output,
             bo = 0;
             for (size_t j = batchStart; j < batchEnd; ++j) {
                 for (size_t k = 0; k < extents.size(); ++k) {
-                    if (extents[k].offset == mergedExtents[j].offset) {
-                        const float* ld = reinterpret_cast<const float*>(buf.data() + bo);
+                    if (extents[k].offset >= mergedExtents[j].offset &&
+                        extents[k].offset < mergedExtents[j].end()) {
+                        uint64_t leafOff = bo + (extents[k].offset - mergedExtents[j].offset);
+                        const float* ld = reinterpret_cast<const float*>(buf.data() + leafOff);
                         uint64_t bx = extentBaseX[k];
                         uint64_t vlx = std::min(lx, nx - bx);
                         for (uint64_t dx = 0; dx < vlx; ++dx)

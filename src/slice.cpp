@@ -172,6 +172,7 @@ SlicePlan planSlice(const ERWT3DHeader& header, const SliceRequest& request) {
     return plan;
 }
 
+// Legacy path — not used in current performance readSlice path (use executePreparedSlice instead)
 void executeSlice(const ERWT3DHeader& header, const SlicePlan& plan, 
                   const void* readBuffer, void* outputBuffer) {
     const uint64_t lx = header.leaf_x;
