@@ -161,8 +161,13 @@ All tables above are derived from committed CSV evidence files in `docs/results/
 
 ### Figures
 
-![Random slice comparison](../docs/figures/axis_random_comparison.png)
-![Continuous slice comparison](../docs/figures/axis_continuous_comparison.png)
+| Figure | Description |
+|--------|-------------|
+| ![Random slice](figures/axis_random_comparison.png) | ERWT3D vs Raw random slice performance |
+| ![Continuous slice](figures/axis_continuous_comparison.png) | ERWT3D vs Raw continuous slice performance |
+| ![Thread scaling](figures/thread_scaling.png) | Thread scaling (t1/t2/t4/t8) |
+| ![Cache effect](figures/cache_effect.png) | Cache 512MB vs 0 effect |
+| ![Storage ratio](figures/storage_ratio.png) | Storage ratio vs 1.5x target |
 
 ## Benchmark Commands
 

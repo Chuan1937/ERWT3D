@@ -1,2 +1,5 @@
-threads,total_time_ms,speedup
-1,203.48,1.00
+threads,T_total_ms,speedup
+1,3.26,1.00
+2,5.92,0.55
+4,12.69,0.26
+8,45.60,0.07

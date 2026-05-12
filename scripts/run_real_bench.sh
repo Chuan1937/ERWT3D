@@ -88,10 +88,10 @@ mkdir -p "${PREFIX}_raw_baseline"
     --continuous-count 10 \
     --seed "$SEED"
 
-# Step 7: Thread scaling (only on smaller data to save time)
+# Step 7: Thread scaling
 echo ""
-echo "--- Step 7: Thread scaling (t1, t2, t4) ---"
-for t in 1 2 4; do
+echo "--- Step 7: Thread scaling (t1, t2, t4, t8) ---"
+for t in 1 2 4 8; do
     echo "  Threads=$t..."
     mkdir -p "${PREFIX}_erwt3d_t${t}"
     "$BUILD/erwt3d_bench" \
@@ -102,7 +102,8 @@ for t in 1 2 4; do
         --threads "$t" \
         --memory-limit-mb 4096 \
         --cache-mb 0 \
-        --seed "$SEED" 2>&1 | grep -E "avg=|T_total" || true
+        --seed "$SEED" 2>&1 | grep -E "T_total|T_random|T_cont" || true
+    echo "  Saved to ${PREFIX}_erwt3d_t${t}/bench_result.csv"
 done
 
 echo ""
