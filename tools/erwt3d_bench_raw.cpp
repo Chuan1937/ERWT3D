@@ -173,14 +173,19 @@ int main(int argc, char* argv[]) {
     std::vector<uint64_t> rx(randomCount), ry(randomCount), rz(randomCount);
     for (int i = 0; i < randomCount; ++i) { rx[i]=dx(rng); ry[i]=dy_(rng); rz[i]=dz_(rng); }
     
-    // Continuous indices (safe against underflow)
+    // Continuous indices (safe against underflow and overflow)
     auto safeStart = [](uint64_t dim, int cnt) -> uint64_t {
         if (static_cast<uint64_t>(cnt) >= dim) return 0;
         return dim / 2 - cnt / 2;
     };
-    std::vector<uint64_t> cx(continuousCount), cy(continuousCount), cz(continuousCount);
-    uint64_t sx = safeStart(nx, continuousCount), sy = safeStart(ny, continuousCount), sz2 = safeStart(nz, continuousCount);
-    for (int i = 0; i < continuousCount; ++i) { cx[i]=sx+i; cy[i]=sy+i; cz[i]=sz2+i; }
+    std::vector<uint64_t> cx, cy, cz;
+    uint64_t sx = safeStart(nx, continuousCount), sy = safeStart(ny, continuousCount), sz2_v = safeStart(nz, continuousCount);
+    int countX = std::min(continuousCount, static_cast<int>(nx));
+    int countY = std::min(continuousCount, static_cast<int>(ny));
+    int countZ = std::min(continuousCount, static_cast<int>(nz));
+    for (int i = 0; i < countX; ++i) cx.push_back(sx + i);
+    for (int i = 0; i < countY; ++i) cy.push_back(sy + i);
+    for (int i = 0; i < countZ; ++i) cz.push_back(sz2_v + i);
     
     std::cout << "\nRandom slices:" << std::endl;
     if (!run("x", nx, nz, ny, false, false, rx, "random")) { close(fd); return 1; }

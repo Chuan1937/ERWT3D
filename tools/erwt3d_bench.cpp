@@ -224,7 +224,7 @@ int main(int argc, char* argv[]) {
         randomZ.push_back(distZ(rng));
     }
     
-    // Generate continuous indices (safe against underflow)
+    // Generate continuous indices (safe against underflow and overflow)
     auto safeStart = [](uint64_t dim, int cnt) -> uint64_t {
         if (static_cast<uint64_t>(cnt) >= dim) return 0;
         return dim / 2 - cnt / 2;
@@ -233,11 +233,12 @@ int main(int argc, char* argv[]) {
     uint64_t sX = safeStart(header.nx, continuousCount);
     uint64_t sY = safeStart(header.ny, continuousCount);
     uint64_t sZ = safeStart(header.nz, continuousCount);
-    for (int i = 0; i < continuousCount; ++i) {
-        continuousX.push_back(sX + i);
-        continuousY.push_back(sY + i);
-        continuousZ.push_back(sZ + i);
-    }
+    int countX = std::min(continuousCount, static_cast<int>(header.nx));
+    int countY = std::min(continuousCount, static_cast<int>(header.ny));
+    int countZ = std::min(continuousCount, static_cast<int>(header.nz));
+    for (int i = 0; i < countX; ++i) continuousX.push_back(sX + i);
+    for (int i = 0; i < countY; ++i) continuousY.push_back(sY + i);
+    for (int i = 0; i < countZ; ++i) continuousZ.push_back(sZ + i);
     
     // Run benchmarks
     std::cout << "\nRunning random slice benchmarks..." << std::endl;
