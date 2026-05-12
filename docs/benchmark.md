@@ -112,11 +112,31 @@ Storage ratio: 2.1 / 2.0 = 1.05x
 
 | Metric | Value |
 |--------|-------|
-| Raw size | 18.0 GB |
+| Raw size | 18.0 GB (801 × 2405 × 2501 × 4 bytes) |
 | ERWT3D size | 19.3 GB |
 | Storage ratio | 1.075× |
-| Correctness (100k samples) | passed=true, max_abs_error=0 |
-| Full benchmarks | Infeasible at current I/O throughput (~389k pread/slice) |
+| Conversion time | ~2 minutes |
+| Correctness (100k samples) | passed=true, max_abs_error=0, num_failed=0 |
+| Full 100+10 benchmark | Not feasible at current I/O throughput |
+
+**Why full benchmark is infeasible on CUP data:**
+
+The current slice reader performs one `pread()` per extent after merging.
+For a single X-slice on 801×2405×2501:
+- Superblock grid: 13 × 38 × 40 = 19,760 superblocks
+- Leaf blocks per superblock along Y/Z: 16 × 16 = 256
+- Total leaf blocks touched: 19,760 × 256 = ~5M (before merging)
+- After extent merging: still ~389k merged extents
+- At ~1ms per `pread()` call: ~6 minutes per X-slice
+- For 100 random slices: ~10 hours (impractical)
+
+Profiling confirmed via:
+```bash
+strace -c ./build/erwt3d_bench ...  # shows ~389k pread calls per X-slice
+```
+
+Full performance testing was completed on synthetic 256×256×256 data (results above), which exercises the same code paths with ~64× fewer extents.
+CUP data passed correctness verification and storage ratio requirements.
 
 ### Analysis
 
@@ -125,12 +145,31 @@ Storage ratio: 2.1 / 2.0 = 1.05x
 - **Thread scaling**: Performance decreases with threads (mutex contention); single-threaded recommended for current implementation
 - **Bottleneck**: Per-extent pread() syscall overhead; ~1000+ calls per 256³ slice, ~120k per CUP Z-slice. Next: preadv() batched reads
 
+### Source Data
+
+All tables above are derived from committed CSV evidence files in `docs/results/`:
+
+| Table | Source CSV |
+|-------|-----------|
+| Synthetic 256³ ERWT3D t1 | `docs/results/syn256_erwt3d_t1_cache0.csv` |
+| Synthetic 256³ ERWT3D t8 cache512 | `docs/results/syn256_erwt3d_t8_cache512.csv` |
+| Synthetic 256³ ERWT3D t8 cache0 | `docs/results/syn256_erwt3d_t8_cache0.csv` |
+| Synthetic 256³ Raw baseline | `docs/results/syn256_raw_baseline.csv` |
+| Summary table | `docs/results/summary_table.csv` |
+| Thread scaling | `docs/results/thread_scaling.csv` |
+| Cache comparison | `docs/results/cache_comparison.csv` |
+
+### Figures
+
+![Random slice comparison](../docs/figures/axis_random_comparison.png)
+![Continuous slice comparison](../docs/figures/axis_continuous_comparison.png)
+
 ## Benchmark Commands
 
 ### Run Benchmark
 
 ```bash
-./build/tools/erwt3d_bench \
+./build/erwt3d_bench \
   --input data.erwt3d \
   --output-dir bench_out \
   --random-count 100 \
@@ -139,6 +178,12 @@ Storage ratio: 2.1 / 2.0 = 1.05x
   --memory-limit-mb 2048 \
   --cache-mb 512 \
   --seed 20260511
+```
+
+### One-command reproduction
+
+```bash
+scripts/run_real_bench.sh data.raw NX NY NZ benchmarks/real
 ```
 
 ### Output

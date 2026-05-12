@@ -1,0 +1,5 @@
+config,T_x_random,T_y_random,T_z_random,T_random_avg,T_x_cont,T_y_cont,T_z_cont,T_cont_avg,T_total,random_balance,cont_balance
+erwt3d_t8_cache512,82.97,40.92,20.48,48.12,69.63,37.83,20.18,42.55,45.33,4.05,3.45
+erwt3d_t8_cache0,69.01,53.51,18.98,47.16,70.56,40.49,21.06,44.04,45.60,3.64,3.35
+erwt3d_t1,5.22,3.03,1.92,3.39,4.52,2.83,2.04,3.13,3.26,2.72,2.21
+raw_baseline,19.12,0.70,0.49,6.77,20.09,0.43,0.75,7.09,6.93,39.27,46.49
