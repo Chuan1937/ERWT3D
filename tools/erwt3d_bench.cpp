@@ -52,6 +52,8 @@ void printUsage(const char* progName) {
     std::cerr << "  --memory-limit-mb N   Memory limit in MB (default: 2048)" << std::endl;
     std::cerr << "  --cache-mb N          Cache size in MB (default: 0)" << std::endl;
     std::cerr << "  --io-backend MODE     I/O backend: pread, sb (default: pread)" << std::endl;
+    std::cerr << "  --sb-parallel-mode M  SB parallel mode: serial, parallel-read (default: serial)" << std::endl;
+    std::cerr << "  --profile-io          Enable per-slice I/O phase profiling (writes io_profile.csv)" << std::endl;
     std::cerr << "  --seed N              Random seed (default: 20260511)" << std::endl;
 }
 
@@ -65,6 +67,8 @@ int main(int argc, char* argv[]) {
     size_t cacheMB = 0;
     uint32_t seed = 20260511;
     std::string ioBackendStr = "pread";
+    std::string sbParallelModeStr = "serial";
+    bool profileIO = false;
     
     // Parse arguments
     for (int i = 1; i < argc; ++i) {
@@ -84,6 +88,10 @@ int main(int argc, char* argv[]) {
             cacheMB = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--io-backend") == 0 && i + 1 < argc) {
             ioBackendStr = argv[++i];
+        } else if (std::strcmp(argv[i], "--sb-parallel-mode") == 0 && i + 1 < argc) {
+            sbParallelModeStr = argv[++i];
+        } else if (std::strcmp(argv[i], "--profile-io") == 0) {
+            profileIO = true;
         } else if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
             seed = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
@@ -122,6 +130,16 @@ int main(int argc, char* argv[]) {
         std::cerr << "Error: Unknown --io-backend: " << ioBackendStr << " (valid: pread, sb)" << std::endl;
         return 1;
     }
+    
+    if (sbParallelModeStr == "serial") {
+        reader.setSBParallelMode(erwt3d::SBParallelMode::Serial);
+    } else if (sbParallelModeStr == "parallel-read") {
+        reader.setSBParallelMode(erwt3d::SBParallelMode::ParallelRead);
+    } else {
+        std::cerr << "Error: Unknown --sb-parallel-mode: " << sbParallelModeStr << " (valid: serial, parallel-read)" << std::endl;
+        return 1;
+    }
+    reader.setProfileIO(profileIO);
     const auto& header = reader.getHeader();
     
     std::cout << "ERWT3D Benchmark" << std::endl;
@@ -133,16 +151,23 @@ int main(int argc, char* argv[]) {
     std::cout << "Memory limit: " << memoryLimitMB << " MB" << std::endl;
     std::cout << "Cache: " << cacheMB << " MB" << std::endl;
     std::cout << "IO backend: " << ioBackendStr << std::endl;
+    if (ioBackendStr == "sb" || ioBackendStr == "superblock") {
+        std::cout << "SB parallel mode: " << sbParallelModeStr << std::endl;
+    }
+    if (profileIO) {
+        std::cout << "Profile IO: enabled" << std::endl;
+    }
     std::cout << std::endl;
     
     std::vector<BenchmarkResult> results;
     std::vector<std::string> detailLines;  // per-slice detail for bench_detail.csv
+    std::vector<std::string> profileLines; // per-slice phase timing for io_profile.csv
     std::mt19937 rng(seed);
     bool benchOk = true;
     
     // Benchmark function
     auto benchmarkSlice = [&](erwt3d::SliceAxis axis, const std::string& axisName, 
-                               const std::vector<uint64_t>& indices, const std::string& mode) -> bool {
+                                const std::vector<uint64_t>& indices, const std::string& mode) -> bool {
         std::vector<double> times;
         std::vector<uint64_t> detailIndices;
         std::vector<double> detailTimes;
@@ -200,8 +225,21 @@ int main(int argc, char* argv[]) {
             dl << axisName << "," << mode << "," << i << "," << idx << ","
                << std::fixed << std::setprecision(3) << timeMs << ","
                << (sliceSize * sizeof(float)) << ","
-               << numThreads << "," << cacheMB << "," << memoryLimitMB;
+               << ioBackendStr << "," << numThreads << "," << cacheMB << "," << memoryLimitMB
+               << "," << sbParallelModeStr;
             detailLines.push_back(dl.str());
+            
+            if (profileIO) {
+                const auto& p = reader.lastProfile();
+                std::ostringstream pl;
+                pl << axisName << "," << mode << "," << idx << ","
+                   << ioBackendStr << "," << numThreads << "," << sbParallelModeStr << ","
+                   << p.superblocks_touched << "," << p.pread_calls << "," << p.bytes_read << ","
+                   << p.output_bytes << ","
+                   << std::fixed << std::setprecision(3) << p.plan_time_ms << ","
+                   << p.read_time_ms << "," << p.unpack_time_ms << "," << timeMs;
+                profileLines.push_back(pl.str());
+            }
             
             outputBytes = sliceSize * sizeof(float);
         }
@@ -298,12 +336,22 @@ int main(int argc, char* argv[]) {
     {
         std::ofstream df(detailPath);
         if (!df) { std::cerr << "Error: Cannot write " << detailPath << std::endl; return 1; }
-        df << "axis,mode,iteration,index,time_ms,output_bytes,io_backend,threads,cache_mb,memory_limit_mb" << std::endl;
+        df << "axis,mode,iteration,index,time_ms,output_bytes,io_backend,threads,cache_mb,memory_limit_mb,sb_parallel_mode" << std::endl;
         for (const auto& line : detailLines) df << line << std::endl;
         df.close();
         if (!df.good()) { std::cerr << "Error: Failed to write " << detailPath << std::endl; return 1; }
     }
     std::cout << "Detail results written to " << detailPath << std::endl;
+    
+    if (profileIO && !profileLines.empty()) {
+        std::string profilePath = outputDir + "/io_profile.csv";
+        std::ofstream pf(profilePath);
+        if (!pf) { std::cerr << "Error: Cannot write " << profilePath << std::endl; return 1; }
+        pf << "axis,mode,index,backend,threads,sb_parallel_mode,superblocks_touched,pread_calls,bytes_read,output_bytes,plan_time_ms,read_time_ms,unpack_time_ms,total_time_ms" << std::endl;
+        for (const auto& line : profileLines) pf << line << std::endl;
+        pf.close();
+        std::cout << "IO profile written to " << profilePath << std::endl;
+    }
     
     // Print summary
     std::cout << "\nSummary" << std::endl;

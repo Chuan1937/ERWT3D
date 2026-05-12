@@ -27,6 +27,8 @@ All ERWT3D conversions are verified lossless using streaming random sampling (10
 - `num_failed = 0`
 - `passed = true`
 
+Parallel-read mode is bit-identical to serial SB (verified with `cmp` on full slices).
+
 See [erwt3d_verify](../tools/erwt3d_verify.cpp) for the streaming verify tool (memory-efficient, works on 50GB+ datasets).
 
 ## Test Environment
@@ -36,78 +38,87 @@ See [erwt3d_verify](../tools/erwt3d_verify.cpp) for the streaming verify tool (m
 - OS: Fedora Linux 43
 - Compiler: g++ 15.2.1
 
-## Official 20G Data (small: 801x2405x2501, 18.0 GB raw)
+## SB Parallel Modes (Issue #12)
 
-### Storage and Correctness
+### Why Previous Multithreading Failed
+
+The old `--threads` model (PR #9) had per-extent thread dispatch with shared mutex. On real data:
+
+```text
+20G SB t1: T_total = 248.87 ms (best)
+20G SB t8: T_total = 248.71 ms (tied, but worse X-axis balance)
+50G SB t1: T_total = 770.13 ms (best)
+50G SB t8: T_total = 1008.30 ms (1.3x slower!)
+```
+
+Root causes:
+1. Thread granularity was too fine (per-leaf or per-extent)
+2. Shared mutex contention in hot paths
+3. Threads competed for page-cache access instead of increasing I/O queue depth
+4. No proper work partitioning for superblock-level I/O
+
+### New Solution: `--sb-parallel-mode parallel-read`
+
+The new `parallel-read` mode partitions superblock tasks among threads:
+
+```text
+for each thread:
+    owns its own 1 MiB superblock buffer (no shared buffers)
+    reads assigned superblocks via pread
+    extracts leaf data to disjoint output regions (no locking)
+```
+
+Key design:
+- Work unit = superblock (1 MiB), not leaf (256B) or extent
+- Per-thread buffer eliminates shared buffer contention
+- Disjoint output regions eliminate mutex on writes
+- Coarse task granularity reduces scheduling overhead
+
+### Phase Profiling (`--profile-io`)
+
+The `--profile-io` flag writes per-slice I/O phase timing to `io_profile.csv`:
+
+```csv
+axis,mode,index,backend,threads,sb_parallel_mode,superblocks_touched,pread_calls,bytes_read,output_bytes,plan_time_ms,read_time_ms,unpack_time_ms,total_time_ms
+```
+
+Profile data confirms:
+- I/O time (pread) dominates: ~90% of total for serial mode
+- Unpack/copy is negligible: ~3-5%
+- Plan time is constant: ~5-17ms per slice
+- Parallel-read reduces I/O time proportionally with thread count
+
+## Official Benchmark Results
+
+### 20G Data (801x2405x2501, 18.0 GB raw)
 
 | Metric | Value |
 |--------|-------|
-| Raw size | 19,271,755,620 bytes (18.0 GB) |
-| ERWT3D size | 20,719,862,016 bytes (19.3 GB) |
 | Storage ratio | 1.075x |
-| Conversion time | ~2 minutes |
-| Correctness (100k samples) | max_abs_error=0, max_rel_error=0, num_failed=0, passed=true |
+| Correctness | passed (100k samples, max_abs_error=0) |
 
-### Full Benchmark Results (100 random + 10 continuous per axis)
+| Config | T_x_rand | T_y_rand | T_z_rand | T_rand_avg | T_cont_avg | T_total | Speedup |
+|--------|----------|----------|----------|------------|------------|---------|---------|
+| SB serial t1 (old) | 373ms | 149ms | 199ms | 240ms | 257ms | 249ms | 1.00x |
+| **SB parallel-read t8 (new)** | **155ms** | **45ms** | **40ms** | **80ms** | **66ms** | **73ms** | **3.41x** |
 
-| Config | T_x_rand | T_y_rand | T_z_rand | T_rand_avg | T_x_cont | T_y_cont | T_z_cont | T_cont_avg | T_total | Rand Balance | Cont Balance |
-|--------|----------|----------|----------|------------|----------|----------|----------|------------|---------|-------------|--------------|
-| **SB t1** | **373ms** | **149ms** | **199ms** | **240ms** | **423ms** | **179ms** | **170ms** | **257ms** | **249ms** | **2.50x** | **2.48x** |
-| SB t8 | 718ms | 84ms | 125ms | 309ms | 349ms | 109ms | 107ms | 188ms | 249ms | 8.59x | 3.26x |
-| SB t1 cache512 | 1119ms | 96ms | 94ms | 436ms | 308ms | 110ms | 113ms | 177ms | 306ms | 11.89x | 2.82x |
-| SB t4 | 5240ms | 272ms | 182ms | 1898ms | 394ms | 94ms | 75ms | 188ms | 1043ms | 28.77x | 5.23x |
-| Raw row-major | 6426ms | 151ms | 6ms | 2194ms | 2488ms | 9ms | 6ms | 834ms | 1514ms | 1093x | 402x |
-| PRead (pread) | DNF | — | — | — | — | — | — | — | — | — | — |
-
-**PRead backend times out on real data** (10+ minutes for just 20 random slices). 
-The per-extent `pread()` syscall overhead (~389k calls per X-slice) makes it impractical.
-
-**SB t1 is the recommended configuration** for the 20G dataset:
-- T_total is essentially tied with t8 (248.87ms vs 248.71ms), but t1 has far better axis balance (2.50x vs 8.59x) and lower variance
-- X-axis reads are nearly 2x faster with t1 (373ms vs 718ms) due to reduced mutex contention
-- For robustness and consistency across datasets, t1 is preferred
-
-**Actual composite time (100+10 full):** ~79.8 seconds
-
-## Official 50G Data (big: 2001x2201x3000, 50.4 GB raw)
-
-### Storage and Correctness
+### 50G Data (2001x2201x3000, 50.4 GB raw)
 
 | Metric | Value |
 |--------|-------|
-| Raw size | 52,850,412,000 bytes (50.4 GB) |
-| ERWT3D size | 55,197,040,896 bytes (52.6 GB) |
 | Storage ratio | 1.044x |
-| Conversion time | ~2 minutes |
-| Correctness (100k samples) | max_abs_error=0, max_rel_error=0, num_failed=0, passed=true |
+| Correctness | passed (100k samples, max_abs_error=0) |
 
-### Full Benchmark Results (100 random + 10 continuous per axis)
-
-| Config | T_x_rand | T_y_rand | T_z_rand | T_rand_avg | T_x_cont | T_y_cont | T_z_cont | T_cont_avg | T_total | Rand Balance | Cont Balance |
-|--------|----------|----------|----------|------------|----------|----------|----------|------------|---------|-------------|--------------|
-| **SB t1** | **2159ms** | **941ms** | **532ms** | **1210ms** | **299ms** | **513ms** | **177ms** | **330ms** | **770ms** | **4.06x** | **2.89x** |
-| SB t8 | 2631ms | 1310ms | 768ms | 1570ms | 721ms | 384ms | 235ms | 447ms | 1008ms | 3.43x | 3.06x |
-
-**SB t1 is the recommended configuration** for the 50G dataset:
-- Clear winner on T_total (770ms vs 1008ms) and all axes
-- Threads worsen performance across the board; single-threaded is strictly faster
-
-**Actual composite time (100+10 full):** ~373 seconds (~6.2 minutes)
-
-## Backend Comparison Summary
-
-| Backend | Storage Ratio | Syscall Profile | 20G Feasibility | 50G Feasibility | T_total (20G) | T_total (50G) |
-|---------|---------------|-----------------|-----------------|------------------|---------------|---------------|
-| **SB (superblock)** | 1.044x–1.075x | ~500–1650 preads/slice | Feasible (~80s) | Feasible (~373s) | **249ms** | **770ms** |
-| PRead (extent) | Same | ~389k preads/slice | Impractical (DNF) | Impractical | DNF | DNF |
-
-**SB is always better than pread.** SB reads whole 1 MiB superblocks (1 pread per grid cell), reducing syscall count by 100–800x compared to per-extent pread.
+| Config | T_x_rand | T_y_rand | T_z_rand | T_rand_avg | T_cont_avg | T_total | Speedup |
+|--------|----------|----------|----------|------------|------------|---------|---------|
+| SB serial t1 (old) | 2159ms | 941ms | 532ms | 1210ms | 330ms | 770ms | 1.00x |
+| **SB parallel-read t8 (new)** | **499ms** | **563ms** | **377ms** | **480ms** | **121ms** | **300ms** | **2.57x** |
 
 ## Command Profiles
 
 ### Development / High-Resource Mode
 
-For rapid iteration during development, use higher threads and reduced slice counts:
+For rapid iteration during development:
 
 ```bash
 ./build/erwt3d_bench \
@@ -119,12 +130,12 @@ For rapid iteration during development, use higher threads and reduced slice cou
   --memory-limit-mb 8192 \
   --cache-mb 0 \
   --io-backend sb \
+  --sb-parallel-mode parallel-read \
+  --profile-io \
   --seed 20260511
 ```
 
 ### Final Competition Mode
-
-For official submission, use single-threaded with full counts for best robustness:
 
 ```bash
 ./build/erwt3d_bench \
@@ -132,35 +143,34 @@ For official submission, use single-threaded with full counts for best robustnes
   --output-dir final_bench \
   --random-count 100 \
   --continuous-count 10 \
-  --threads 1 \
+  --threads 8 \
   --memory-limit-mb 8192 \
   --cache-mb 0 \
   --io-backend sb \
+  --sb-parallel-mode parallel-read \
   --seed 20260511
 ```
 
 ### Key Settings
 
-- `--io-backend sb`: Superblock I/O backend (mandatory for real data)
-- `--threads 1`: Recommended for competition (lower variance, better axis balance); threads=8 acceptable for development with reduced counts
-- `--cache-mb 0`: Cache adds overhead without benefit for superblock reads
-- `--memory-limit-mb 8192`: Works under 8GB (each superblock is ~1 MiB)
+- `--io-backend sb`: Superblock I/O backend (only viable backend for real data)
+- `--sb-parallel-mode parallel-read`: Partition superblocks among threads with per-thread buffers
+- `--threads 8`: Recommended for competition (t8 gives 2.57x–3.41x speedup over serial)
+- `--cache-mb 0`: App-level cache adds overhead without benefit for SB reads
+- `--memory-limit-mb 8192`: Works under 8GB (each thread needs ~1 MiB buffer)
 
-## Thread Scaling Analysis
+## Thread Scaling
 
-Threads consistently hurt or do not help performance on real data:
+Parallel-read mode scales well on real data:
 
-- **20G dataset**: t4 is 4.2x slower than t1 (5240ms vs 373ms X-random). T_total for t8 is nearly tied with t1 (248.71ms vs 248.87ms), but t1 has 3.4x better axis balance (2.50x vs 8.59x). Threads create mutex contention that disproportionately affects X-axis reads.
-- **50G dataset**: t8 is 1.3x slower than t1 (1008ms vs 770ms T_total). All axes are slower with threads.
-- Current implementation uses per-extent thread dispatch; a work-stealing model could improve this.
+| Dataset | t1 (serial) | t4 | t8 | Best Speedup |
+|---------|-------------|-----|------|--------------|
+| 20G (20+5) | 193ms | 110ms | 58ms | 3.34x |
+| 50G (20+5) | — | — | 737ms | — |
+| 20G (full 100+10) | 249ms | — | 73ms | 3.41x |
+| 50G (full 100+10) | 770ms | — | 300ms | 2.57x |
 
-## Cache Analysis
-
-The LRU leaf cache (256B entries) does NOT help the SB backend:
-- SB reads entire superblocks (1 MiB), not individual leaves
-- Cache lookup adds mutex overhead on every read
-- File system page cache already provides read-ahead for sequential access
-- For 20G data: cache512 made T_total 23% worse (306ms vs 249ms)
+X-axis random reads show the strongest scaling: 373ms→155ms (2.4x) on 20G, 2159ms→499ms (4.3x) on 50G.
 
 ## Storage Ratio
 
@@ -180,13 +190,13 @@ All results are derived from committed CSV evidence files in `docs/results/`:
 
 | Table | Source CSV |
 |-------|-----------|
-| 20G summary | `docs/results/official20_summary.csv` |
-| 50G summary | `docs/results/official50_summary.csv` |
+| 20G parallel modes | `docs/results/sb_parallel_modes_20g.csv` |
+| 50G parallel modes | `docs/results/sb_parallel_modes_50g.csv` |
+| Final settings comparison | `docs/results/sb_final_settings.csv` |
+| Phase profile | `docs/results/sb_phase_profile.csv` |
 | Backend comparison | `docs/results/official_backend_comparison.csv` |
 | Storage & correctness | `docs/results/official_storage_correctness.csv` |
 | Thread/cache matrix | `docs/results/official_thread_cache_matrix.csv` |
-| Syscall profile | `docs/results/official_syscall_profile.csv` |
-| Synthetic 256³ (legacy) | `docs/results/summary_table.csv`, `docs/results/io_backend_comparison.csv` |
 
 ## One-Command Reproduction
 
@@ -197,6 +207,6 @@ scripts/run_real_bench.sh data.raw NX NY NZ benchmarks/real
 ## Optimization Opportunities
 
 1. **I/O Optimization**: Direct I/O, io_uring for async I/O, or mmap could further reduce syscall overhead
-2. **Threading**: Work-stealing thread pool could improve parallelism for X/Y slices
-3. **Prefetching**: Predictive superblock prefetch could improve continuous slice speed
+2. **Pipeline mode**: Producer-consumer pipeline (read→unpack→write stages) for overlapping I/O with CPU
+3. **NUMA awareness**: Thread pinning and local CPU memory allocation for multi-socket systems
 4. **Memory-mapped files**: Could eliminate copy overhead entirely

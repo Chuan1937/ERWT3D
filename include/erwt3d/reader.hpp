@@ -3,6 +3,7 @@
 #include "format.hpp"
 #include "slice.hpp"
 #include "cache.hpp"
+#include "sb_task.hpp"
 #include <cstdint>
 #include <string>
 #include <memory>
@@ -12,6 +13,11 @@ namespace erwt3d {
 enum class IOBackend {
     PRead,       // per-merged-extent pread (default)
     Superblock,  // read whole superblocks, extract leaves
+};
+
+enum class SBParallelMode {
+    Serial,       // current stable single-thread SB path (default)
+    ParallelRead, // parallel pread over superblocks, disjoint output regions
 };
 
 class ERWT3DReader {
@@ -37,6 +43,13 @@ public:
     
     void setIOBackend(IOBackend b) { ioBackend_ = b; }
     IOBackend ioBackend() const { return ioBackend_; }
+    
+    void setSBParallelMode(SBParallelMode m) { sbParallelMode_ = m; }
+    SBParallelMode sbParallelMode() const { return sbParallelMode_; }
+    
+    void setProfileIO(bool enable) { profileIO_ = enable; }
+    bool profileIO() const { return profileIO_; }
+    const IOProfile& lastProfile() const { return lastProfile_; }
 
 private:
     std::string path_;
@@ -45,6 +58,9 @@ private:
     std::unique_ptr<LeafCache> cache_;
     size_t cacheMB_ = 0;
     IOBackend ioBackend_ = IOBackend::PRead;
+    SBParallelMode sbParallelMode_ = SBParallelMode::Serial;
+    bool profileIO_ = false;
+    IOProfile lastProfile_;
     
     bool readExtents(const std::vector<Extent>& extents, void* buffer);
     bool readExtentsThreaded(const std::vector<Extent>& extents, void* buffer, int numThreads);
@@ -53,7 +69,7 @@ private:
     bool readSlicePRead(SliceAxis axis, uint64_t index, float* output,
                         int numThreads, size_t memoryLimitMB);
     bool readSliceSB(SliceAxis axis, uint64_t index, float* output,
-                     int numThreads, size_t memoryLimitMB);
+                      int numThreads, size_t memoryLimitMB);
 };
 
 } // namespace erwt3d

@@ -1,10 +1,12 @@
 #include "erwt3d/reader.hpp"
 #include "erwt3d/morton.hpp"
 #include "erwt3d/thread_pool.hpp"
+#include "erwt3d/sb_task.hpp"
 #include <algorithm>
 #include <fstream>
 #include <vector>
 #include <cstring>
+#include <chrono>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -474,106 +476,40 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
 // --- Superblock-level I/O backend ---
 
 bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
-                                int /*numThreads*/, size_t memoryLimitMB) {
-    const uint64_t nx = header_.nx, ny = header_.ny, nz = header_.nz;
-    const uint64_t sx = header_.super_x, sy = header_.super_y, sz = header_.super_z;
-    const uint64_t lx = header_.leaf_x, ly = header_.leaf_y, lz = header_.leaf_z;
-    const uint64_t sbBytes = getSuperblockBytes(header_);
-    const uint64_t leafBytes = getLeafBytes(header_);
-    const uint64_t sgX = getSuperGridX(header_);
-    const uint64_t sgY = getSuperGridY(header_);
-    const uint64_t sgZ = getSuperGridZ(header_);
-    
-    if (sbBytes > memoryLimitMB * 1024ULL * 1024ULL) return false;
-    
-    std::vector<uint8_t> buf(sbBytes);
-    
-    if (axis == SliceAxis::Z) {
-        uint64_t z = index;
-        uint64_t superZ = z / sz;
-        uint64_t leafZ  = (z % sz) / lz;
-        uint64_t inLeafZ = (z % sz) % lz;
-        
-        for (uint64_t syi = 0; syi < sgY; ++syi) {
-            for (uint64_t sxi = 0; sxi < sgX; ++sxi) {
-                uint64_t sbIdx = (superZ * sgY + syi) * sgX + sxi;
-                uint64_t off = header_.data_offset + sbIdx * sbBytes;
-                if (pread(fd_, buf.data(), sbBytes, off) != static_cast<ssize_t>(sbBytes)) return false;
-                
-                for (uint64_t lyi = 0; lyi < getLeafsPerSuperY(header_); ++lyi) {
-                    for (uint64_t lxi = 0; lxi < getLeafsPerSuperX(header_); ++lxi) {
-                        uint64_t morton = morton3D(lxi, lyi, leafZ);
-                        const float* leaf = reinterpret_cast<const float*>(buf.data() + morton * leafBytes);
-                        
-                        uint64_t dx = sxi * sx + lxi * lx, dy = syi * sy + lyi * ly;
-                        uint64_t vx = std::min(lx, nx > dx ? nx - dx : 0);
-                        uint64_t vy = std::min(ly, ny > dy ? ny - dy : 0);
-                        for (uint64_t y = 0; y < vy; ++y)
-                            for (uint64_t x = 0; x < vx; ++x)
-                                output[(dy + y) * nx + (dx + x)] = leaf[(inLeafZ * ly + y) * lx + x];
-                    }
-                }
-            }
-        }
-        return true;
+                                int numThreads, size_t memoryLimitMB) {
+    const uint64_t sbBytesVal = getSuperblockBytes(header_);
+    if (sbBytesVal > memoryLimitMB * 1024ULL * 1024ULL) return false;
+
+    auto planStart = std::chrono::high_resolution_clock::now();
+
+    SBTaskPlan plan;
+    switch (axis) {
+        case SliceAxis::Z: plan = buildSBPlanZ(header_, index); break;
+        case SliceAxis::Y: plan = buildSBPlanY(header_, index); break;
+        case SliceAxis::X: plan = buildSBPlanX(header_, index); break;
     }
-    
-    // Y and X use SB too
-    if (axis == SliceAxis::Y) {
-        uint64_t superY = index / sy;
-        uint64_t leafY  = (index % sy) / ly;
-        uint64_t inLeafY = (index % sy) % ly;
-        
-        for (uint64_t szi = 0; szi < sgZ; ++szi) {
-            for (uint64_t sxi = 0; sxi < sgX; ++sxi) {
-                uint64_t sbIdx = (szi * sgY + superY) * sgX + sxi;
-                if (pread(fd_, buf.data(), sbBytes, header_.data_offset + sbIdx * sbBytes) != static_cast<ssize_t>(sbBytes)) return false;
-                
-                for (uint64_t lzi = 0; lzi < getLeafsPerSuperZ(header_); ++lzi) {
-                    for (uint64_t lxi = 0; lxi < getLeafsPerSuperX(header_); ++lxi) {
-                        const float* leaf = reinterpret_cast<const float*>(
-                            buf.data() + morton3D(lxi, leafY, lzi) * leafBytes);
-                        uint64_t dx = sxi * sx + lxi * lx, dz = szi * sz + lzi * lz;
-                        uint64_t vx = std::min(lx, nx > dx ? nx - dx : 0);
-                        uint64_t vz = std::min(lz, nz > dz ? nz - dz : 0);
-                        for (uint64_t z = 0; z < vz; ++z)
-                            for (uint64_t x = 0; x < vx; ++x)
-                                output[(dz + z) * nx + (dx + x)] = leaf[(z * ly + inLeafY) * lx + x];
-                    }
-                }
-            }
-        }
-        return true;
+    if (plan.tasks.empty()) return true;
+
+    auto planEnd = std::chrono::high_resolution_clock::now();
+    double planMs = std::chrono::duration<double, std::milli>(planEnd - planStart).count();
+
+    lastProfile_ = IOProfile{};
+    lastProfile_.plan_time_ms = planMs;
+    lastProfile_.superblocks_touched = plan.superblocks_touched;
+    lastProfile_.pread_calls = plan.pread_calls;
+    lastProfile_.bytes_read = plan.bytes_read;
+    lastProfile_.output_bytes = plan.output_bytes;
+
+    bool ok;
+    if (sbParallelMode_ == SBParallelMode::ParallelRead && numThreads > 1) {
+        ok = executeSBPlanParallelRead(fd_, plan, header_, output, numThreads,
+                                       profileIO_ ? &lastProfile_ : nullptr);
+    } else {
+        ok = executeSBPlanSerial(fd_, plan, header_, output,
+                                 profileIO_ ? &lastProfile_ : nullptr);
     }
-    
-    if (axis == SliceAxis::X) {
-        uint64_t superX = index / sx;
-        uint64_t leafX  = (index % sx) / lx;
-        uint64_t inLeafX = (index % sx) % lx;
-        
-        for (uint64_t szi = 0; szi < sgZ; ++szi) {
-            for (uint64_t syi = 0; syi < sgY; ++syi) {
-                uint64_t sbIdx = (szi * sgY + syi) * sgX + superX;
-                if (pread(fd_, buf.data(), sbBytes, header_.data_offset + sbIdx * sbBytes) != static_cast<ssize_t>(sbBytes)) return false;
-                
-                for (uint64_t lzi = 0; lzi < getLeafsPerSuperZ(header_); ++lzi) {
-                    for (uint64_t lyi = 0; lyi < getLeafsPerSuperY(header_); ++lyi) {
-                        const float* leaf = reinterpret_cast<const float*>(
-                            buf.data() + morton3D(leafX, lyi, lzi) * leafBytes);
-                        uint64_t dy = syi * sy + lyi * ly, dz = szi * sz + lzi * lz;
-                        uint64_t vy = std::min(ly, ny > dy ? ny - dy : 0);
-                        uint64_t vz = std::min(lz, nz > dz ? nz - dz : 0);
-                        for (uint64_t z = 0; z < vz; ++z)
-                            for (uint64_t y = 0; y < vy; ++y)
-                                output[(dz + z) * ny + (dy + y)] = leaf[(z * ly + y) * lx + inLeafX];
-                    }
-                }
-            }
-        }
-        return true;
-    }
-    
-    return false;
+
+    return ok;
 }
 
 bool ERWT3DReader::readExtents(const std::vector<Extent>& extents, void* buffer) {

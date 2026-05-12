@@ -1,0 +1,5 @@
+dataset,axis,mode,index,backend,threads,sb_parallel_mode,superblocks_touched,pread_calls,bytes_read,output_bytes,plan_time_ms,read_time_ms,unpack_time_ms,total_time_ms
+20G,x,random,400,sb,1,serial,1520,1520,1593835520,24059620,17.2,320.2,13.1,350.5
+20G,x,random,400,sb,8,parallel-read,1520,1520,1593835520,24059620,17.3,0.0,0.0,65.8
+20G,z,random,1250,sb,1,serial,494,494,517996544,7705620,5.4,35.2,1.3,42.0
+20G,z,random,1250,sb,8,parallel-read,494,494,517996544,7705620,5.5,0.0,0.0,18.4

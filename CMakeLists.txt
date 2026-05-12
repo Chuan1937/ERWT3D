@@ -20,6 +20,7 @@ set(LIB_SOURCES
     src/extent.cpp
     src/cache.cpp
     src/thread_pool.cpp
+    src/sb_parallel.cpp
 )
 
 # Create library
