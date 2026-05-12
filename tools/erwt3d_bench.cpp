@@ -14,6 +14,7 @@
 
 struct BenchmarkResult {
     std::string method;
+    std::string ioBackend;
     std::string axis;
     std::string mode;
     int count;
@@ -26,10 +27,10 @@ struct BenchmarkResult {
 
 void writeCSV(const std::string& path, const std::vector<BenchmarkResult>& results) {
     std::ofstream file(path);
-    file << "method,axis,mode,count,avg_time_ms,min_time_ms,max_time_ms,total_time_ms,output_bytes" << std::endl;
-    
+    file << "method,io_backend,axis,mode,count,avg_time_ms,min_time_ms,max_time_ms,total_time_ms,output_bytes" << std::endl;
     for (const auto& r : results) {
         file << r.method << ","
+             << r.ioBackend << ","
              << r.axis << ","
              << r.mode << ","
              << r.count << ","
@@ -50,6 +51,7 @@ void printUsage(const char* progName) {
     std::cerr << "  --threads N           Number of threads (default: 1)" << std::endl;
     std::cerr << "  --memory-limit-mb N   Memory limit in MB (default: 2048)" << std::endl;
     std::cerr << "  --cache-mb N          Cache size in MB (default: 0)" << std::endl;
+    std::cerr << "  --io-backend MODE     I/O backend: pread, sb (default: pread)" << std::endl;
     std::cerr << "  --seed N              Random seed (default: 20260511)" << std::endl;
 }
 
@@ -62,6 +64,7 @@ int main(int argc, char* argv[]) {
     size_t memoryLimitMB = 2048;
     size_t cacheMB = 0;
     uint32_t seed = 20260511;
+    std::string ioBackendStr = "pread";
     
     // Parse arguments
     for (int i = 1; i < argc; ++i) {
@@ -79,6 +82,8 @@ int main(int argc, char* argv[]) {
             memoryLimitMB = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--cache-mb") == 0 && i + 1 < argc) {
             cacheMB = std::stoul(argv[++i]);
+        } else if (std::strcmp(argv[i], "--io-backend") == 0 && i + 1 < argc) {
+            ioBackendStr = argv[++i];
         } else if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
             seed = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
@@ -109,6 +114,14 @@ int main(int argc, char* argv[]) {
     
     // Open reader
     erwt3d::ERWT3DReader reader(inputPath, cacheMB);
+    if (ioBackendStr == "pread") {
+        // default
+    } else if (ioBackendStr == "sb" || ioBackendStr == "superblock") {
+        reader.setIOBackend(erwt3d::IOBackend::Superblock);
+    } else {
+        std::cerr << "Error: Unknown --io-backend: " << ioBackendStr << " (valid: pread, sb)" << std::endl;
+        return 1;
+    }
     const auto& header = reader.getHeader();
     
     std::cout << "ERWT3D Benchmark" << std::endl;
@@ -119,6 +132,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Threads: " << numThreads << std::endl;
     std::cout << "Memory limit: " << memoryLimitMB << " MB" << std::endl;
     std::cout << "Cache: " << cacheMB << " MB" << std::endl;
+    std::cout << "IO backend: " << ioBackendStr << std::endl;
     std::cout << std::endl;
     
     std::vector<BenchmarkResult> results;
@@ -200,6 +214,7 @@ int main(int argc, char* argv[]) {
         
         BenchmarkResult result;
         result.method = "erwt3d";
+        result.ioBackend = ioBackendStr;
         result.axis = axisName;
         result.mode = mode;
         result.count = indices.size();
@@ -266,9 +281,9 @@ int main(int argc, char* argv[]) {
     {
         std::ofstream cf(csvPath);
         if (!cf) { std::cerr << "Error: Cannot write " << csvPath << std::endl; return 1; }
-        cf << "method,axis,mode,count,avg_time_ms,min_time_ms,max_time_ms,total_time_ms,output_bytes" << std::endl;
+        cf << "method,io_backend,axis,mode,count,avg_time_ms,min_time_ms,max_time_ms,total_time_ms,output_bytes" << std::endl;
         for (const auto& r : results) {
-            cf << r.method << "," << r.axis << "," << r.mode << "," << r.count << ","
+            cf << r.method << "," << r.ioBackend << "," << r.axis << "," << r.mode << "," << r.count << ","
                << std::fixed << std::setprecision(3) << r.avgTimeMs << ","
                << r.minTimeMs << "," << r.maxTimeMs << "," << r.totalTimeMs << ","
                << r.outputBytes << std::endl;
@@ -283,7 +298,7 @@ int main(int argc, char* argv[]) {
     {
         std::ofstream df(detailPath);
         if (!df) { std::cerr << "Error: Cannot write " << detailPath << std::endl; return 1; }
-        df << "axis,mode,iteration,index,time_ms,output_bytes,threads,cache_mb,memory_limit_mb" << std::endl;
+        df << "axis,mode,iteration,index,time_ms,output_bytes,io_backend,threads,cache_mb,memory_limit_mb" << std::endl;
         for (const auto& line : detailLines) df << line << std::endl;
         df.close();
         if (!df.good()) { std::cerr << "Error: Failed to write " << detailPath << std::endl; return 1; }

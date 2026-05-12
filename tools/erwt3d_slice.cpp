@@ -22,6 +22,7 @@ int main(int argc, char* argv[]) {
     uint64_t lineY = 0, lineZ = 0;
     int numThreads = 1;
     size_t memoryLimitMB = 2048;
+    std::string ioBackendStr = "pread";
     
     // Parse arguments
     for (int i = 1; i < argc; ++i) {
@@ -46,6 +47,8 @@ int main(int argc, char* argv[]) {
             numThreads = std::stoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--memory-limit-mb") == 0 && i + 1 < argc) {
             memoryLimitMB = std::stoul(argv[++i]);
+        } else if (std::strcmp(argv[i], "--io-backend") == 0 && i + 1 < argc) {
+            ioBackendStr = argv[++i];
         } else {
             std::cerr << "Unknown option: " << argv[i] << std::endl;
             printUsage(argv[0]);
@@ -60,6 +63,12 @@ int main(int argc, char* argv[]) {
     }
     
     erwt3d::ERWT3DReader reader(inputPath);
+    if (ioBackendStr == "sb" || ioBackendStr == "superblock") {
+        reader.setIOBackend(erwt3d::IOBackend::Superblock);
+    } else if (ioBackendStr != "pread") {
+        std::cerr << "Error: Unknown --io-backend: " << ioBackendStr << std::endl;
+        return 1;
+    }
     const auto& header = reader.getHeader();
     
     if (lineX) {
