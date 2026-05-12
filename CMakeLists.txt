@@ -62,4 +62,8 @@ if(ERWT3D_BUILD_TESTS)
     add_executable(test_slice tests/test_slice.cpp)
     target_link_libraries(test_slice PRIVATE erwt3d)
     add_test(NAME test_slice COMMAND test_slice)
+    
+    add_executable(test_backend tests/test_backend.cpp)
+    target_link_libraries(test_backend PRIVATE erwt3d)
+    add_test(NAME test_backend COMMAND test_backend)
 endif()
