@@ -62,6 +62,7 @@ int main(int argc, char* argv[]) {
     size_t memoryLimitMB = 2048;
     size_t cacheMB = 0;
     uint32_t seed = 20260511;
+    std::string ioBackendStr = "pread";
     
     // Parse arguments
     for (int i = 1; i < argc; ++i) {
@@ -81,6 +82,8 @@ int main(int argc, char* argv[]) {
             cacheMB = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
             seed = std::stoul(argv[++i]);
+        } else if (std::strcmp(argv[i], "--io-backend") == 0 && i + 1 < argc) {
+            ioBackendStr = argv[++i];
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             printUsage(argv[0]);
             return 0;
@@ -109,6 +112,9 @@ int main(int argc, char* argv[]) {
     
     // Open reader
     erwt3d::ERWT3DReader reader(inputPath, cacheMB);
+    if (ioBackendStr == "sb" || ioBackendStr == "superblock") {
+        reader.setIOBackend(erwt3d::IOBackend::Superblock);
+    }
     const auto& header = reader.getHeader();
     
     std::cout << "ERWT3D Benchmark" << std::endl;
