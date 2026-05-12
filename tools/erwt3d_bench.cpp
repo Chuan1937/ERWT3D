@@ -85,6 +85,8 @@ int main(int argc, char* argv[]) {
             ioBackendStr = argv[++i];
         } else if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
             seed = std::stoul(argv[++i]);
+        } else if (std::strcmp(argv[i], "--io-backend") == 0 && i + 1 < argc) {
+            ioBackendStr = argv[++i];
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             printUsage(argv[0]);
             return 0;
@@ -113,6 +115,9 @@ int main(int argc, char* argv[]) {
     
     // Open reader
     erwt3d::ERWT3DReader reader(inputPath, cacheMB);
+    if (ioBackendStr == "sb" || ioBackendStr == "superblock") {
+        reader.setIOBackend(erwt3d::IOBackend::Superblock);
+    }
     const auto& header = reader.getHeader();
     
     std::cout << "ERWT3D Benchmark" << std::endl;
