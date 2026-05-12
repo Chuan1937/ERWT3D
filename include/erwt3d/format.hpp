@@ -11,6 +11,10 @@ constexpr char ERWT3D_MAGIC[8] = {'E', 'R', 'W', 'T', '3', 'D', '\0', '\0'};
 constexpr uint32_t ERWT3D_VERSION = 1;
 constexpr uint32_t DTYPE_FLOAT32 = 1;
 
+constexpr uint64_t FLAG_HAS_X_PANELS = 1ULL << 0;
+constexpr uint64_t FLAG_HAS_Y_PANELS = 1ULL << 1;
+constexpr uint64_t FLAG_HAS_Z_PANELS = 1ULL << 2;
+
 // Default block sizes
 constexpr uint32_t DEFAULT_SUPER_X = 64;
 constexpr uint32_t DEFAULT_SUPER_Y = 64;
@@ -112,6 +116,28 @@ inline uint64_t getLeafsPerSuperZ(const ERWT3DHeader& header) {
 
 inline uint64_t getTotalLeafsPerSuper(const ERWT3DHeader& header) {
     return getLeafsPerSuperX(header) * getLeafsPerSuperY(header) * getLeafsPerSuperZ(header);
+}
+
+inline bool hasXPanels(const ERWT3DHeader& h) { return (h.flags & FLAG_HAS_X_PANELS) != 0; }
+inline bool hasYPanels(const ERWT3DHeader& h) { return (h.flags & FLAG_HAS_Y_PANELS) != 0; }
+inline bool hasZPanels(const ERWT3DHeader& h) { return (h.flags & FLAG_HAS_Z_PANELS) != 0; }
+inline bool hasAnyPanels(const ERWT3DHeader& h) { return (h.flags & (FLAG_HAS_X_PANELS|FLAG_HAS_Y_PANELS|FLAG_HAS_Z_PANELS)) != 0; }
+
+inline uint32_t getPanelStrideX(const ERWT3DHeader& h) { return static_cast<uint32_t>(h.reserved[0]); }
+inline uint32_t getPanelStrideY(const ERWT3DHeader& h) { return static_cast<uint32_t>(h.reserved[1]); }
+inline uint32_t getPanelStrideZ(const ERWT3DHeader& h) { return static_cast<uint32_t>(h.reserved[2]); }
+inline uint64_t getPanelDataOffset(const ERWT3DHeader& h) { return h.reserved[3]; }
+inline uint64_t getPanelIndexOffset(const ERWT3DHeader& h) { return h.reserved[4]; }
+inline uint64_t getPanelStorageBytes(const ERWT3DHeader& h) { return h.reserved[5]; }
+
+inline uint64_t panelPlaneBytes(const ERWT3DHeader& h) {
+    return static_cast<uint64_t>(h.super_y) * h.super_z * sizeof(float);
+}
+inline uint64_t panelsPerSuperblock(const ERWT3DHeader& h, uint32_t stride) {
+    return stride > 0 ? h.super_x / stride : 0;
+}
+inline uint64_t panelBytesPerSuperblock(const ERWT3DHeader& h, uint32_t stride) {
+    return panelsPerSuperblock(h, stride) * panelPlaneBytes(h);
 }
 
 } // namespace erwt3d

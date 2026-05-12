@@ -1,0 +1,5 @@
+dataset,panel_axis,panel_stride,storage_ratio,panel_storage_mb,superblocks,panels_per_sb,plane_kb,notes
+20G,x,4,1.344,4940,19760,16,16.00,X-panels sparse stride=4: 16 of 64 planes per sb
+20G,x,2,~1.614,9879,19760,32,16.00,Estimated: 32 of 64 planes per sb; likely exceeds 1.5x
+20G,x,8,1.209,2470,19760,8,16.00,Estimated: 8 of 64 planes per sb; lower storage but 12.5% hit rate
+50G,x,4,~1.294,13476,52640,16,16.00,Estimated: 52640*16*16384 = 13.47 GB panel data

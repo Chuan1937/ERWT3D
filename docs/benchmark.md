@@ -202,15 +202,44 @@ All results are derived from committed CSV evidence files in `docs/results/`:
 | 50G parallel modes | `docs/results/sb_parallel_modes_50g.csv` |
 | Final settings comparison | `docs/results/sb_final_settings.csv` |
 | Phase profile | `docs/results/sb_phase_profile.csv` |
-| Backend comparison | `docs/results/official_backend_comparison.csv` |
-| Storage & correctness | `docs/results/official_storage_correctness.csv` |
-| Thread/cache matrix | `docs/results/official_thread_cache_matrix.csv` |
+| Panel storage | `docs/results/panel_storage_estimate.csv` |
+| Panel benchmarks | `docs/results/panel_benchmark_20g.csv` |
+| Panel correctness | `docs/results/panel_correctness.csv` |
+| Panel comparison | `docs/results/final_vs_panel_comparison.csv` |
 
-## One-Command Reproduction
+## X Micro-Panel Index (Issue #14)
+
+### Motivation
+
+SB backend reads complete 1 MiB superblocks. For an X-slice, each superblock contributes only a 16 KiB YZ plane — a 64x read amplification. Adding sparse X-plane panels uses the storage budget headroom (1.044x → 1.344x, still below 1.5x) to reduce X-slice I/O.
+
+### Approach
+
+Store every k-th local X-plane per superblock as a compact auxiliary panel. For stride=4, store 16 of 64 planes per superblock (256 KiB per superblock extra).
+
+### Results (20G, parallel-read t8)
+
+| Config | T_x_rand | T_total | Storage |
+|--------|----------|---------|---------|
+| No panels | 155ms | 73ms | 1.075x |
+| X-panels stride=4 | 124ms | 65ms | 1.344x |
+
+X-panels improve T_x_random by 20% and T_total by 11%, using +0.27x storage ratio. Panel reads use the same parallel-read infrastructure (per-thread pread of 16 KiB panels instead of 1 MiB superblocks).
+
+Panel hits occur when `local_x % stride == 0` (25% of random X-slices for stride=4). Misses fall back to standard SB parallel-read.
+
+### Conversion
 
 ```bash
-scripts/run_real_bench.sh data.raw NX NY NZ benchmarks/real
+./build/erwt3d_convert \
+  --input data.raw \
+  --output data_panel.erwt3d \
+  --nx NX --ny NY --nz NZ \
+  --threads 8 --memory-limit-mb 8192 \
+  --panel-axis x --panel-stride 4
 ```
+
+Panel files are backward compatible (old readers open without errors but ignore panel metadata). The `--panel-axis` flag accepts `x`, `y`, `z`; stride must divide the superblock size evenly.
 
 ## Optimization Opportunities
 

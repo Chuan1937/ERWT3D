@@ -17,7 +17,9 @@ bool writeERWT3D(const std::string& outputPath,
                  uint32_t leafY = DEFAULT_LEAF_Y,
                  uint32_t leafZ = DEFAULT_LEAF_Z,
                  int numThreads = 1,
-                 size_t memoryLimitMB = 2048);
+                 size_t memoryLimitMB = 2048,
+                 uint32_t panelAxis = 0,
+                 uint32_t panelStride = 0);
 
 // Write raw float32 data from file to ERWT3D format
 bool writeERWT3DFromFile(const std::string& outputPath,
@@ -30,6 +32,8 @@ bool writeERWT3DFromFile(const std::string& outputPath,
                          uint32_t leafY = DEFAULT_LEAF_Y,
                          uint32_t leafZ = DEFAULT_LEAF_Z,
                          int numThreads = 1,
-                         size_t memoryLimitMB = 2048);
+                         size_t memoryLimitMB = 2048,
+                         uint32_t panelAxis = 0,
+                         uint32_t panelStride = 0);
 
 } // namespace erwt3d

@@ -22,6 +22,17 @@ int main(int argc, char* argv[]) {
     std::cout << "Leaf block size: " << header.leaf_x << " x " << header.leaf_y << " x " << header.leaf_z << std::endl;
     std::cout << "Data offset: " << header.data_offset << " bytes" << std::endl;
     
+    if (erwt3d::hasAnyPanels(header)) {
+        std::cout << "Panels: ";
+        if (erwt3d::hasXPanels(header)) std::cout << "X(stride=" << erwt3d::getPanelStrideX(header) << ") ";
+        if (erwt3d::hasYPanels(header)) std::cout << "Y(stride=" << erwt3d::getPanelStrideY(header) << ") ";
+        if (erwt3d::hasZPanels(header)) std::cout << "Z(stride=" << erwt3d::getPanelStrideZ(header) << ") ";
+        std::cout << std::endl;
+        std::cout << "Panel data offset: " << erwt3d::getPanelDataOffset(header) << " bytes" << std::endl;
+        std::cout << "Panel storage: " << erwt3d::getPanelStorageBytes(header) << " bytes ("
+                  << std::fixed << std::setprecision(2) << erwt3d::getPanelStorageBytes(header) / (1024.0*1024.0) << " MB)" << std::endl;
+    }
+    
     uint64_t rawSize = erwt3d::getRawSize(header);
     std::cout << "Estimated raw size: " << rawSize << " bytes (" 
               << std::fixed << std::setprecision(2) << rawSize / (1024.0 * 1024.0) << " MB)" << std::endl;

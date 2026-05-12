@@ -71,4 +71,8 @@ if(ERWT3D_BUILD_TESTS)
     add_executable(test_sb_parallel_modes tests/test_sb_parallel_modes.cpp)
     target_link_libraries(test_sb_parallel_modes PRIVATE erwt3d)
     add_test(NAME test_sb_parallel_modes COMMAND test_sb_parallel_modes)
+    
+    add_executable(test_panel tests/test_panel.cpp)
+    target_link_libraries(test_panel PRIVATE erwt3d)
+    add_test(NAME test_panel COMMAND test_panel)
 endif()

@@ -45,4 +45,10 @@ bool executeSBPlanSerial(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr
 bool executeSBPlanParallelRead(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr,
                                 float* output, int numThreads, IOProfile* profile);
 
+bool tryReadSliceXPanels(int fd, const ERWT3DHeader& hdr, uint64_t x,
+                          float* output, IOProfile* profile);
+
+bool tryReadSliceXPanelsParallel(int fd, const ERWT3DHeader& hdr, uint64_t x,
+                                  float* output, int numThreads, IOProfile* profile);
+
 } // namespace erwt3d

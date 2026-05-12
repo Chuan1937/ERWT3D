@@ -33,6 +33,8 @@ int main(int argc, char* argv[]) {
     size_t memoryLimitMB = 2048;
     uint32_t superSize = 64;
     uint32_t leafSize = 4;
+    uint32_t panelAxis = 0;
+    uint32_t panelStride = 0;
     
     // Parse arguments
     for (int i = 1; i < argc; ++i) {
@@ -56,6 +58,11 @@ int main(int argc, char* argv[]) {
             superSize = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--leaf-size") == 0 && i + 1 < argc) {
             leafSize = std::stoul(argv[++i]);
+        } else if (std::strcmp(argv[i], "--panel-axis") == 0 && i + 1 < argc) {
+            std::string ax = argv[++i];
+            panelAxis = (ax == "x" || ax == "X") ? 0 : (ax == "y" || ax == "Y") ? 1 : (ax == "z" || ax == "Z") ? 2 : 255;
+        } else if (std::strcmp(argv[i], "--panel-stride") == 0 && i + 1 < argc) {
+            panelStride = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             printUsage(argv[0]);
             return 0;
@@ -97,7 +104,8 @@ int main(int argc, char* argv[]) {
         if (!erwt3d::writeERWT3DFromFile(outputPath, inputPath, nx, ny, nz,
                                          superSize, superSize, superSize,
                                          leafSize, leafSize, leafSize,
-                                         numThreads, memoryLimitMB)) {
+                                         numThreads, memoryLimitMB,
+                                         panelAxis, panelStride)) {
             std::cerr << "Error: Failed to convert raw to ERWT3D" << std::endl;
             return 1;
         }
