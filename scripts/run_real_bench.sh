@@ -102,7 +102,7 @@ for t in 1 2 4 8; do
         --threads "$t" \
         --memory-limit-mb 4096 \
         --cache-mb 0 \
-        --seed "$SEED" 2>&1 | grep -E "T_total|T_random|T_cont" || true
+        --seed "$SEED" 2>&1 | tee "${PREFIX}_erwt3d_t${t}/run.log" | grep -E "T_total|T_random|T_cont" || true
     echo "  Saved to ${PREFIX}_erwt3d_t${t}/bench_result.csv"
 done
 

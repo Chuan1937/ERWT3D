@@ -20,6 +20,14 @@ def read_bench_csv(path):
 def balance_ratio(vals):
     return max(vals) / min(vals) if min(vals) > 0 else float('inf')
 
+def calc_t_total(data):
+    """Compute T_total = (random_avg + cont_avg) / 2 (matches docs/benchmark.md)."""
+    xr = data.get('x_random', 0); yr = data.get('y_random', 0); zr = data.get('z_random', 0)
+    xc = data.get('x_continuous', 0); yc = data.get('y_continuous', 0); zc = data.get('z_continuous', 0)
+    random_avg = (xr + yr + zr) / 3
+    cont_avg = (xc + yc + zc) / 3
+    return (random_avg + cont_avg) / 2
+
 def analyze(files, output_dir):
     configs = {}
     for name, path in files.items():
@@ -48,17 +56,15 @@ def analyze(files, output_dir):
                     f"{xc:.2f},{yc:.2f},{zc:.2f},{cavg:.2f},{ttotal:.2f},"
                     f"{balance_ratio([xr,yr,zr]):.2f},{balance_ratio([xc,yc,zc]):.2f}\n")
 
-    # Thread scaling: looks for erwt3d_t1 through erwt3d_t8 in configs
+    # Thread scaling: uses T_total formula (same as docs)
     with open(f"{output_dir}/thread_scaling.csv", "w") as f:
         f.write("threads,T_total_ms,speedup\n")
-        t1_data = configs.get('erwt3d_t1', {})
-        t1_total = t1_data.get('x_random_total',0) + t1_data.get('y_random_total',0) + t1_data.get('z_random_total',0)
+        base = calc_t_total(configs.get('erwt3d_t1', {})) if 'erwt3d_t1' in configs else 1
         for t in [1, 2, 4, 8]:
             name = f'erwt3d_t{t}'
             if name in configs:
-                d = configs[name]
-                total = d.get('x_random_total',0) + d.get('y_random_total',0) + d.get('z_random_total',0)
-                speedup = t1_total / total if t1_total > 0 and total > 0 else 0
+                total = calc_t_total(configs[name])
+                speedup = base / total if base > 0 and total > 0 else 0
                 f.write(f"{t},{total:.2f},{speedup:.2f}\n")
 
     # Cache comparison
