@@ -195,8 +195,11 @@ This provides:
 
 | Dataset | Backend | Threads | T_total | Storage Ratio | Correctness | Speedup |
 |---------|---------|---------|---------|---------------|-------------|---------|
-| **20G** (801x2405x2501) | **sb parallel-read** | **8** | **65ms** | 1.344x | passed | **3.83x** |
-| **50G** (2001x2201x3000) | **sb parallel-read** | **8** | **300ms** | 1.044x | passed | **2.57x** |
+| Config | Threads | T_total | Storage | Notes |
+|--------|---------|---------|---------|-------|
+| **20G** X-panels t=6 | 6 | **61ms** | 1.344x | Optimal (t=4-6 best) |
+| **50G** parallel-read t=4 | 4 | **111ms** | 1.044x | Optimal T_x (118ms); t=8 gives 108ms T_total |
+| --threads auto | hw/2 | — | — | Auto-select physical core count |
 | 20G (+X-panels) | sb parallel-read | 8 | 65ms | 1.344x | passed | 3.83x |
 
 **20G recommended**: sb parallel-read t8 with X-panels stride=4. **50G**: sb parallel-read t8 (panels not yet benchmarked on 50G).
