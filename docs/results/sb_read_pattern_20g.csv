@@ -1,4 +1,4 @@
-axis,mode,superblocks_touched,pread_calls,bytes_read_MB,contiguous_run_count,avg_run_bytes,avg_run_superblocks,max_run_bytes,read_wall_ms,unpack_ms,write_ms,notes
-x,random,1520,1520,1593.8,1520,1.05,1,1.05,~650,~5,~10,no contiguous runs in X-slice Morton layout
-y,random,1504,1504,1577.1,1504,1.05,1,1.05,~500,~4,~9,--
-z,random,1120,1120,1174.4,38,30.9,29.5,0,~400,~3,~7,Z-slice benefits most from run-batching potential
+axis,mode,superblocks_touched,pread_calls,bytes_read_MB,contiguous_run_count,avg_run_MB,avg_run_superblocks,max_run_MB,notes
+x,random,494,494,518.0,494,1.05,1,1.05,X-slice: no contiguous runs in Morton layout
+y,random,494,494,518.0,494,1.05,1,1.05,Y-slice: sgX=13 contiguous per row
+z,random,494,494,518.0,38,13.65,13,13.65,Z-slice: 38 runs of 13 superblocks each

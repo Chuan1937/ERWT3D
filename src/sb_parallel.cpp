@@ -375,8 +375,8 @@ bool executeSBPlanRunBatch(int fd, const SBTaskPlan& plan, const ERWT3DHeader& h
     size_t maxRunBytes = 0;
     for (const auto& r : runs) maxRunBytes = std::max(maxRunBytes, r.bytes);
     size_t maxBufPerThread = memoryLimitMB * 1024ULL * 1024ULL / static_cast<size_t>(numThreads);
-    maxBufPerThread = std::min(maxBufPerThread, std::max(maxRunBytes * 2, sbBV * 4));
-    if (maxBufPerThread < sbBV) maxBufPerThread = sbBV * 2;
+    if (maxBufPerThread < sbBV) return false; // memory limit too small for one superblock
+    maxBufPerThread = std::min(maxBufPerThread, std::max(maxRunBytes, sbBV * 4));
 
     auto processRuns = [&](size_t startR, size_t endR) -> bool {
         std::vector<uint8_t> buf(maxBufPerThread);

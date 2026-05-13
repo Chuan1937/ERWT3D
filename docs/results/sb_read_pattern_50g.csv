@@ -1,4 +1,4 @@
-axis,mode,superblocks_touched,pread_calls,bytes_read_MB,contiguous_run_count,avg_run_bytes,avg_run_superblocks,max_run_bytes,read_wall_ms,unpack_ms,write_ms,notes
-x,random,1520,1520,1593.8,1520,1.05,1,1.05,659,5.9,12.8,X-slice: no contiguous superblocks (Morton layout); 1 pread/sb
-y,random,1504,1504,1577.1,1504,1.05,1,1.05,505,4.0,9.1,Y-slice: sgX-contiguous runs; currently 1 pread/sb
-z,random,1120,1120,1174.4,38,30.9,29.5,0,409,2.6,6.7,Z-slice: sgX-contiguous runs (13-32 sbs/run); currently 1 pread/sb
+axis,mode,superblocks_touched,pread_calls,bytes_read_MB,contiguous_run_count,avg_run_MB,avg_run_superblocks,max_run_MB,notes
+x,random,1520,1520,1593.8,1520,1.05,1,1.05,X-slice: no contiguous runs in Morton layout
+y,random,1504,1504,1577.1,1504,1.05,1,1.05,Y-slice: sgX-contiguous potential
+z,random,1120,1120,1174.4,38,30.9,29.5,32.0,Z-slice: sgX-contiguous runs; 38 runs of up to 32 superblocks each
