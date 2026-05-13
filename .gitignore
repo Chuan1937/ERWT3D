@@ -2,3 +2,4 @@
 /build/
 /build_dbg
 benchmarks/
+*.DS_Store
