@@ -44,6 +44,9 @@ target_link_libraries(erwt3d_verify PRIVATE erwt3d)
 add_executable(erwt3d_bench tools/erwt3d_bench.cpp)
 target_link_libraries(erwt3d_bench PRIVATE erwt3d)
 
+add_executable(erwt3d_line tools/erwt3d_line.cpp)
+target_link_libraries(erwt3d_line PRIVATE erwt3d)
+
 add_executable(gen_test_data tools/gen_test_data.cpp)
 
 add_executable(erwt3d_bench_raw tools/erwt3d_bench_raw.cpp)
@@ -75,4 +78,8 @@ if(ERWT3D_BUILD_TESTS)
     add_executable(test_panel tests/test_panel.cpp)
     target_link_libraries(test_panel PRIVATE erwt3d)
     add_test(NAME test_panel COMMAND test_panel)
+    
+    add_executable(test_line_reads tests/test_line_reads.cpp)
+    target_link_libraries(test_line_reads PRIVATE erwt3d)
+    add_test(NAME test_line_reads COMMAND test_line_reads)
 endif()
