@@ -176,13 +176,16 @@ This provides:
 
 ### Official Benchmark Results (100 random + 10 continuous slices)
 
-| Dataset | Backend | Threads | T_total | Storage Ratio | Correctness | Speedup |
-|---------|---------|---------|---------|---------------|-------------|---------|
-| **20G** (801x2405x2501) | **sb parallel-read** | **8** | **65ms** | 1.344x | passed | **3.83x** |
-| **50G** (2001x2201x3000) | **sb parallel-read** | **8** | **300ms** | 1.044x | passed | **2.57x** |
-| 20G (+X-panels) | sb parallel-read | 8 | 65ms | 1.344x | passed | 3.83x |
+| Dataset | Config | T_total | Storage | Decision |
+|---------|--------|---------|---------|----------|
+| **20G** | sb parallel-read t8 + X-panels | **65ms** | 1.344x | **Recommended** |
+| **50G** | sb parallel-read t8 | **300ms** | 1.044x | **Recommended** |
+| 20G | sb parallel-read t8 | 73ms | 1.075x | baseline |
+| 50G | sb parallel-read t8 + X-panels | 318ms | 1.306x | rejected |
 
-**20G recommended**: sb parallel-read t8 with X-panels stride=4. **50G**: sb parallel-read t8 (panels not yet benchmarked on 50G).
+**Per-dataset final recommendation:**
+- **20G**: X-panels stride=4 (11% T_total improvement; X is the bottleneck)
+- **50G**: No panels (Y is the bottleneck, X-panels give +6% regression; lighter storage)
 
 **Storage budget**: 1.044x–1.344x, below the 1.5x limit.
 

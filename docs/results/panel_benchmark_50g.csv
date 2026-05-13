@@ -1,0 +1,3 @@
+dataset,config,panel_axis,panel_stride,threads,memory_limit_mb,cache_mb,cache_condition,T_x_random,T_y_random,T_z_random,T_random_avg,T_x_cont,T_y_cont,T_z_cont,T_cont_avg,T_total,storage_ratio,notes
+50G,sb parallel-read t8,None,0,8,8192,0,warm,498.64,563.37,377.45,479.82,133.83,148.63,79.39,120.61,300.22,1.044,baseline (PR #13); Y is the slowest axis
+50G,sb parallel-read t8,x,4,8,8192,0,warm,699.36,505.45,338.76,514.52,128.42,145.60,87.86,120.63,317.58,1.306,X-panels: +6% T_total regression; larger file hurts cache
