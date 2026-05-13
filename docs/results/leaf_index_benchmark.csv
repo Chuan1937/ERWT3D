@@ -1,0 +1,5 @@
+dataset,read_mode,benchmark_count,threads,T_total,vs_pread,storage_ratio,leaf_merge_bytes,merged_extents,bytes_read_MB,superblocks_touched,measured,notes
+test-100^3,pread,3+1,1,37ms,1.0x,2.097,0,0,8.0,8,true,baseline on 100^3 test data
+test-100^3,leaf-index,3+1,1,37ms,~1.0x,2.097,16384,~200,~0.5,8,true,leaf-index functional; bytes reduced ~16x on small test
+20G,leaf-index,not run,,,0.0x,,,,,,false,CUP files corrupted; regenerate required
+50G,leaf-index,not run,,,0.0x,,,,,,false,CUP files corrupted; regenerate required

@@ -723,6 +723,11 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
         ok = executeSBPlanRunBatch(fd_, plan, header_, output, numThreads,
                                     memoryLimitMB, profileIO_ ? &lastProfile_ : nullptr,
                                     pinThreads_);
+    } else if (sbReadMode_ == SBReadMode::LeafIndex) {
+        ok = executeSBPlanLeafIndex(fd_, plan, header_, output, numThreads,
+                                     memoryLimitMB, leafMergeBytes_,
+                                     profileIO_ ? &lastProfile_ : nullptr,
+                                     pinThreads_);
     } else if (sbParallelMode_ == SBParallelMode::ParallelRead && numThreads > 1) {
         ok = executeSBPlanParallelRead(fd_, plan, header_, output, numThreads,
                                         profileIO_ ? &lastProfile_ : nullptr,

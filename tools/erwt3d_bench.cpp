@@ -55,7 +55,8 @@ void printUsage(const char* progName) {
     std::cerr << "  --io-backend MODE     I/O backend: pread, sb (default: pread)" << std::endl;
     std::cerr << "  --sb-parallel-mode M  SB parallel mode: serial, parallel-read (default: serial)" << std::endl;
     std::cerr << "  --sb-schedule MODE    SB task schedule: static, dynamic (default: static)" << std::endl;
-    std::cerr << "  --sb-read-mode MODE   SB read mode: pread, run-batch (default: pread)" << std::endl;
+    std::cerr << "  --sb-read-mode MODE   SB read mode: pread, run-batch, leaf-index (default: pread)" << std::endl;
+    std::cerr << "  --leaf-merge-bytes N   Leaf-index merge extent size (default: 4096)" << std::endl;
     std::cerr << "  --profile-io          Enable per-slice I/O phase profiling (writes io_profile.csv)" << std::endl;
     std::cerr << "  --pin-threads         Pin worker threads to CPU cores (Linux only)" << std::endl;
     std::cerr << "  --seed N              Random seed (default: 20260511)" << std::endl;
@@ -74,6 +75,7 @@ int main(int argc, char* argv[]) {
     std::string sbParallelModeStr = "serial";
     std::string sbScheduleStr = "static";
     std::string sbReadModeStr = "pread";
+    size_t leafMergeBytes = 4096;
     bool profileIO = false;
     bool pinThreads = false;
     
@@ -108,6 +110,8 @@ int main(int argc, char* argv[]) {
             sbScheduleStr = argv[++i];
         } else if (std::strcmp(argv[i], "--sb-read-mode") == 0 && i + 1 < argc) {
             sbReadModeStr = argv[++i];
+        } else if (std::strcmp(argv[i], "--leaf-merge-bytes") == 0 && i + 1 < argc) {
+            leafMergeBytes = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--profile-io") == 0) {
             profileIO = true;
         } else if (std::strcmp(argv[i], "--pin-threads") == 0) {
@@ -170,8 +174,11 @@ int main(int argc, char* argv[]) {
     
     if (sbReadModeStr == "run-batch") {
         reader.setSBReadMode(erwt3d::SBReadMode::RunBatch);
+    } else if (sbReadModeStr == "leaf-index") {
+        reader.setSBReadMode(erwt3d::SBReadMode::LeafIndex);
+        reader.setLeafMergeBytes(leafMergeBytes);
     } else if (sbReadModeStr != "pread") {
-        std::cerr << "Error: Unknown --sb-read-mode: " << sbReadModeStr << " (valid: pread, run-batch)" << std::endl;
+        std::cerr << "Error: Unknown --sb-read-mode: " << sbReadModeStr << " (valid: pread, run-batch, leaf-index)" << std::endl;
         return 1;
     }
     reader.setProfileIO(profileIO);

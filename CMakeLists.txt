@@ -104,6 +104,10 @@ if(ERWT3D_BUILD_TESTS)
     target_link_libraries(test_sb_read_modes PRIVATE erwt3d)
     add_test(NAME test_sb_read_modes COMMAND test_sb_read_modes)
     
+    add_executable(test_leaf_index tests/test_leaf_index.cpp)
+    target_link_libraries(test_leaf_index PRIVATE erwt3d)
+    add_test(NAME test_leaf_index COMMAND test_leaf_index)
+    
     add_executable(test_line_reads tests/test_line_reads.cpp)
     target_link_libraries(test_line_reads PRIVATE erwt3d)
     add_test(NAME test_line_reads COMMAND test_line_reads)

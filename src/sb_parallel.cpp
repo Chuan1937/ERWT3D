@@ -441,6 +441,113 @@ bool executeSBPlanRunBatch(int fd, const SBTaskPlan& plan, const ERWT3DHeader& h
     return true;
 }
 
+bool executeSBPlanLeafIndex(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr,
+                             float* output, int numThreads, size_t memoryLimitMB,
+                             size_t leafMergeBytes, IOProfile* profile, bool pinThreads) {
+    const uint64_t sbBV = sbBytes(hdr);
+    const uint64_t lfBV = lfBytes(hdr);
+    if (leafMergeBytes < lfBV*2) leafMergeBytes = lfBV * 16; // default 4KB
+
+    // Build leaf offset list from the plan
+    struct LeafOff { uint64_t off; const SBTask* task; uint16_t leafIdx; };
+    std::vector<LeafOff> leafOffs;
+    for (const auto& task : plan.tasks) {
+        for (uint16_t li = 0; li < task.leaf_count; ++li) {
+            uint64_t ldOff = task.first_leaf + li; // leaf_data index (not byte offset)
+            leafOffs.push_back({task.file_offset + plan.leaf_data[ldOff*4] * lfBV, &task, li});
+        }
+    }
+    if (leafOffs.empty()) return true;
+
+    // Sort by file offset
+    std::sort(leafOffs.begin(), leafOffs.end(), [](const LeafOff& a, const LeafOff& b) { return a.off < b.off; });
+
+    // Build merged extents
+    struct Ext { uint64_t off, size; size_t firstLeaf, leafCount; };
+    std::vector<Ext> extents;
+    for (size_t i = 0; i < leafOffs.size(); ) {
+        Ext e; e.off = leafOffs[i].off; e.size = lfBV; e.firstLeaf = i; e.leafCount = 1;
+        while (i + e.leafCount < leafOffs.size() &&
+               leafOffs[i+e.leafCount].off <= e.off + e.size &&
+               e.size + lfBV <= leafMergeBytes) {
+            e.size += lfBV; ++e.leafCount;
+        }
+        extents.push_back(e); i += e.leafCount;
+    }
+
+    // Execute
+    uint64_t totalRead = 0, totalCalls = extents.size();
+    auto processExtents = [&](size_t start, size_t end) -> bool {
+        std::vector<uint8_t> buf(leafMergeBytes * 2);
+        for (size_t ei = start; ei < end; ++ei) {
+            const auto& ext = extents[ei];
+            if (ext.size > buf.size()) buf.resize(ext.size);
+            if (pread(fd, buf.data(), ext.size, ext.off) != static_cast<ssize_t>(ext.size))
+                return false;
+            for (size_t li = 0; li < ext.leafCount; ++li) {
+                const auto& lo = leafOffs[ext.firstLeaf + li];
+                // Create single-leaf task to avoid unpacking all leaves
+                SBTask oneLeaf = *lo.task;
+                oneLeaf.first_leaf = static_cast<uint32_t>(lo.task->first_leaf + lo.leafIdx);
+                oneLeaf.leaf_count = 1;
+                uint64_t leafOffInBuf = lo.off - ext.off;
+                // The leaf data at this offset: the buffer starts at the leaf block
+                // unpackLeaves expects the buffer to contain the full superblock
+                // We have only the leaf block. Use manual extraction instead.
+                uint64_t ldOff = oneLeaf.first_leaf * 4;
+                uint64_t morton = plan.leaf_data[ldOff];
+                uint64_t param  = plan.leaf_data[ldOff + 3];
+                uint32_t loOff = static_cast<uint32_t>(oneLeaf.first_leaf) * 4;
+                uint32_t out_base = plan.leaf_out[loOff];
+                uint32_t out_stride = plan.leaf_out[loOff + 1];
+                uint32_t v_inner = plan.leaf_out[loOff + 2];
+                uint32_t v_outer = plan.leaf_out[loOff + 3];
+                const float* leaf = reinterpret_cast<const float*>(buf.data() + leafOffInBuf);
+                const uint64_t lx=hdr.leaf_x, ly=hdr.leaf_y;
+                if (plan.axis == 2) { // Z
+                    uint64_t srcBase = param * ly;
+                    for (uint32_t v = 0; v < v_outer; ++v)
+                        for (uint32_t u = 0; u < v_inner; ++u)
+                            output[out_base + v*out_stride + u] = leaf[(srcBase+v)*lx + u];
+                } else if (plan.axis == 1) { // Y
+                    for (uint32_t v = 0; v < v_outer; ++v)
+                        for (uint32_t u = 0; u < v_inner; ++u)
+                            output[out_base + v*out_stride + u] = leaf[(v*ly+param)*lx + u];
+                } else { // X
+                    for (uint32_t v = 0; v < v_outer; ++v)
+                        for (uint32_t u = 0; u < v_inner; ++u)
+                            output[out_base + v*out_stride + u] = leaf[(v*ly)*lx + param + u*lx];
+                }
+            }
+        }
+        return true;
+    };
+
+    if (numThreads <= 1) {
+        if (!processExtents(0, extents.size())) return false;
+    } else {
+        ThreadPool pool(static_cast<size_t>(numThreads), pinThreads);
+        std::vector<std::future<bool>> futures;
+        size_t ne = extents.size();
+        for (int t = 0; t < numThreads; ++t) {
+            futures.push_back(pool.submit([&, t]() -> bool {
+                size_t s = t * ne / numThreads, e = (t+1) * ne / numThreads;
+                return processExtents(s, e);
+            }));
+        }
+        pool.waitAll();
+        for (auto& f : futures) if (!f.get()) return false;
+    }
+
+    if (profile) {
+        profile->superblocks_touched = plan.superblocks_touched;
+        profile->pread_calls = totalCalls;
+        profile->bytes_read = 0; for (auto&e:extents) profile->bytes_read += e.size;
+        profile->output_bytes = plan.output_bytes;
+    }
+    return true;
+}
+
 bool tryReadSliceXPanels(int fd, const ERWT3DHeader& hdr, uint64_t x,
                           float* output, IOProfile* profile) {
     if (!hasXPanels(hdr)) return false;

@@ -13,6 +13,7 @@ enum class SBSchedule {
 enum class SBReadMode {
     PRead,     // per-superblock pread (default)
     RunBatch,  // batch contiguous superblock runs into single pread
+    LeafIndex, // read only needed leaf blocks, merge into extents
 };
 
 struct SBTask {
@@ -61,6 +62,10 @@ bool executeSBPlanParallelRead(int fd, const SBTaskPlan& plan, const ERWT3DHeade
 bool executeSBPlanRunBatch(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr,
                             float* output, int numThreads, size_t memoryLimitMB,
                             IOProfile* profile, bool pinThreads = false);
+
+bool executeSBPlanLeafIndex(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr,
+                             float* output, int numThreads, size_t memoryLimitMB,
+                             size_t leafMergeBytes, IOProfile* profile, bool pinThreads = false);
 
 bool tryReadSliceXPanels(int fd, const ERWT3DHeader& hdr, uint64_t x,
                           float* output, IOProfile* profile);
