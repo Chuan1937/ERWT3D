@@ -1,10 +1,9 @@
-layout,axis,blocks_touched,bytes_read,slice_bytes,read_amplification,contiguous_runs,metadata_MB,storage_total_MB,storage_ratio,evaluation
-sb-default,x,494,1593.8MB,24.1MB,66.2x,494,0,20719.9,1.080,baseline; reads entire 1MB superblocks
-sb-default,y,494,545.3MB,8.0MB,68.0x,494,0,20719.9,1.080,-
-sb-default,z,494,518.0MB,7.7MB,67.2x,494,0,20719.9,1.080,-
-sb+xpanel-s4,x,494,1593.8MB,24.1MB,66.2x,494,0,25899.9,1.340,panels only help 25% of X queries
-leaf-index,x,389120,99.6MB,24.1MB,4.1x,389120,1261,21708.9,1.110,16x less bytes; 389k small reads vs 494 large
-leaf-index,y,83200,34.1MB,8.0MB,4.2x,83200,1261,21708.9,1.110,-
-leaf-index,z,52288,32.4MB,7.7MB,4.2x,52288,1261,21708.9,1.110,-
-microblock-16,x,389120,388.4MB,24.1MB,16.1x,389120,3,20650.9,1.030,moderate improvement
-microblock-32,x,97280,787.0MB,24.1MB,32.7x,97280,1,20730.9,1.060,minimal improvement
+layout,axis,blocks_touched,bytes_read_MB,read_amplification,contiguous_runs,storage_ratio,leaf_count,merged_16KB,est_syscalls,panel_expected_MB,evaluation
+sb-default,x,494,1593.8,66.25x,494,1.080,0,0,0,0.0,baseline; reads entire 1MB superblocks
+sb-default,y,494,545.3,68.05x,38,1.080,0,0,0,0.0,-
+sb-xpanel-s4,x,494,1593.8,66.25x,494,1.340,0,0,0,1201.6,25% hit rate; expected bytes accounts for hit/miss; 1.34x storage
+sb-xypanel-s4,x,494,1593.8,66.25x,494,1.610,0,0,0,1201.6,exceeds 1.5x storage limit
+leaf-index,x,389120,99.6,4.14x,6080,1.110,389120,6080,6080,0.0,16x bytes reduction! 389k leaves merged to 6k extents at 16KB
+leaf-index,y,133120,34.1,4.25x,2080,1.110,133120,2080,2080,0.0,-
+leaf-index,z,126464,32.4,4.20x,1976,1.110,126464,1976,1976,0.0,-
+microblock-16,x,389120,388.4,16.14x,389120,1.030,0,0,0,0.0,4x reduction vs SB; many small reads
