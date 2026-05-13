@@ -1,0 +1,2 @@
+dataset,test,panel_axis,panel_stride,max_abs_error,max_rel_error,num_failed,passed,verify_method,notes
+50G,panel_correctness,x,4,0,0,0,true,streaming 100k samples,lossless; identical to raw reference

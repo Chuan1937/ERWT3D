@@ -143,11 +143,31 @@ For rapid iteration during development:
   --seed 20260511
 ```
 
-### Final Competition Mode
+### Final Competition Mode — 50G
+
+For 50G, no panels (Y is the bottleneck, X-panels don't help):
 
 ```bash
 ./build/erwt3d_bench \
   --input data.erwt3d \
+  --output-dir final_bench \
+  --random-count 100 \
+  --continuous-count 10 \
+  --threads 8 \
+  --memory-limit-mb 8192 \
+  --cache-mb 0 \
+  --io-backend sb \
+  --sb-parallel-mode parallel-read \
+  --seed 20260511
+```
+
+### Final Competition Mode — 20G
+
+For 20G, X-panels stride=4 recommended (X is the bottleneck, 11% improvement):
+
+```bash
+./build/erwt3d_bench \
+  --input data_xpanel.erwt3d \
   --output-dir final_bench \
   --random-count 100 \
   --continuous-count 10 \
@@ -204,6 +224,10 @@ All results are derived from committed CSV evidence files in `docs/results/`:
 | Phase profile | `docs/results/sb_phase_profile.csv` |
 | Panel storage | `docs/results/panel_storage_estimate.csv` |
 | Panel benchmarks | `docs/results/panel_benchmark_20g.csv` |
+| Panel benchmarks 50G | `docs/results/panel_benchmark_50g.csv` |
+| Panel hit rate 50G | `docs/results/panel_hit_rate_50g.csv` |
+| Panel correctness 50G | `docs/results/panel_correctness_50g.csv` |
+| Final panel decision | `docs/results/final_panel_decision.csv` |
 | Panel correctness | `docs/results/panel_correctness.csv` |
 | Panel comparison | `docs/results/final_vs_panel_comparison.csv` |
 | Line benchmarks 20G | `docs/results/line_benchmark_20g.csv` |
@@ -220,16 +244,20 @@ SB backend reads complete 1 MiB superblocks. For an X-slice, each superblock con
 
 Store every k-th local X-plane per superblock as a compact auxiliary panel. For stride=4, store 16 of 64 planes per superblock (256 KiB per superblock extra).
 
-### Results (20G, parallel-read t8)
+### Results (20G: improvement; 50G: no benefit)
 
-| Config | T_x_rand | T_total | Storage |
-|--------|----------|---------|---------|
-| No panels | 155ms | 73ms | 1.075x |
-| X-panels stride=4 | 124ms | 65ms | 1.344x |
+| Dataset | Config | T_x_rand | T_total | Storage | Decision |
+|---------|--------|----------|---------|---------|----------|
+| 20G | No panels | 155ms | 73ms | 1.075x | — |
+| 20G | X-panels stride=4 | 124ms | 65ms | 1.344x | **Recommend** (11% gain) |
+| 50G | No panels | 499ms | 300ms | 1.044x | **Recommend** (baseline) |
+| 50G | X-panels stride=4 | 699ms | 318ms | 1.306x | Reject (+6% regression) |
 
-X-panels improve T_x_random by 20% and T_total by 11%, using +0.27x storage ratio. Panel reads use the same parallel-read infrastructure (per-thread pread of 16 KiB panels instead of 1 MiB superblocks).
-
-Panel hits occur when `local_x % stride == 0` (25% of random X-slices for stride=4). Misses fall back to standard SB parallel-read.
+**Why X-panels help 20G but not 50G:**
+- 20G: X is the slowest axis (155ms vs 40–45ms Y/Z). Reducing X read amplification directly improves T_total.
+- 50G: Y is the slowest axis (563ms). Optimizing X alone cannot improve the overall score.
+- The larger panel file (69GB vs 55GB) increases page-cache pressure, worsening Y/Z performance slightly.
+- Hit rate with stride=4 is 24–25%. Only 1/4 of X-slices benefit.
 
 ### Conversion
 

@@ -193,22 +193,16 @@ This provides:
 
 ### Official Benchmark Results (100 random + 10 continuous slices)
 
-| Dataset | Config | Threads | T_total | Storage | Correctness |
-|---------|--------|---------|---------|---------|-------------|
-| **20G** (801x2405x2501) | sb parallel-read + X-panels | 6 | **65ms** | 1.344x | passed |
-| **50G** (2001x2201x3000) | sb parallel-read | 8 | **300ms** | 1.044x | passed |
+| Dataset | Config | T_total | Storage | Decision |
+|---------|--------|---------|---------|----------|
+| **20G** | sb parallel-read t8 + X-panels | **65ms** | 1.344x | **Recommended** |
+| **50G** | sb parallel-read t8 | **300ms** | 1.044x | **Recommended** |
+| 20G | sb parallel-read t8 | 73ms | 1.075x | baseline |
+| 50G | sb parallel-read t8 + X-panels | 318ms | 1.306x | rejected |
 
-### Thread Scaling (reduced 20+5 benchmarks)
-
-| Dataset | Best threads | T_total (20+5) | T_x_random (20+5) | Notes |
-|---------|-------------|----------------|-------------------|-------|
-| 20G | 4–6 | 61ms | 122ms | HyperThreading (12+) hurts; t=6 optimal |
-| 50G | 4–8 | 108ms | 119ms (t=4) | t=8 best T_total; t=4 best X-axis |
-| --threads auto | min(hw/2, 8) | — | — | Safer heuristic; manual tuning preferred |
-
-**Final recommendations:**
-- **20G**: X-panels stride=4, sb parallel-read, threads=6
-- **50G**: No panels, sb parallel-read, threads=8
+**Per-dataset final recommendation:**
+- **20G**: X-panels stride=4 (11% T_total improvement; X is the bottleneck)
+- **50G**: No panels (Y is the bottleneck, X-panels give +6% regression; lighter storage)
 
 **Storage budget**: 1.044x–1.344x, below the 1.5x limit.
 
