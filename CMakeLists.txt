@@ -18,14 +18,18 @@ if(ERWT3D_NATIVE_OPT)
         message(WARNING "ERWT3D_NATIVE_OPT is intended for Release builds; current: ${CMAKE_BUILD_TYPE}")
     endif()
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        add_compile_options(-O3 -march=native -mtune=native)
+        add_compile_options(
+            $<$<CONFIG:Release>:-O3>
+            $<$<CONFIG:Release>:-march=native>
+            $<$<CONFIG:Release>:-mtune=native>
+        )
         include(CheckIPOSupported)
         check_ipo_supported(RESULT ipo_supported)
         if(ipo_supported)
             set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
         endif()
     endif()
-    message(STATUS "Native optimization enabled: -O3 -march=native -mtune=native")
+    message(STATUS "Native optimization enabled (Release only): -O3 -march=native -mtune=native")
 endif()
 
 # Library sources

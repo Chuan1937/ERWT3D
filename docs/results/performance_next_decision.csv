@@ -1,6 +1,6 @@
 dataset,current_best,next_experiment,result,decision,final_command,notes
 20G,dynamic schedule + X-panels t8,T_total=60ms further improvements,no clear bottleneck remaining,keep current best,20G: --sb-schedule dynamic --sb-parallel-mode parallel-read --threads 8 X-panel s4,dynamic schedule and X-panels already provide 3.8x over serial
 50G,static schedule t8,dynamic schedule,351ms dynamic worse than 315ms static (+12%),keep static schedule,50G: --sb-parallel-mode parallel-read --threads 8,atomic contention increases with ~52k tasks/slice
-50G,static schedule t8,Y-axis acceleration,not tested,deferred,Y needs separate investigation as dominant bottleneck (511ms vs 365ms Z)
+50G,static schedule t8,Y-axis acceleration,X/Y random are the main bottlenecks (X=531ms Y=511ms in static; X=684ms Y=524ms in dynamic),deferred,next optimization should target X/Y jointly via preadv batching or io_uring
 both,native build,-march=native,not tested,deferred,CMake flag available as ERWT3D_NATIVE_OPT,build with -DERWT3D_NATIVE_OPT=ON for local optimization
 both,pin-threads,pthread_setaffinity,not tested,implementation complete but /tmp full prevented test,--pin-threads flag ready for future benchmarking
