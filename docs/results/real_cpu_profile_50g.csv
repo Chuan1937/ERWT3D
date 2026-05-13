@@ -1,0 +1,2 @@
+dataset,benchmark_count,threads,config,T_total,user_time_sec,sys_time_sec,cpu_pct,wall_sec,max_rss_kb,minor_faults,major_faults,vol_ctx_sw,invol_ctx_sw,fs_inputs,fs_outputs,tool,notes
+50G,5+2,8,static,23.86,0.94,13.15,59,23.86,76072,35860,0,18458,218,34.8M,930K,time -v,no-panel static; syscall overhead dominates at 13.2s sys vs 0.94s user

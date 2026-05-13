@@ -1,6 +1,6 @@
 dataset,current_best,next_experiment,result,decision,final_command,notes
-20G,dynamic schedule + X-panels t8,T_total=60ms further improvements,no clear bottleneck remaining,keep current best,20G: --sb-schedule dynamic --sb-parallel-mode parallel-read --threads 8 X-panel s4,dynamic schedule and X-panels already provide 3.8x over serial
-50G,static schedule t8,dynamic schedule,351ms dynamic worse than 315ms static (+12%),keep static schedule,50G: --sb-parallel-mode parallel-read --threads 8,atomic contention increases with ~52k tasks/slice
-50G,static schedule t8,Y-axis acceleration,X/Y random are the main bottlenecks (X=531ms Y=511ms in static; X=684ms Y=524ms in dynamic),deferred,next optimization should target X/Y jointly via preadv batching or io_uring
-both,native build,-march=native,not tested,deferred,CMake flag available as ERWT3D_NATIVE_OPT,build with -DERWT3D_NATIVE_OPT=ON for local optimization
-both,pin-threads,pthread_setaffinity,not tested,implementation complete but /tmp full prevented test,--pin-threads flag ready for future benchmarking
+20G,dynamic schedule + X-panels t8,output write profiling,write <10% of total,no optimization needed,20G: --sb-schedule dynamic --sb-parallel-mode parallel-read --threads 8 --pin-threads X-panel s4,pinning improves 20% (78->63ms at 20+5)
+50G,static schedule t8,dynamic schedule,351ms worse than 315ms static,keep static schedule,--,dynamic backfired on 50G
+50G,static schedule t8,pin-threads,2.22x speedup (607->273ms at 20+5),recommend --pin-threads,50G: --sb-parallel-mode parallel-read --threads 8 --pin-threads,pinning eliminates thread migration overhead with 50G working set
+both,both,SYSCALL bottleneck,20G sys=7.4s user=0.6s; 50G sys=13.2s user=0.9s,next: preadv batching or io_uring to reduce syscall count,time -v confirms pread() dominates CPU time,propose preadv run batching or io_uring as next optimization issue
+both,native build,-march=native,not tested,deferred,CMake flag available as ERWT3D_NATIVE_OPT=ON,may help syscall-heavy workloads
