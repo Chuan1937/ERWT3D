@@ -1,0 +1,5 @@
+dataset,schedule,threads,T_x_random,T_total,vs_static,measured,notes
+20G,static,8,123.64,70.96,1.00x,true,full 100+10 baseline
+20G,dynamic,8,86.68,60.44,1.17x,true,dynamic 15% faster; atomic counter reduces mutex contention
+50G,static,8,530.73,314.94,1.00x,true,full 100+10 baseline (from #21)
+50G,dynamic,8,not measured,not measured,not measured,false,50G dynamic scheduling not measured; static remains recommended

@@ -2,6 +2,7 @@
 #include "erwt3d/morton.hpp"
 #include "erwt3d/thread_pool.hpp"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <unistd.h>
 
@@ -257,66 +258,90 @@ bool executeSBPlanSerial(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr
 }
 
 bool executeSBPlanParallelRead(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr,
-                                float* output, int numThreads, IOProfile* profile) {
+                                float* output, int numThreads, IOProfile* profile,
+                                SBSchedule schedule) {
     const uint64_t sbBV = sbBytes(hdr);
     size_t n = plan.tasks.size();
     if (n == 0) return true;
     if (numThreads <= 1) return executeSBPlanSerial(fd, plan, hdr, output, profile);
 
+    if (schedule == SBSchedule::Dynamic) {
+        const size_t chunkSize = 4;
+        auto nextIdx = std::make_shared<std::atomic<size_t>>(0);
+        ThreadPool pool(static_cast<size_t>(numThreads));
+        std::vector<std::future<bool>> futures;
+        std::vector<double> dynReadMs(numThreads, 0);
+        std::vector<double> dynUnpackMs(numThreads, 0);
+        for (int t = 0; t < numThreads; ++t) {
+            futures.push_back(pool.submit([&, t, nextIdx]() -> bool {
+                std::vector<uint8_t> buf(sbBV);
+                double lr = 0, lu = 0;
+                while (true) {
+                    size_t i = nextIdx->fetch_add(chunkSize);
+                    if (i >= n) break;
+                    size_t end = std::min(i + chunkSize, n);
+                    for (; i < end; ++i) {
+                        const auto& task = plan.tasks[i];
+                        auto tr0 = std::chrono::high_resolution_clock::now();
+                        if (pread(fd, buf.data(), sbBV, task.file_offset) != static_cast<ssize_t>(sbBV))
+                            return false;
+                        auto tr1 = std::chrono::high_resolution_clock::now();
+                        lr += std::chrono::duration<double, std::milli>(tr1 - tr0).count();
+                        auto tu0 = std::chrono::high_resolution_clock::now();
+                        unpackLeaves(hdr, plan, task, buf.data(), output);
+                        auto tu1 = std::chrono::high_resolution_clock::now();
+                        lu += std::chrono::duration<double, std::milli>(tu1 - tu0).count();
+                    }
+                }
+                dynReadMs[t] = lr; dynUnpackMs[t] = lu;
+                return true;
+            }));
+        }
+        pool.waitAll();
+        for (auto& f : futures) if (!f.get()) return false;
+        if (profile) {
+            double mr=0,mu=0,sr=0,su=0;
+            for (int t=0;t<numThreads;++t){mr=std::max(mr,dynReadMs[t]);mu=std::max(mu,dynUnpackMs[t]);sr+=dynReadMs[t];su+=dynUnpackMs[t];}
+            profile->read_time_ms=mr;profile->unpack_time_ms=mu;profile->read_time_sum_ms=sr;profile->unpack_time_sum_ms=su;
+            profile->superblocks_touched=plan.superblocks_touched;profile->pread_calls=plan.pread_calls;profile->bytes_read=plan.bytes_read;profile->output_bytes=plan.output_bytes;
+        }
+        return true;
+    }
+
+    // Static: original partitioned execution
     ThreadPool pool(static_cast<size_t>(numThreads));
     std::vector<std::future<bool>> futures;
     std::vector<double> threadReadMs(numThreads, 0);
     std::vector<double> threadUnpackMs(numThreads, 0);
-
     for (int t = 0; t < numThreads; ++t) {
         futures.push_back(pool.submit([&, t]() -> bool {
             size_t start = t * n / numThreads;
             size_t end = (t + 1) * n / numThreads;
             if (start >= end) return true;
-
             std::vector<uint8_t> buf(sbBV);
-            double localRd = 0, localUp = 0;
-
+            double lr = 0, lu = 0;
             for (size_t i = start; i < end; ++i) {
                 const auto& task = plan.tasks[i];
                 auto tr0 = std::chrono::high_resolution_clock::now();
-                if (pread(fd, buf.data(), sbBV, task.file_offset) != static_cast<ssize_t>(sbBV))
-                    return false;
+                if (pread(fd, buf.data(), sbBV, task.file_offset) != static_cast<ssize_t>(sbBV)) return false;
                 auto tr1 = std::chrono::high_resolution_clock::now();
-                localRd += std::chrono::duration<double, std::milli>(tr1 - tr0).count();
-
+                lr += std::chrono::duration<double, std::milli>(tr1 - tr0).count();
                 auto tu0 = std::chrono::high_resolution_clock::now();
                 unpackLeaves(hdr, plan, task, buf.data(), output);
                 auto tu1 = std::chrono::high_resolution_clock::now();
-                localUp += std::chrono::duration<double, std::milli>(tu1 - tu0).count();
+                lu += std::chrono::duration<double, std::milli>(tu1 - tu0).count();
             }
-            threadReadMs[t] = localRd;
-            threadUnpackMs[t] = localUp;
+            threadReadMs[t] = lr; threadUnpackMs[t] = lu;
             return true;
         }));
     }
-
     pool.waitAll();
-    for (auto& f : futures) {
-        if (!f.get()) return false;
-    }
-
+    for (auto& f : futures) if (!f.get()) return false;
     if (profile) {
-        double maxRd = 0, maxUp = 0, sumRd = 0, sumUp = 0;
-        for (int t = 0; t < numThreads; ++t) {
-            maxRd = std::max(maxRd, threadReadMs[t]);
-            maxUp = std::max(maxUp, threadUnpackMs[t]);
-            sumRd += threadReadMs[t];
-            sumUp += threadUnpackMs[t];
-        }
-        profile->read_time_ms = maxRd;
-        profile->unpack_time_ms = maxUp;
-        profile->read_time_sum_ms = sumRd;
-        profile->unpack_time_sum_ms = sumUp;
-        profile->superblocks_touched = plan.superblocks_touched;
-        profile->pread_calls = plan.pread_calls;
-        profile->bytes_read = plan.bytes_read;
-        profile->output_bytes = plan.output_bytes;
+        double mr = 0, mu = 0, sr = 0, su = 0;
+        for (int t=0; t<numThreads; ++t) { mr=std::max(mr,threadReadMs[t]); mu=std::max(mu,threadUnpackMs[t]); sr+=threadReadMs[t]; su+=threadUnpackMs[t]; }
+        profile->read_time_ms=mr; profile->unpack_time_ms=mu; profile->read_time_sum_ms=sr; profile->unpack_time_sum_ms=su;
+        profile->superblocks_touched=plan.superblocks_touched; profile->pread_calls=plan.pread_calls; profile->bytes_read=plan.bytes_read; profile->output_bytes=plan.output_bytes;
     }
     return true;
 }

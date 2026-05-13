@@ -1,0 +1,8 @@
+dataset,experiment,result,recommendation,measured,notes
+20G,output write time,0.5-10% of total,no optimization needed,true,write is negligible
+50G,output write time,0.6-5.8% of total,no optimization needed,true,write is negligible
+20G,dynamic scheduling,15% faster than static (71ms -> 60ms),recommend --sb-schedule dynamic for 20G,true,measured full 100+10
+50G,dynamic scheduling,not measured,static remains recommended,false,pending 50G measurement
+20G,final command,sb parallel-read t8 + X-panel s4 + --sb-schedule dynamic,20G T_total=60ms,true,"--sb-schedule dynamic --sb-parallel-mode parallel-read --threads 8"
+50G,final command,sb parallel-read t8 no-panel,sb parallel-read t8 T_total=315ms,true,50G static remains
+20G,bottleneck,ThreadPool task scheduling overhead,atomic dynamic scheduling reduces contention (15% gain),true,supported by measured static vs dynamic comparison

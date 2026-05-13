@@ -1,0 +1,7 @@
+dataset,axis,mode,avg_read_ms,avg_write_ms,write_percent,output_bytes,measured
+50G,x,random,1687.2,12.5,0.7,52842000,true
+50G,y,random,2018.7,11.6,0.6,48024000,true
+50G,z,random,1027.5,8.3,0.8,35233608,true
+50G,x,cont,475.0,8.4,1.7,52842000,true
+50G,y,cont,566.9,8.0,1.4,48024000,true
+50G,z,cont,89.2,5.5,5.8,35233608,true
