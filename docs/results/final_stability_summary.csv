@@ -1,0 +1,3 @@
+dataset,benchmark_count,runs,T_total_min,T_total_max,T_total_stddev,cache_condition,notes
+20G,100+10,1,67.68,67.68,N/A,warm,single full run; multi-run deferred due to time constraints
+50G,100+10,1,314.94,314.94,N/A,warm,single full run

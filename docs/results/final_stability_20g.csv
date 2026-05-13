@@ -1,0 +1,4 @@
+dataset,run,benchmark_count,T_total,T_x_random,T_y_random,T_z_random,cache_condition,notes
+20G,1,100+10,67.68,141.55,42.52,41.34,warm,full benchmark
+20G,2,10+3,~70,~140,~42,~41,warm,reduced counts warm-cache
+20G,3,10+3,~65,~130,~38,~38,warm,reduced counts repeat

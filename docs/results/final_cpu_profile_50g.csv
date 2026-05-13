@@ -1,0 +1,2 @@
+dataset,benchmark_count,threads,config,T_total,cpu_util_avg,cpu_util_max,user_time_sec,sys_time_sec,iowait_avg,context_switches,major_faults,disk_read_MBps,notes
+50G,100+10,8,sb-parallel-read+t8,315,~50%,~100%,~2.5,~0.5,low,~50k,0,~500,larger working set; disk I/O moderate with warm cache

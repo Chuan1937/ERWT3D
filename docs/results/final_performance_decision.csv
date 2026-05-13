@@ -1,0 +1,11 @@
+dataset,experiment,result,recommendation
+20G,output write time,~0.5-10% of total,no optimization needed; write is negligible
+50G,output write time,estimated <5% of total,no optimization needed
+20G,dynamic scheduling,~static tie,static kept as default; task counts ~500-1500 per slice have low variance
+20G,thread pinning,not tested,deferred; current 8-thread static partitioning is stable
+20G,pthreads preadv batching,not tested,deferred; superblocks are mostly non-contiguous in Morton layout
+20G,io_uring,not tested,deferred; requires liburing and cmake integration
+20G,native compiler opts,not tested,deferred; -march=native may help on competition machine
+20G,final command,sb parallel-read t8,X-panel s4 + sb parallel-read t8 (T_total=68ms)
+50G,final command,sb parallel-read t8,sb parallel-read t8 no-panel (T_total=315ms)
+20G,bottleneck,ThreadPool mutex at >12 threads,"CPU is sufficient; mutex limits further thread scaling"

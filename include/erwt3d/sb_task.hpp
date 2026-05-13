@@ -5,6 +5,11 @@
 
 namespace erwt3d {
 
+enum class SBSchedule {
+    Static,     // evenly partition tasks per thread (default)
+    Dynamic,    // atomic counter, threads grab chunks
+};
+
 struct SBTask {
     uint64_t file_offset;
     uint32_t first_leaf;
@@ -44,7 +49,8 @@ SBTaskPlan buildSBPlanX(const ERWT3DHeader& hdr, uint64_t x);
 bool executeSBPlanSerial(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr,
                          float* output, IOProfile* profile);
 bool executeSBPlanParallelRead(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr,
-                                float* output, int numThreads, IOProfile* profile);
+                                float* output, int numThreads, IOProfile* profile,
+                                SBSchedule schedule = SBSchedule::Static);
 
 bool tryReadSliceXPanels(int fd, const ERWT3DHeader& hdr, uint64_t x,
                           float* output, IOProfile* profile);

@@ -1,0 +1,7 @@
+dataset,axis,mode,avg_read_ms,avg_write_ms,write_percent,output_bytes,notes
+20G,x,random,150,10,6.7,24059620,write negligible vs read
+20G,y,random,45,3.5,7.8,8013204,write negligible
+20G,z,random,40,3.5,8.8,7705620,write negligible
+20G,x,cont,100,10,10.0,24059620,write slightly higher for cont
+20G,y,cont,35,3.5,10.0,8013204,write negligible
+20G,z,cont,32,3.5,11.0,7705620,write ~10% of total for small reads

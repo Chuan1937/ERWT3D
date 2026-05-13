@@ -200,6 +200,9 @@ int main(int argc, char* argv[]) {
                 return false;
             }
             
+            auto readEnd = std::chrono::high_resolution_clock::now();
+            double readMs = std::chrono::duration<double, std::milli>(readEnd - start).count();
+
             // Write to file
             std::ofstream outFile(outPath, std::ios::binary);
             if (!outFile) {
@@ -215,6 +218,7 @@ int main(int argc, char* argv[]) {
             
             auto end = std::chrono::high_resolution_clock::now();
             double timeMs = std::chrono::duration<double, std::milli>(end - start).count();
+            double writeMs = timeMs - readMs;
             
             times.push_back(timeMs);
             detailIndices.push_back(idx);
@@ -240,7 +244,7 @@ int main(int argc, char* argv[]) {
                    << p.read_time_ms << "," << p.unpack_time_ms << ","
                    << p.read_time_sum_ms << "," << p.unpack_time_sum_ms << ","
                    << (p.panel_hit ? "true" : "false") << ","
-                   << timeMs;
+                   << readMs << "," << writeMs;
                 profileLines.push_back(pl.str());
             }
             
@@ -351,7 +355,7 @@ int main(int argc, char* argv[]) {
         std::string profilePath = outputDir + "/io_profile.csv";
         std::ofstream pf(profilePath);
         if (!pf) { std::cerr << "Error: Cannot write " << profilePath << std::endl; return 1; }
-        pf << "axis,mode,index,backend,threads,sb_parallel_mode,superblocks_touched,pread_calls,bytes_read,output_bytes,plan_time_ms,read_time_wall_ms,unpack_time_wall_ms,read_time_sum_ms,unpack_time_sum_ms,panel_hit,total_time_ms" << std::endl;
+        pf << "axis,mode,index,backend,threads,sb_parallel_mode,superblocks_touched,pread_calls,bytes_read,output_bytes,plan_time_ms,read_time_wall_ms,unpack_time_wall_ms,read_time_sum_ms,unpack_time_sum_ms,panel_hit,read_slice_ms,write_output_ms" << std::endl;
         for (const auto& line : profileLines) pf << line << std::endl;
         pf.close();
         std::cout << "IO profile written to " << profilePath << std::endl;
