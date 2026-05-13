@@ -108,3 +108,5 @@ if(ERWT3D_BUILD_TESTS)
     target_link_libraries(test_line_reads PRIVATE erwt3d)
     add_test(NAME test_line_reads COMMAND test_line_reads)
 endif()
+
+add_executable(erwt3d_layout_sim tools/erwt3d_layout_sim.cpp)

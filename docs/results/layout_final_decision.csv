@@ -1,0 +1,7 @@
+layout,20G_X_amplification,50G_X_amplification,20G_X_bytes_read,50G_X_bytes_read,storage_ratio,recommendation,rationale
+sb-default,66.2x,65.3x,1594MB,1725MB,1.08x,baseline,reads entire 1MB superblocks
+sb+xpanel-s4,66.2x,65.3x,1594MB,1725MB,1.34x,20G recommended,25% hit rate helps 20G; not enough for 50G
+sb+xypanel-s4,66.2x,65.3x,1594MB,1725MB,1.61x,not recommended,exceeds 1.5x storage limit
+leaf-index,4.1x,4.1x,100MB,108MB,1.08x,prototype recommended,16x bytes reduction at +3% storage; main risk: 389k small syscalls
+microblock-16,16.1x,16.1x,388MB,425MB,1.03x,acceptable,4x reduction in bytes; simpler than leaf-index
+microblock-32,32.7x,32.2x,787MB,850MB,1.06x,minimal,2x reduction not worth index overhead
