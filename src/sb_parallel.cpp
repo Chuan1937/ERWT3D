@@ -383,22 +383,22 @@ bool executeSBPlanRunBatch(int fd, const SBTaskPlan& plan, const ERWT3DHeader& h
         for (size_t ri = startR; ri < endR; ++ri) {
             const auto& run = runs[ri];
             if (run.bytes > maxBufPerThread) {
-                // Split oversized run into chunks
+                // Split oversized run into aligned superblock chunks
                 uint64_t runOff = run.file_offset;
                 uint64_t remaining = run.bytes;
                 size_t ti = run.first_task;
+                size_t maxTasksPerChunk = maxBufPerThread / sbBV;
+                if (maxTasksPerChunk == 0) return false; // memory too small
                 while (remaining > 0) {
-                    uint64_t chunk = std::min(remaining, maxBufPerThread);
+                    size_t tasksThisChunk = std::min(static_cast<size_t>(run.task_count - (ti - run.first_task)), maxTasksPerChunk);
+                    uint64_t chunk = tasksThisChunk * sbBV;
                     if (pread(fd, buf.data(), chunk, runOff) != static_cast<ssize_t>(chunk))
                         return false;
-                    // Unpack tasks within this chunk
-                    uint64_t chunkOff = 0;
-                    while (ti < run.first_task + run.task_count &&
-                           chunkOff + sbBV <= chunk) {
-                        unpackLeaves(hdr, plan, plan.tasks[ti], buf.data() + chunkOff, output);
-                        chunkOff += sbBV; ++ti;
-                    }
-                    runOff += chunk; remaining -= chunk;
+                    for (size_t j = 0; j < tasksThisChunk; ++j)
+                        unpackLeaves(hdr, plan, plan.tasks[ti + j], buf.data() + j * sbBV, output);
+                    ti += tasksThisChunk;
+                    runOff += chunk;
+                    remaining -= chunk;
                 }
             } else {
                 if (pread(fd, buf.data(), run.bytes, run.file_offset) != static_cast<ssize_t>(run.bytes))

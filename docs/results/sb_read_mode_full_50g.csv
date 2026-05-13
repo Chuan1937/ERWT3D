@@ -1,0 +1,3 @@
+dataset,benchmark_count,read_mode,threads,T_x_random,T_y_random,T_z_random,T_random_avg,T_x_cont,T_y_cont,T_z_cont,T_cont_avg,T_total,pread_calls_est,run_count_est,avg_run_bytes,vs_pread,notes
+50G,100+10,pread,8,531,511,365,469,163,203,117,161,315,~52k,~52k,1,1.00x,current best
+50G,100+10,run-batch,8,745,788,1692,1075,,,,,795,~1.2k,~1.2k,30.9,0.40x,2.5x slower; run-batch overhead exceeds benefit
