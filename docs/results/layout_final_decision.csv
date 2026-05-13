@@ -1,0 +1,7 @@
+layout,20G_X_amplification,50G_X_amplification,20G_storage_ratio,50G_storage_ratio,recommendation,rationale
+sb-default,66.3x,65.3x,1.080,1.040,baseline,current production mode
+sb+xpanel-s4,66.3x,65.3x,1.340,1.310,20G recommended (PR #15),already validated for 20G
+sb+xypanel-s4,66.3x,65.3x,1.610,1.570,REJECTED,exceeds 1.5x storage limit for both datasets
+leaf-index,4.1x,4.1x,1.110,1.080,PROTOTYPE RECOMMENDED,16x bytes reduction at +3% storage; 389k leaves -> 6k merged 16KB extents; prototype deferred to follow-up issue
+microblock-16,16.1x,16.1x,1.030,1.010,acceptable,4x reduction simpler than leaf-index; many small reads
+multiscale,N/A,N/A,N/A,N/A,DEFERRED,not implemented in simulator; requires per-level index evaluation

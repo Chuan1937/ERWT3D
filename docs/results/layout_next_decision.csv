@@ -1,0 +1,9 @@
+layout,axis,blocks_touched,bytes_read_MB,read_amplification,contiguous_runs,storage_ratio,leaf_count,merged_16KB,est_syscalls,panel_expected_MB,evaluation
+sb-default,x,494,1593.8,66.25x,494,1.080,0,0,0,0.0,baseline; reads entire 1MB superblocks
+sb-default,y,494,545.3,68.05x,38,1.080,0,0,0,0.0,-
+sb-xpanel-s4,x,494,1593.8,66.25x,494,1.340,0,0,0,1201.6,25% hit rate; expected bytes accounts for hit/miss; 1.34x storage
+sb-xypanel-s4,x,494,1593.8,66.25x,494,1.610,0,0,0,1201.6,exceeds 1.5x storage limit
+leaf-index,x,389120,99.6,4.14x,6080,1.110,389120,6080,6080,0.0,16x bytes reduction! 389k leaves merged to 6k extents at 16KB
+leaf-index,y,133120,34.1,4.25x,2080,1.110,133120,2080,2080,0.0,-
+leaf-index,z,126464,32.4,4.20x,1976,1.110,126464,1976,1976,0.0,-
+microblock-16,x,389120,388.4,16.14x,389120,1.030,0,0,0,0.0,4x reduction vs SB; many small reads
