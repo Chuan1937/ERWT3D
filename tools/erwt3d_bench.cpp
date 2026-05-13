@@ -75,7 +75,7 @@ int main(int argc, char* argv[]) {
     std::string sbParallelModeStr = "serial";
     std::string sbScheduleStr = "static";
     std::string sbReadModeStr = "pread";
-    size_t leafMergeBytes = 4096;
+    size_t leafMergeBytes = 16384;
     bool profileIO = false;
     bool pinThreads = false;
     

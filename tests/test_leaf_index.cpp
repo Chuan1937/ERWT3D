@@ -14,7 +14,7 @@ static void testLeaf(uint64_t nx, uint64_t ny, uint64_t nz, const char* label) {
     for(uint64_t z=0;z<nz;++z)for(uint64_t y=0;y<ny;++y)for(uint64_t x=0;x<nx;++x)
         orig[(z*ny+y)*nx+x]=ref(x,y,z);
 
-    std::string path=std::string("/mnt/d/li_")+label+".erwt3d";
+    std::string path=std::string("/tmp/li_")+label+".erwt3d";
     if(!writeERWT3D(path,orig.data(),nx,ny,nz)){std::cerr<<label<<" write fail\n";++gFail;return;}
 
     for(auto axis:{SliceAxis::X,SliceAxis::Y,SliceAxis::Z}){

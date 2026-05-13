@@ -1,0 +1,3 @@
+dataset,read_mode,benchmark_count,threads,leaf_merge_bytes,T_total,vs_pread,storage_ratio,bytes_read_est_MB,extent_count_est,pread_calls_est,measured,notes
+20G,pread,20+5,8,0,2199,1.00x,1.075,1594,494,494,true,baseline on clean file; cold cache /mnt/d
+20G,leaf-index,20+5,8,16384,DNF,0.00x,1.075,100,6080,6080,true,timed out after 5min; leaf-index too slow on real data

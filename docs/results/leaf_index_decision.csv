@@ -1,0 +1,5 @@
+dataset,read_mode,T_total,vs_best,bytes_read_vs_SB,decision,rationale
+20G,pread (current best),60,1.00x,1.00x,keep default,--
+20G,leaf-index,DNF,-,16x less,not recommended,leaf-index timed out on reduced 20+5; 6k merged pread calls 16KB each slower than 494x1MB SB preads with warm cache
+50G,pread (current best),315,1.00x,1.00x,keep default,--
+50G,leaf-index,not run,-,16x less,not recommended,expected worse than 20G; 26k small reads vs 1.6k SB reads; prototype confirms simulation: syscall overhead dominates byte savings

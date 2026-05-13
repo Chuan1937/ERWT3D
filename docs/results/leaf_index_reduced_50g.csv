@@ -1,0 +1,3 @@
+dataset,read_mode,benchmark_count,threads,leaf_merge_bytes,T_total,vs_pread,storage_ratio,bytes_read_est_MB,extent_count_est,pread_calls_est,measured,notes
+50G,pread,100+10,8,0,315,1.00x,1.044,1725,494,494,true,current best baseline (from #21)
+50G,leaf-index,not run,,,,,,,,,false,leaf-index prototype timed out on 20G; 50G expected worse

@@ -81,7 +81,7 @@ private:
     SBSchedule sbSchedule_ = SBSchedule::Static;
     bool pinThreads_ = false;
     SBReadMode sbReadMode_ = SBReadMode::PRead;
-    size_t leafMergeBytes_ = 4096;
+    size_t leafMergeBytes_ = 16384;
     bool profileIO_ = false;
     IOProfile lastProfile_;
     

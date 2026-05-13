@@ -446,7 +446,10 @@ bool executeSBPlanLeafIndex(int fd, const SBTaskPlan& plan, const ERWT3DHeader& 
                              size_t leafMergeBytes, IOProfile* profile, bool pinThreads) {
     const uint64_t sbBV = sbBytes(hdr);
     const uint64_t lfBV = lfBytes(hdr);
-    if (leafMergeBytes < lfBV*2) leafMergeBytes = lfBV * 16; // default 4KB
+    size_t memLimit = memoryLimitMB * 1024ULL * 1024ULL;
+    if (leafMergeBytes < lfBV*2) leafMergeBytes = lfBV * 16;
+    if (leafMergeBytes > memLimit / 2) leafMergeBytes = memLimit / 2;
+    if (leafMergeBytes < lfBV * 4) return false; // memory too small
 
     // Build leaf offset list from the plan
     struct LeafOff { uint64_t off; const SBTask* task; uint16_t leafIdx; };
