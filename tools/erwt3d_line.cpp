@@ -39,8 +39,18 @@ int main(int argc, char* argv[]) {
     }
 
     erwt3d::ERWT3DReader reader(inputPath);
-    if (ioBackendStr == "sb" || ioBackendStr == "superblock") reader.setIOBackend(erwt3d::IOBackend::Superblock);
-    if (sbParallelModeStr == "parallel-read") reader.setSBParallelMode(erwt3d::SBParallelMode::ParallelRead);
+    if (ioBackendStr == "sb" || ioBackendStr == "superblock") {
+        reader.setIOBackend(erwt3d::IOBackend::Superblock);
+    } else if (ioBackendStr != "pread") {
+        std::cerr << "Error: unknown --io-backend: " << ioBackendStr << " (valid: pread, sb)" << std::endl;
+        return 1;
+    }
+    if (sbParallelModeStr == "parallel-read") {
+        reader.setSBParallelMode(erwt3d::SBParallelMode::ParallelRead);
+    } else if (sbParallelModeStr != "serial") {
+        std::cerr << "Error: unknown --sb-parallel-mode: " << sbParallelModeStr << " (valid: serial, parallel-read)" << std::endl;
+        return 1;
+    }
 
     const auto& h = reader.getHeader();
     erwt3d::SliceAxis axis;

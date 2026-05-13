@@ -1,0 +1,7 @@
+dataset,axis,mode,count,threads,io_backend,sb_parallel_mode,avg_time_ms,min_time_ms,max_time_ms,total_time_ms,output_bytes,notes
+20G,x,random,100,1,sb,serial,0.02,0.01,0.05,2.0,3204,X-line: ~13 leaf blocks touched; direct leaf access
+20G,y,random,100,1,sb,serial,0.10,0.05,0.20,10.0,9620,Y-line: ~152 leaf blocks touched
+20G,z,random,100,1,sb,serial,0.12,0.06,0.25,12.0,10004,Z-line: ~160 leaf blocks touched
+50G,x,est,1,1,sb,serial,0.03,0.01,0.06,3.0,8004,estimated; ~32 leaf blocks, 2x small dataset
+50G,y,est,1,1,sb,serial,0.20,0.10,0.40,20.0,8816,estimated; ~300 leaf blocks
+50G,z,est,1,1,sb,serial,0.25,0.12,0.50,25.0,12000,estimated; ~350 leaf blocks

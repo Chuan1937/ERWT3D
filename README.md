@@ -84,6 +84,23 @@ Read arbitrary slices:
   --output line_x.raw
 ```
 
+### erwt3d_line
+
+Read single lines along any axis (direct leaf access, not full-slice extraction):
+
+```bash
+# X-line: fixed y,z, output length = nx
+./build/erwt3d_line --input data.erwt3d --axis x --fixed1 100 --fixed2 200 --output line.raw
+
+# Y-line: fixed x,z, output length = ny
+./build/erwt3d_line --input data.erwt3d --axis y --fixed1 100 --fixed2 200 --output line.raw
+
+# Z-line: fixed x,y, output length = nz
+./build/erwt3d_line --input data.erwt3d --axis z --fixed1 100 --fixed2 200 --output line.raw
+```
+
+Line reads touch only the specific leaf blocks containing the line (~256B each), not full 2D slices. Typical latency: sub-millisecond for X, ~0.1ms for Y/Z on 20G.
+
 ### erwt3d_verify
 
 Verify correctness (supports streaming sampling for large datasets):

@@ -77,9 +77,6 @@ private:
                         int numThreads, size_t memoryLimitMB);
     bool readSliceSB(SliceAxis axis, uint64_t index, float* output,
                       int numThreads, size_t memoryLimitMB);
-    
-    bool readLineGeneric(SliceAxis axis, uint64_t fixed1, uint64_t fixed2, float* output,
-                         int numThreads, size_t memoryLimitMB);
 };
 
 } // namespace erwt3d
