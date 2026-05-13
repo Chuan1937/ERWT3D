@@ -1,3 +1,3 @@
-dataset,benchmark_count,threads,config,T_total,user_time_sec,sys_time_sec,cpu_pct,wall_sec,max_rss_kb,minor_faults,major_faults,vol_ctx_sw,invol_ctx_sw,fs_inputs,fs_outputs,tool,notes
-20G,5+2,8,dynamic+X-panel,1.20wall,0.61,7.37,660,1.20,70312,33426,0,412,86,544K,930K,time -v,dynamic schedule; 7.4s sys time from preads
-50G,5+2,8,static,23.86wall,0.94,13.15,59,23.86,76072,35860,0,18458,218,34.8M,930K,time -v,static schedule; 13.2s sys time; 34.8M fs inputs confirms massive I/O
+dataset,benchmark_count,threads,schedule,panel,T_total_ms,user_time_sec,sys_time_sec,cpu_pct,wall_sec,max_rss_kb,minor_faults,major_faults,vol_ctx_sw,invol_ctx_sw,fs_input_blocks,fs_output_blocks,tool,notes
+20G,5+2,8,dynamic,X-panel s4,0,0.61,7.37,660,1.20,70312,33426,0,412,86,543944,930344,time -v,sys/user ratio=12x; estimated ~5000 pread calls for 7 slices
+50G,5+2,8,static,none,0,0.94,13.15,59,23.86,76072,35860,0,18458,218,34759792,930344,time -v,sys/user ratio=14x; 34.8M fs inputs for 7 slices; I/O-wait at 41% of wall

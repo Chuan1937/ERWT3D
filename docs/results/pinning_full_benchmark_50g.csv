@@ -1,0 +1,3 @@
+dataset,benchmark_count,threads,config,pin_threads,T_x_random,T_y_random,T_z_random,T_random_avg,T_x_cont,T_y_cont,T_z_cont,T_cont_avg,T_total,vs_pin_off,measured,notes
+50G,100+10,8,static,off,919.53,,,725.94,,,,435.06,1.00x,true,pin off baseline
+50G,100+10,8,static,on,675.44,,,634.80,,,,392.03,1.11x,true,pinning helps 11% on full 100+10; 2.22x on reduced was cold-cache amplified
