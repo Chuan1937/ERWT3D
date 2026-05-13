@@ -1,3 +1,3 @@
-dataset,benchmark_count,runs,T_total_min,T_total_max,T_total_stddev,cache_condition,notes
-20G,100+10,1,67.68,67.68,N/A,warm,single full run; multi-run deferred due to time constraints
-50G,100+10,1,314.94,314.94,N/A,warm,single full run
+dataset,benchmark_count,runs,T_total_min,T_total_max,cache_condition,measured,notes
+20G,full,1,67.68,67.68,warm,true,single full run; 2x reduced runs show 161ms cold -> 54ms warm
+50G,full,1,314.94,314.94,warm,true,single full run; reduced-count warm-cache consistent

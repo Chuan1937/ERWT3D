@@ -47,6 +47,9 @@ public:
     void setSBParallelMode(SBParallelMode m) { sbParallelMode_ = m; }
     SBParallelMode sbParallelMode() const { return sbParallelMode_; }
     
+    void setSBSchedule(SBSchedule s) { sbSchedule_ = s; }
+    SBSchedule sbSchedule() const { return sbSchedule_; }
+    
     void setProfileIO(bool enable) { profileIO_ = enable; }
     bool profileIO() const { return profileIO_; }
     const IOProfile& lastProfile() const { return lastProfile_; }
@@ -59,6 +62,7 @@ private:
     size_t cacheMB_ = 0;
     IOBackend ioBackend_ = IOBackend::PRead;
     SBParallelMode sbParallelMode_ = SBParallelMode::Serial;
+    SBSchedule sbSchedule_ = SBSchedule::Static;
     bool profileIO_ = false;
     IOProfile lastProfile_;
     

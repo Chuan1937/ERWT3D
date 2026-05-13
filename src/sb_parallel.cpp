@@ -270,30 +270,40 @@ bool executeSBPlanParallelRead(int fd, const SBTaskPlan& plan, const ERWT3DHeade
         auto nextIdx = std::make_shared<std::atomic<size_t>>(0);
         ThreadPool pool(static_cast<size_t>(numThreads));
         std::vector<std::future<bool>> futures;
+        std::vector<double> dynReadMs(numThreads, 0);
+        std::vector<double> dynUnpackMs(numThreads, 0);
         for (int t = 0; t < numThreads; ++t) {
-            futures.push_back(pool.submit([&, nextIdx]() -> bool {
+            futures.push_back(pool.submit([&, t, nextIdx]() -> bool {
                 std::vector<uint8_t> buf(sbBV);
+                double lr = 0, lu = 0;
                 while (true) {
                     size_t i = nextIdx->fetch_add(chunkSize);
                     if (i >= n) break;
                     size_t end = std::min(i + chunkSize, n);
                     for (; i < end; ++i) {
                         const auto& task = plan.tasks[i];
+                        auto tr0 = std::chrono::high_resolution_clock::now();
                         if (pread(fd, buf.data(), sbBV, task.file_offset) != static_cast<ssize_t>(sbBV))
                             return false;
+                        auto tr1 = std::chrono::high_resolution_clock::now();
+                        lr += std::chrono::duration<double, std::milli>(tr1 - tr0).count();
+                        auto tu0 = std::chrono::high_resolution_clock::now();
                         unpackLeaves(hdr, plan, task, buf.data(), output);
+                        auto tu1 = std::chrono::high_resolution_clock::now();
+                        lu += std::chrono::duration<double, std::milli>(tu1 - tu0).count();
                     }
                 }
+                dynReadMs[t] = lr; dynUnpackMs[t] = lu;
                 return true;
             }));
         }
         pool.waitAll();
         for (auto& f : futures) if (!f.get()) return false;
         if (profile) {
-            profile->superblocks_touched = plan.superblocks_touched;
-            profile->pread_calls = plan.pread_calls;
-            profile->bytes_read = plan.bytes_read;
-            profile->output_bytes = plan.output_bytes;
+            double mr=0,mu=0,sr=0,su=0;
+            for (int t=0;t<numThreads;++t){mr=std::max(mr,dynReadMs[t]);mu=std::max(mu,dynUnpackMs[t]);sr+=dynReadMs[t];su+=dynUnpackMs[t];}
+            profile->read_time_ms=mr;profile->unpack_time_ms=mu;profile->read_time_sum_ms=sr;profile->unpack_time_sum_ms=su;
+            profile->superblocks_touched=plan.superblocks_touched;profile->pread_calls=plan.pread_calls;profile->bytes_read=plan.bytes_read;profile->output_bytes=plan.output_bytes;
         }
         return true;
     }

@@ -1,4 +1,4 @@
-dataset,schedule,T_total,vs_static,notes
-20G,static,67.68,1.00x,baseline parallel-read
-50G,static,314.94,1.00x,baseline parallel-read
-20G,dynamic,~68,~1.0x,estimated; atomic chunking overhead offsets balance gains at small task count
+dataset,schedule,threads,T_total,vs_static,measured,notes
+20G,static,8,67.68,1.00x,true,full 100+10 baseline
+50G,static,8,314.94,1.00x,true,full 100+10 baseline
+20G,dynamic,8,~68,~1.00x,estimated,atomic chunking overhead offsets balance; measured values pending

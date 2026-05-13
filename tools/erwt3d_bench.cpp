@@ -53,6 +53,7 @@ void printUsage(const char* progName) {
     std::cerr << "  --cache-mb N          Cache size in MB (default: 0)" << std::endl;
     std::cerr << "  --io-backend MODE     I/O backend: pread, sb (default: pread)" << std::endl;
     std::cerr << "  --sb-parallel-mode M  SB parallel mode: serial, parallel-read (default: serial)" << std::endl;
+    std::cerr << "  --sb-schedule MODE    SB task schedule: static, dynamic (default: static)" << std::endl;
     std::cerr << "  --profile-io          Enable per-slice I/O phase profiling (writes io_profile.csv)" << std::endl;
     std::cerr << "  --seed N              Random seed (default: 20260511)" << std::endl;
 }
@@ -68,6 +69,7 @@ int main(int argc, char* argv[]) {
     uint32_t seed = 20260511;
     std::string ioBackendStr = "pread";
     std::string sbParallelModeStr = "serial";
+    std::string sbScheduleStr = "static";
     bool profileIO = false;
     
     // Parse arguments
@@ -90,6 +92,8 @@ int main(int argc, char* argv[]) {
             ioBackendStr = argv[++i];
         } else if (std::strcmp(argv[i], "--sb-parallel-mode") == 0 && i + 1 < argc) {
             sbParallelModeStr = argv[++i];
+        } else if (std::strcmp(argv[i], "--sb-schedule") == 0 && i + 1 < argc) {
+            sbScheduleStr = argv[++i];
         } else if (std::strcmp(argv[i], "--profile-io") == 0) {
             profileIO = true;
         } else if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
@@ -139,6 +143,13 @@ int main(int argc, char* argv[]) {
         std::cerr << "Error: Unknown --sb-parallel-mode: " << sbParallelModeStr << " (valid: serial, parallel-read)" << std::endl;
         return 1;
     }
+    
+    if (sbScheduleStr == "dynamic") {
+        reader.setSBSchedule(erwt3d::SBSchedule::Dynamic);
+    } else if (sbScheduleStr != "static") {
+        std::cerr << "Error: Unknown --sb-schedule: " << sbScheduleStr << " (valid: static, dynamic)" << std::endl;
+        return 1;
+    }
     reader.setProfileIO(profileIO);
     const auto& header = reader.getHeader();
     
@@ -153,6 +164,7 @@ int main(int argc, char* argv[]) {
     std::cout << "IO backend: " << ioBackendStr << std::endl;
     if (ioBackendStr == "sb" || ioBackendStr == "superblock") {
         std::cout << "SB parallel mode: " << sbParallelModeStr << std::endl;
+        std::cout << "SB schedule: " << sbScheduleStr << std::endl;
     }
     if (profileIO) {
         std::cout << "Profile IO: enabled" << std::endl;
