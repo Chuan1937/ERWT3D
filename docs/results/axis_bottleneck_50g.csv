@@ -1,0 +1,10 @@
+schedule,axis,mode,avg_time_ms,read_wall_ms,unpack_ms,write_ms,superblocks,bytes_read_MB,notes
+static,x,random,531,,,,1645,1724.9,X is worst axis static
+static,y,random,511,,,,1504,1577.1,Y is close second
+static,z,random,365,,,,1120,1174.4,Z is fastest static
+dynamic,x,random,684,659,5.9,12.8,1645,1724.9,X is worst axis dynamic; read=96% of time
+dynamic,y,random,524,505,4.0,9.1,1504,1577.1,Y second; read=96%
+dynamic,z,random,425,409,2.6,6.7,1120,1174.4,Z fastest; read=96%
+dynamic,x,cont,194,151,6.6,30.4,1645,1724.9,continuous
+dynamic,y,cont,179,155,7.3,11.1,1504,1577.1,--
+dynamic,z,cont,102,82,5.5,8.7,1120,1174.4,--

@@ -56,6 +56,7 @@ void printUsage(const char* progName) {
     std::cerr << "  --sb-parallel-mode M  SB parallel mode: serial, parallel-read (default: serial)" << std::endl;
     std::cerr << "  --sb-schedule MODE    SB task schedule: static, dynamic (default: static)" << std::endl;
     std::cerr << "  --profile-io          Enable per-slice I/O phase profiling (writes io_profile.csv)" << std::endl;
+    std::cerr << "  --pin-threads         Pin worker threads to CPU cores (Linux only)" << std::endl;
     std::cerr << "  --seed N              Random seed (default: 20260511)" << std::endl;
 }
 
@@ -72,6 +73,7 @@ int main(int argc, char* argv[]) {
     std::string sbParallelModeStr = "serial";
     std::string sbScheduleStr = "static";
     bool profileIO = false;
+    bool pinThreads = false;
     
     // Parse arguments
     for (int i = 1; i < argc; ++i) {
@@ -104,6 +106,8 @@ int main(int argc, char* argv[]) {
             sbScheduleStr = argv[++i];
         } else if (std::strcmp(argv[i], "--profile-io") == 0) {
             profileIO = true;
+        } else if (std::strcmp(argv[i], "--pin-threads") == 0) {
+            pinThreads = true;
         } else if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
             seed = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
@@ -158,6 +162,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "Error: Unknown --sb-schedule: " << sbScheduleStr << " (valid: static, dynamic)" << std::endl;
         return 1;
     }
+    reader.setPinThreads(pinThreads);
     reader.setProfileIO(profileIO);
     const auto& header = reader.getHeader();
     
