@@ -320,6 +320,199 @@ bool ERWT3DReader::readLineX(uint64_t y, uint64_t z, float* output,
     return true;
 }
 
+// --- readLine (axis-generic) ---
+bool ERWT3DReader::readLine(SliceAxis axis, uint64_t fixed1, uint64_t fixed2, float* output,
+                             int numThreads, size_t memoryLimitMB) {
+    switch (axis) {
+        case SliceAxis::X: return readLineX(fixed1, fixed2, output, numThreads, memoryLimitMB);
+        case SliceAxis::Y: return readLineY(fixed1, fixed2, output, numThreads, memoryLimitMB);
+        case SliceAxis::Z: return readLineZ(fixed1, fixed2, output, numThreads, memoryLimitMB);
+    }
+    return false;
+}
+
+// --- readLineY: fixed x,z, varying y ---
+bool ERWT3DReader::readLineY(uint64_t x, uint64_t z, float* output,
+                              int numThreads, size_t memoryLimitMB) {
+    if (fd_ < 0) return false;
+    const uint64_t nx = header_.nx, ny = header_.ny, nz = header_.nz;
+    if (x >= nx || z >= nz) return false;
+
+    const uint64_t sx = header_.super_x, sy = header_.super_y, sz = header_.super_z;
+    const uint64_t lx = header_.leaf_x, ly = header_.leaf_y, lz = header_.leaf_z;
+    const uint64_t superBytes = getSuperblockBytes(header_);
+    const uint64_t leafBytes = getLeafBytes(header_);
+    const uint64_t lpsY = getLeafsPerSuperY(header_);
+
+    uint64_t superX = x / sx, superZ = z / sz;
+    uint64_t localX = x % sx, localZ = z % sz;
+    uint64_t leafX = localX / lx, leafZ = localZ / lz;
+    uint64_t inLeafX = localX % lx, inLeafZ = localZ % lz;
+
+    std::vector<Extent> extents;
+    std::vector<uint64_t> extentBaseY;
+
+    for (uint64_t superY = 0; superY < getSuperGridY(header_); ++superY) {
+        uint64_t sbIdx = (superZ * getSuperGridY(header_) + superY) * getSuperGridX(header_) + superX;
+        uint64_t sbOff = header_.data_offset + sbIdx * superBytes;
+        for (uint64_t lyi = 0; lyi < lpsY; ++lyi) {
+            uint64_t baseY = superY * sy + lyi * ly;
+            if (baseY >= ny) continue;
+            uint64_t morton = morton3D(static_cast<uint32_t>(leafX),
+                                       static_cast<uint32_t>(lyi),
+                                       static_cast<uint32_t>(leafZ));
+            extents.emplace_back(sbOff + morton * leafBytes, leafBytes);
+            extentBaseY.push_back(baseY);
+        }
+    }
+    if (extents.empty()) return true;
+
+    auto merged = mergeExtents(extents);
+    size_t maxBuf = memoryLimitMB * 1024 * 1024;
+    if (maxBuf == 0) maxBuf = 1024 * 1024;
+    uint64_t srcOff = inLeafZ * ly * lx + inLeafX; // (inLeafZ * ly + 0) * lx + inLeafX
+    size_t totalSize = 0; for (auto& e : merged) totalSize += e.size;
+
+    if (totalSize <= maxBuf) {
+        std::vector<uint8_t> buf(totalSize);
+        if (numThreads <= 1) { if (!readExtents(merged, buf.data())) return false; }
+        else { if (!readExtentsThreaded(merged, buf.data(), numThreads)) return false; }
+        for (size_t i = 0; i < extents.size(); ++i) {
+            uint64_t bo = 0; for (size_t j = 0; j < merged.size(); ++j) {
+                if (extents[i].offset >= merged[j].offset && extents[i].offset < merged[j].end()) {
+                    const float* ld = reinterpret_cast<const float*>(buf.data() + bo + (extents[i].offset - merged[j].offset));
+                    uint64_t by = extentBaseY[i], vly = std::min(ly, ny - by);
+                    for (uint64_t dy = 0; dy < vly; ++dy)
+                        output[by + dy] = ld[dy * lx + srcOff];
+                    break;
+                }
+                bo += merged[j].size;
+            }
+        }
+        return true;
+    }
+
+    // Batched
+    uint64_t batchSz = 0; size_t bs = 0;
+    for (size_t i = 0; i <= merged.size(); ++i) {
+        bool flush = (i == merged.size());
+        if (!flush) { uint64_t nxt = batchSz + merged[i].size; if (nxt <= maxBuf) { batchSz = nxt; continue; } if (batchSz == 0) { batchSz = merged[i].size; continue; } flush = true; }
+        if (bs < i) {
+            size_t be = flush ? i : i; uint64_t bsz = 0;
+            for (size_t j = bs; j < be; ++j) bsz += merged[j].size;
+            std::vector<uint8_t> buf2(bsz);
+            std::vector<Extent> bext(merged.begin() + bs, merged.begin() + be);
+            uint64_t bo2 = 0;
+            for (const auto& e : bext) { if (!readOneExtent(e.offset, e.size, buf2.data() + bo2)) return false; bo2 += e.size; }
+            bo2 = 0;
+            for (size_t j = bs; j < be; ++j) {
+                for (size_t k = 0; k < extents.size(); ++k) {
+                    if (extents[k].offset >= merged[j].offset && extents[k].offset < merged[j].end()) {
+                        const float* ld = reinterpret_cast<const float*>(buf2.data() + bo2 + (extents[k].offset - merged[j].offset));
+                        uint64_t by = extentBaseY[k], vly = std::min(ly, ny - by);
+                        for (uint64_t dy = 0; dy < vly; ++dy)
+                            output[by + dy] = ld[dy * lx + srcOff];
+                    }
+                }
+                bo2 += merged[j].size;
+            }
+        }
+        bs = i; batchSz = 0; if (!flush) batchSz = merged[i].size;
+    }
+    return true;
+}
+
+// --- readLineZ: fixed x,y, varying z ---
+bool ERWT3DReader::readLineZ(uint64_t x, uint64_t y, float* output,
+                              int numThreads, size_t memoryLimitMB) {
+    if (fd_ < 0) return false;
+    const uint64_t nx = header_.nx, ny = header_.ny, nz = header_.nz;
+    if (x >= nx || y >= ny) return false;
+
+    const uint64_t sx = header_.super_x, sy = header_.super_y, sz = header_.super_z;
+    const uint64_t lx = header_.leaf_x, ly = header_.leaf_y, lz = header_.leaf_z;
+    const uint64_t superBytes = getSuperblockBytes(header_);
+    const uint64_t leafBytes = getLeafBytes(header_);
+    const uint64_t lpsZ = getLeafsPerSuperZ(header_);
+
+    uint64_t superX = x / sx, superY = y / sy;
+    uint64_t localX = x % sx, localY = y % sy;
+    uint64_t leafX = localX / lx, leafY = localY / ly;
+    uint64_t inLeafX = localX % lx, inLeafY = localY % ly;
+
+    std::vector<Extent> extents;
+    std::vector<uint64_t> extentBaseZ;
+
+    for (uint64_t superZ = 0; superZ < getSuperGridZ(header_); ++superZ) {
+        uint64_t sbIdx = (superZ * getSuperGridY(header_) + superY) * getSuperGridX(header_) + superX;
+        uint64_t sbOff = header_.data_offset + sbIdx * superBytes;
+        for (uint64_t lzi = 0; lzi < lpsZ; ++lzi) {
+            uint64_t baseZ = superZ * sz + lzi * lz;
+            if (baseZ >= nz) continue;
+            uint64_t morton = morton3D(static_cast<uint32_t>(leafX),
+                                       static_cast<uint32_t>(leafY),
+                                       static_cast<uint32_t>(lzi));
+            extents.emplace_back(sbOff + morton * leafBytes, leafBytes);
+            extentBaseZ.push_back(baseZ);
+        }
+    }
+    if (extents.empty()) return true;
+
+    auto merged = mergeExtents(extents);
+    size_t maxBuf = memoryLimitMB * 1024 * 1024;
+    if (maxBuf == 0) maxBuf = 1024 * 1024;
+    uint64_t srcOff = (inLeafY * lx + inLeafX); // (0 * ly + inLeafY) * lx + inLeafX for z=0
+    size_t totalSize = 0; for (auto& e : merged) totalSize += e.size;
+
+    if (totalSize <= maxBuf) {
+        std::vector<uint8_t> buf(totalSize);
+        if (numThreads <= 1) { if (!readExtents(merged, buf.data())) return false; }
+        else { if (!readExtentsThreaded(merged, buf.data(), numThreads)) return false; }
+        for (size_t i = 0; i < extents.size(); ++i) {
+            uint64_t bo = 0; for (size_t j = 0; j < merged.size(); ++j) {
+                if (extents[i].offset >= merged[j].offset && extents[i].offset < merged[j].end()) {
+                    const float* ld = reinterpret_cast<const float*>(buf.data() + bo + (extents[i].offset - merged[j].offset));
+                    uint64_t bz = extentBaseZ[i], vlz = std::min(lz, nz - bz);
+                    for (uint64_t dz = 0; dz < vlz; ++dz)
+                        output[bz + dz] = ld[dz * ly * lx + srcOff];
+                    break;
+                }
+                bo += merged[j].size;
+            }
+        }
+        return true;
+    }
+
+    // Batched
+    uint64_t batchSz = 0; size_t bs = 0;
+    for (size_t i = 0; i <= merged.size(); ++i) {
+        bool flush = (i == merged.size());
+        if (!flush) { uint64_t nxt = batchSz + merged[i].size; if (nxt <= maxBuf) { batchSz = nxt; continue; } if (batchSz == 0) { batchSz = merged[i].size; continue; } flush = true; }
+        if (bs < i) {
+            size_t be = flush ? i : i; uint64_t bsz = 0;
+            for (size_t j = bs; j < be; ++j) bsz += merged[j].size;
+            std::vector<uint8_t> buf2(bsz);
+            std::vector<Extent> bext(merged.begin() + bs, merged.begin() + be);
+            uint64_t bo2 = 0;
+            for (const auto& e : bext) { if (!readOneExtent(e.offset, e.size, buf2.data() + bo2)) return false; bo2 += e.size; }
+            bo2 = 0;
+            for (size_t j = bs; j < be; ++j) {
+                for (size_t k = 0; k < extents.size(); ++k) {
+                    if (extents[k].offset >= merged[j].offset && extents[k].offset < merged[j].end()) {
+                        const float* ld = reinterpret_cast<const float*>(buf2.data() + bo2 + (extents[k].offset - merged[j].offset));
+                        uint64_t bz = extentBaseZ[k], vlz = std::min(lz, nz - bz);
+                        for (uint64_t dz = 0; dz < vlz; ++dz)
+                            output[bz + dz] = ld[dz * ly * lx + srcOff];
+                    }
+                }
+                bo2 += merged[j].size;
+            }
+        }
+        bs = i; batchSz = 0; if (!flush) batchSz = merged[i].size;
+    }
+    return true;
+}
+
 // --- readFull (for tests/small volumes) ---
 bool ERWT3DReader::readFull(float* output, int numThreads, size_t memoryLimitMB) {
     if (fd_ < 0) return false;

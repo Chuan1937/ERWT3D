@@ -1,0 +1,4 @@
+dataset,axis,mode,count,threads,io_backend,sb_parallel_mode,avg_time_us,output_bytes,notes
+50G,x,est,1,1,sb,serial,30,8004,estimated from 20G scaling
+50G,y,est,1,1,sb,serial,200,8816,estimated from 20G scaling
+50G,z,est,1,1,sb,serial,250,12000,estimated from 20G scaling

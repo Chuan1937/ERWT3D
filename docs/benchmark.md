@@ -230,6 +230,9 @@ All results are derived from committed CSV evidence files in `docs/results/`:
 | Final panel decision | `docs/results/final_panel_decision.csv` |
 | Panel correctness | `docs/results/panel_correctness.csv` |
 | Panel comparison | `docs/results/final_vs_panel_comparison.csv` |
+| Line benchmarks 20G | `docs/results/line_benchmark_20g.csv` |
+| Line benchmarks 50G | `docs/results/line_benchmark_50g.csv` |
+| Line correctness | `docs/results/line_correctness.csv` |
 
 ## X Micro-Panel Index (Issue #14)
 
@@ -268,6 +271,43 @@ Store every k-th local X-plane per superblock as a compact auxiliary panel. For 
 ```
 
 Panel files are backward compatible (old readers open without errors but ignore panel metadata). The `--panel-axis` flag accepts `x`, `y`, `z`; stride must divide the superblock size evenly.
+
+## X/Y/Z Line Reads (Issue #18)
+
+ERWT3D supports efficient single-line reads along all three axes via direct leaf-block access. Lines are not extracted from full 2D slices; only the specific 256B leaf blocks containing the line are read.
+
+### API
+
+```cpp
+// Axis-generic: axis=X → fixed1=y,fixed2=z; axis=Y → fixed1=x,fixed2=z; axis=Z → fixed1=x,fixed2=y
+bool readLine(SliceAxis axis, uint64_t fixed1, uint64_t fixed2, float* output,
+              int numThreads = 1, size_t memoryLimitMB = 2048);
+
+// Convenience wrappers
+bool readLineX(uint64_t y, uint64_t z, float* output);
+bool readLineY(uint64_t x, uint64_t z, float* output);
+bool readLineZ(uint64_t x, uint64_t y, float* output);
+```
+
+### CLI
+
+```bash
+./build/erwt3d_line --input data.erwt3d --axis x --fixed1 Y --fixed2 Z --output line.raw
+```
+
+### Performance (20G, SB serial)
+
+| Axis | Typical latency | Leaf blocks touched |
+|------|----------------|---------------------|
+| X | <0.1ms | ~13 (3.2KB) |
+| Y | ~0.1ms | ~152 (38KB) |
+| Z | ~0.1ms | ~160 (40KB) |
+
+Lines are <1ms latency for all axes. Multi-threading does not help for line reads (task count is too small).
+
+### Correctness
+
+7 dimensions tested (17×19×23 through 100×100×100), boundaries (0, mid, last), wrapper vs generic API, serial vs parallel-read (threads 2/4/8). All 7/7 CTest pass, 0 errors.
 
 ## Optimization Opportunities
 

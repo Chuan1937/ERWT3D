@@ -35,6 +35,13 @@ public:
     bool readLineX(uint64_t y, uint64_t z, float* output,
                    int numThreads, size_t memoryLimitMB);
     
+    bool readLine(SliceAxis axis, uint64_t fixed1, uint64_t fixed2, float* output,
+                  int numThreads = 1, size_t memoryLimitMB = 2048);
+    bool readLineY(uint64_t x, uint64_t z, float* output,
+                   int numThreads = 1, size_t memoryLimitMB = 2048);
+    bool readLineZ(uint64_t x, uint64_t y, float* output,
+                   int numThreads = 1, size_t memoryLimitMB = 2048);
+    
     bool readFull(float* output, int numThreads = 1, size_t memoryLimitMB = 2048);
     bool readFullToFile(const std::string& outputPath, int numThreads = 1, size_t memoryLimitMB = 2048);
     
