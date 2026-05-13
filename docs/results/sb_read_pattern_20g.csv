@@ -1,0 +1,4 @@
+axis,mode,superblocks_touched,pread_calls,bytes_read_MB,contiguous_run_count,avg_run_MB,avg_run_superblocks,max_run_MB,notes
+x,random,494,494,518.0,494,1.05,1,1.05,X-slice: no contiguous runs in Morton layout
+y,random,494,494,518.0,494,1.05,1,1.05,Y-slice: sgX=13 contiguous per row
+z,random,494,494,518.0,38,13.65,13,13.65,Z-slice: 38 runs of 13 superblocks each

@@ -346,6 +346,101 @@ bool executeSBPlanParallelRead(int fd, const SBTaskPlan& plan, const ERWT3DHeade
     return true;
 }
 
+bool executeSBPlanRunBatch(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr,
+                            float* output, int numThreads, size_t memoryLimitMB,
+                            IOProfile* profile, bool pinThreads) {
+    const uint64_t sbBV = sbBytes(hdr);
+    size_t n = plan.tasks.size();
+    if (n == 0) return true;
+    if (numThreads <= 1) numThreads = 1;
+
+    // Build runs: group contiguous superblock reads
+    struct Run { uint64_t file_offset; uint64_t bytes; size_t first_task; size_t task_count; };
+    std::vector<Run> runs;
+    for (size_t i = 0; i < n; ) {
+        Run r;
+        r.file_offset = plan.tasks[i].file_offset;
+        r.first_task = i;
+        r.task_count = 1;
+        r.bytes = sbBV;
+        while (i + r.task_count < n &&
+               plan.tasks[i + r.task_count].file_offset == r.file_offset + r.bytes) {
+            r.bytes += sbBV;
+            ++r.task_count;
+        }
+        runs.push_back(r);
+        i += r.task_count;
+    }
+
+    size_t maxRunBytes = 0;
+    for (const auto& r : runs) maxRunBytes = std::max(maxRunBytes, r.bytes);
+    size_t maxBufPerThread = memoryLimitMB * 1024ULL * 1024ULL / static_cast<size_t>(numThreads);
+    if (maxBufPerThread < sbBV) return false; // memory limit too small for one superblock
+    maxBufPerThread = std::min(maxBufPerThread, std::max(maxRunBytes, sbBV * 4));
+
+    auto processRuns = [&](size_t startR, size_t endR) -> bool {
+        std::vector<uint8_t> buf(maxBufPerThread);
+        for (size_t ri = startR; ri < endR; ++ri) {
+            const auto& run = runs[ri];
+            if (run.bytes > maxBufPerThread) {
+                // Split oversized run into aligned superblock chunks
+                uint64_t runOff = run.file_offset;
+                uint64_t remaining = run.bytes;
+                size_t ti = run.first_task;
+                size_t maxTasksPerChunk = maxBufPerThread / sbBV;
+                if (maxTasksPerChunk == 0) return false; // memory too small
+                while (remaining > 0) {
+                    size_t tasksThisChunk = std::min(static_cast<size_t>(run.task_count - (ti - run.first_task)), maxTasksPerChunk);
+                    uint64_t chunk = tasksThisChunk * sbBV;
+                    if (pread(fd, buf.data(), chunk, runOff) != static_cast<ssize_t>(chunk))
+                        return false;
+                    for (size_t j = 0; j < tasksThisChunk; ++j)
+                        unpackLeaves(hdr, plan, plan.tasks[ti + j], buf.data() + j * sbBV, output);
+                    ti += tasksThisChunk;
+                    runOff += chunk;
+                    remaining -= chunk;
+                }
+            } else {
+                if (pread(fd, buf.data(), run.bytes, run.file_offset) != static_cast<ssize_t>(run.bytes))
+                    return false;
+                uint64_t off = 0;
+                for (size_t j = 0; j < run.task_count; ++j) {
+                    unpackLeaves(hdr, plan, plan.tasks[run.first_task + j], buf.data() + off, output);
+                    off += sbBV;
+                }
+            }
+        }
+        return true;
+    };
+
+    if (numThreads == 1) {
+        if (!processRuns(0, runs.size())) return false;
+    } else {
+        ThreadPool pool(static_cast<size_t>(numThreads), pinThreads);
+        std::vector<std::future<bool>> futures;
+        size_t nr = runs.size();
+        for (int t = 0; t < numThreads; ++t) {
+            futures.push_back(pool.submit([&, t]() -> bool {
+                size_t start = t * nr / numThreads;
+                size_t end = (t + 1) * nr / numThreads;
+                return processRuns(start, end);
+            }));
+        }
+        pool.waitAll();
+        for (auto& f : futures) if (!f.get()) return false;
+    }
+
+    if (profile) {
+        uint64_t totalRead = 0;
+        for (const auto& r : runs) totalRead += r.bytes;
+        profile->superblocks_touched = plan.superblocks_touched;
+        profile->pread_calls = runs.size();
+        profile->bytes_read = totalRead;
+        profile->output_bytes = plan.output_bytes;
+    }
+    return true;
+}
+
 bool tryReadSliceXPanels(int fd, const ERWT3DHeader& hdr, uint64_t x,
                           float* output, IOProfile* profile) {
     if (!hasXPanels(hdr)) return false;

@@ -60,6 +60,9 @@ public:
     void setPinThreads(bool enable) { pinThreads_ = enable; }
     bool pinThreads() const { return pinThreads_; }
     
+    void setSBReadMode(SBReadMode m) { sbReadMode_ = m; }
+    SBReadMode sbReadMode() const { return sbReadMode_; }
+    
     void setProfileIO(bool enable) { profileIO_ = enable; }
     bool profileIO() const { return profileIO_; }
     const IOProfile& lastProfile() const { return lastProfile_; }
@@ -74,6 +77,7 @@ private:
     SBParallelMode sbParallelMode_ = SBParallelMode::Serial;
     SBSchedule sbSchedule_ = SBSchedule::Static;
     bool pinThreads_ = false;
+    SBReadMode sbReadMode_ = SBReadMode::PRead;
     bool profileIO_ = false;
     IOProfile lastProfile_;
     

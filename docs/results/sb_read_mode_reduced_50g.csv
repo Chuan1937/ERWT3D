@@ -1,0 +1,3 @@
+dataset,benchmark_count,read_mode,threads,T_x_random,T_y_random,T_z_random,T_random_avg,T_x_cont,T_y_cont,T_z_cont,T_cont_avg,T_total,pread_calls_est,run_count_est,avg_run_bytes,vs_pread,notes
+50G,5+2,pread,8,,,,,,,,1508.6,~50000,~50000,1,1.00x,baseline
+50G,5+2,run-batch,8,,,,,,,,601.2,~1200,~1200,30.9,2.51x,run-batch faster on reduced (cold-cache artifact)

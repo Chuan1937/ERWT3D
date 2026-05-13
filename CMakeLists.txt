@@ -100,6 +100,10 @@ if(ERWT3D_BUILD_TESTS)
     target_link_libraries(test_panel PRIVATE erwt3d)
     add_test(NAME test_panel COMMAND test_panel)
     
+    add_executable(test_sb_read_modes tests/test_sb_read_modes.cpp)
+    target_link_libraries(test_sb_read_modes PRIVATE erwt3d)
+    add_test(NAME test_sb_read_modes COMMAND test_sb_read_modes)
+    
     add_executable(test_line_reads tests/test_line_reads.cpp)
     target_link_libraries(test_line_reads PRIVATE erwt3d)
     add_test(NAME test_line_reads COMMAND test_line_reads)

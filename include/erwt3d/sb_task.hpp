@@ -10,6 +10,11 @@ enum class SBSchedule {
     Dynamic,    // atomic counter, threads grab chunks
 };
 
+enum class SBReadMode {
+    PRead,     // per-superblock pread (default)
+    RunBatch,  // batch contiguous superblock runs into single pread
+};
+
 struct SBTask {
     uint64_t file_offset;
     uint32_t first_leaf;
@@ -53,9 +58,12 @@ bool executeSBPlanParallelRead(int fd, const SBTaskPlan& plan, const ERWT3DHeade
                                 SBSchedule schedule = SBSchedule::Static,
                                 bool pinThreads = false);
 
+bool executeSBPlanRunBatch(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr,
+                            float* output, int numThreads, size_t memoryLimitMB,
+                            IOProfile* profile, bool pinThreads = false);
+
 bool tryReadSliceXPanels(int fd, const ERWT3DHeader& hdr, uint64_t x,
                           float* output, IOProfile* profile);
-
 bool tryReadSliceXPanelsParallel(int fd, const ERWT3DHeader& hdr, uint64_t x,
                                   float* output, int numThreads, IOProfile* profile);
 
