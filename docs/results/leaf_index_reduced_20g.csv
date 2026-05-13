@@ -1,3 +1,4 @@
-dataset,read_mode,benchmark_count,threads,leaf_merge_bytes,T_total_ms,storage_ratio,bytes_read_est_MB,extent_count_est,pread_calls_est,dataset_path,storage_device,cache_condition,comparable_to_current_best,measured,notes
-20G,pread,20+5,8,0,2199,1.075,1594,494,494,/mnt/d/cup_3d_small_clean.erwt3d,hdd,cold,false,true,HDD cold cache baseline; not comparable to SSD best
-20G,leaf-index,20+5,8,16384,DNF,1.075,100,6080,6080,/mnt/d/cup_3d_small_clean.erwt3d,hdd,cold,false,true,HDD small-random reads timed out; fair SSD benchmark required
+dataset,read_mode,benchmark_count,threads,leaf_merge_bytes,T_total_ms,T_x_random_ms,storage_ratio,bytes_read_est_MB,extent_count_est,dataset_path,storage_device,cache_condition,comparable_to_current_best,measured,notes
+20G,pread,20+5,8,0,4718,17802,1.075,1594,494,/mnt/d/CUP/cup_3d_small.dat,hdd,cold,false,true,HDD baseline on clean conversion
+20G,leaf-index,20+5,8,16384,4866,11650,1.075,100,6080,/mnt/d/CUP/cup_3d_small.dat,hdd,cold,false,true,35% better X-random on HDD; T_total similar; small reads penalized on HDD
+20G,leaf-index,20+5,8,65536,timed out,,,,,,/mnt/d/CUP/cup_3d_small.dat,hdd,cold,false,true,64KB merge too slow on HDD
