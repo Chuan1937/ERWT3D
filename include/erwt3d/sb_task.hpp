@@ -50,7 +50,8 @@ bool executeSBPlanSerial(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr
                          float* output, IOProfile* profile);
 bool executeSBPlanParallelRead(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr,
                                 float* output, int numThreads, IOProfile* profile,
-                                SBSchedule schedule = SBSchedule::Static);
+                                SBSchedule schedule = SBSchedule::Static,
+                                bool pinThreads = false);
 
 bool tryReadSliceXPanels(int fd, const ERWT3DHeader& hdr, uint64_t x,
                           float* output, IOProfile* profile);

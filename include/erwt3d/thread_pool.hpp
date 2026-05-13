@@ -12,7 +12,7 @@ namespace erwt3d {
 
 class ThreadPool {
 public:
-    ThreadPool(size_t numThreads);
+    ThreadPool(size_t numThreads, bool pinThreads = false);
     ~ThreadPool();
     
     // Submit a task and get a future

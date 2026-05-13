@@ -7,9 +7,23 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Options
 option(ERWT3D_BUILD_TESTS "Build tests" ON)
+option(ERWT3D_NATIVE_OPT "Use -march=native -mtune=native optimization" OFF)
 
 # Thread support
 find_package(Threads REQUIRED)
+
+# Native optimization (optional)
+if(ERWT3D_NATIVE_OPT)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        add_compile_options(-O3 -march=native -mtune=native)
+        include(CheckIPOSupported)
+        check_ipo_supported(RESULT ipo_supported)
+        if(ipo_supported)
+            set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+        endif()
+    endif()
+    message(STATUS "Native optimization enabled: -O3 -march=native -mtune=native")
+endif()
 
 # Library sources
 set(LIB_SOURCES

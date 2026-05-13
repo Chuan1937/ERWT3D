@@ -722,7 +722,7 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
     if (sbParallelMode_ == SBParallelMode::ParallelRead && numThreads > 1) {
         ok = executeSBPlanParallelRead(fd_, plan, header_, output, numThreads,
                                         profileIO_ ? &lastProfile_ : nullptr,
-                                        sbSchedule_);
+                                        sbSchedule_, pinThreads_);
     } else {
         ok = executeSBPlanSerial(fd_, plan, header_, output,
                                  profileIO_ ? &lastProfile_ : nullptr);

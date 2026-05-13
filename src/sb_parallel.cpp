@@ -259,7 +259,7 @@ bool executeSBPlanSerial(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr
 
 bool executeSBPlanParallelRead(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr,
                                 float* output, int numThreads, IOProfile* profile,
-                                SBSchedule schedule) {
+                                SBSchedule schedule, bool pinThreads) {
     const uint64_t sbBV = sbBytes(hdr);
     size_t n = plan.tasks.size();
     if (n == 0) return true;
@@ -268,7 +268,7 @@ bool executeSBPlanParallelRead(int fd, const SBTaskPlan& plan, const ERWT3DHeade
     if (schedule == SBSchedule::Dynamic) {
         const size_t chunkSize = 4;
         auto nextIdx = std::make_shared<std::atomic<size_t>>(0);
-        ThreadPool pool(static_cast<size_t>(numThreads));
+        ThreadPool pool(static_cast<size_t>(numThreads), pinThreads);
         std::vector<std::future<bool>> futures;
         std::vector<double> dynReadMs(numThreads, 0);
         std::vector<double> dynUnpackMs(numThreads, 0);
@@ -309,7 +309,7 @@ bool executeSBPlanParallelRead(int fd, const SBTaskPlan& plan, const ERWT3DHeade
     }
 
     // Static: original partitioned execution
-    ThreadPool pool(static_cast<size_t>(numThreads));
+    ThreadPool pool(static_cast<size_t>(numThreads), pinThreads);
     std::vector<std::future<bool>> futures;
     std::vector<double> threadReadMs(numThreads, 0);
     std::vector<double> threadUnpackMs(numThreads, 0);
