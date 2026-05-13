@@ -193,16 +193,24 @@ This provides:
 
 ### Official Benchmark Results (100 random + 10 continuous slices)
 
-| Dataset | Config | T_total | Storage | Decision |
-|---------|--------|---------|---------|----------|
-| **20G** | sb parallel-read t8 + X-panels | **65ms** | 1.344x | **Recommended** |
-| **50G** | sb parallel-read t8 | **300ms** | 1.044x | **Recommended** |
-| 20G | sb parallel-read t8 | 73ms | 1.075x | baseline |
-| 50G | sb parallel-read t8 + X-panels | 318ms | 1.306x | rejected |
+| Dataset | Config | Threads | T_total | Storage | Correctness |
+|---------|--------|---------|---------|---------|-------------|
+| **20G** (801x2405x2501) | sb parallel-read + X-panels | 8 | **68ms** | 1.344x | passed |
+| **50G** (2001x2201x3000) | sb parallel-read | 8 | **315ms** | 1.044x | passed |
 
-**Per-dataset final recommendation:**
-- **20G**: X-panels stride=4 (11% T_total improvement; X is the bottleneck)
-- **50G**: No panels (Y is the bottleneck, X-panels give +6% regression; lighter storage)
+### Thread Scaling (reduced 20+5, for tuning only — do not use for final decisions)
+
+| Dataset | t=1 | t=2 | t=4 | t=6 | t=8 | t=12 | Best (20+5) | Best (full 100+10) |
+|---------|-----|-----|-----|-----|-----|------|-------------|--------------------|
+| 20G | 427ms | 84ms | 69ms | 61ms | 65ms | 77ms | t=6 | **t=8** |
+| 50G | 970ms | 258ms | 111ms | 196ms | 108ms | 119ms | t=8 | **t=8** |
+
+> Reduced-count runs can mislead: t6 was faster at 20+5 but slower at full 100+10.
+> Final decisions MUST use full benchmark results.
+
+**Final recommendations:**
+- **20G**: X-panels stride=4, sb parallel-read, threads=8 (T_total=68ms)
+- **50G**: No panels, sb parallel-read, threads=8 (T_total=315ms)
 
 **Storage budget**: 1.044x–1.344x, below the 1.5x limit.
 
