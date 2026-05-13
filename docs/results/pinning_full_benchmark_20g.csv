@@ -1,0 +1,4 @@
+dataset,benchmark_count,threads,config,pin_threads,T_x_random,T_y_random,T_z_random,T_random_avg,T_x_cont,T_y_cont,T_z_cont,T_cont_avg,T_total,vs_current_best,measured,notes
+20G,100+10,8,dynamic+X-panel,,,,,,,,60.44,1.00x,true,current best (PR #23),,,
+20G,100+10,8,dynamic+X-panel,off,446.81,,,,,,,,127.37,0.47x,true,pin off slower due to different run conditions,,,
+20G,100+10,8,dynamic+X-panel,on,107.17,40.15,38.54,61.95,90.56,41.19,53.06,61.60,61.78,0.98x,true,same/slightly worse than current best,,,

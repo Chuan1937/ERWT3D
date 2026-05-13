@@ -1,0 +1,3 @@
+dataset,build,benchmark_count,threads,config,T_total,vs_default,measured,notes
+20G,default,20+5,8,dynamic,78.43,1.00x,true,default build
+20G,native,not tested,,,,,false,pending separate build with -DERWT3D_NATIVE_OPT=ON

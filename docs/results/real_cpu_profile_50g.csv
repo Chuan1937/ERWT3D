@@ -1,0 +1,2 @@
+dataset,benchmark_count,threads,schedule,panel,T_total_ms,user_time_sec,sys_time_sec,cpu_pct,wall_sec,max_rss_kb,minor_faults,major_faults,vol_ctx_sw,invol_ctx_sw,fs_input_blocks,fs_output_blocks,tool,notes
+50G,5+2,8,static,none,0,0.94,13.15,59,23.86,76072,35860,0,18458,218,34759792,930344,time -v,sys/user=14x; I/O-wait 41%; system/I/O path dominates

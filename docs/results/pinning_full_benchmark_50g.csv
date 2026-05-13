@@ -1,0 +1,4 @@
+dataset,benchmark_count,threads,config,pin_threads,T_x_random,T_y_random,T_z_random,T_random_avg,T_x_cont,T_y_cont,T_z_cont,T_cont_avg,T_total,vs_current_best,measured,notes
+50G,100+10,8,static,,,,,,,,314.94,1.00x,true,current best (PR #21),,,
+50G,100+10,8,static,off,919.53,,,725.94,,,,435.06,0.72x,true,pin off slower due to different run conditions,,,
+50G,100+10,8,static,on,675.44,730.41,498.53,634.80,190.35,163.59,93.87,149.27,392.03,0.80x,true,pinning worse than current best (314ms); 2.22x reduced-count gain did not generalize,,,
