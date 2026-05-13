@@ -49,7 +49,7 @@ void printUsage(const char* progName) {
     std::cerr << "Options:" << std::endl;
     std::cerr << "  --random-count N      Number of random slice reads per axis (default: 100)" << std::endl;
     std::cerr << "  --continuous-count N  Number of continuous slice reads per axis (default: 10)" << std::endl;
-    std::cerr << "  --threads N|auto    Number of threads; auto = hw/2 (default: 1)" << std::endl;
+    std::cerr << "  --threads N|auto    Number of threads; auto = min(hw/2, 8) (default: 1)" << std::endl;
     std::cerr << "  --memory-limit-mb N   Memory limit in MB (default: 2048)" << std::endl;
     std::cerr << "  --cache-mb N          Cache size in MB (default: 0)" << std::endl;
     std::cerr << "  --io-backend MODE     I/O backend: pread, sb (default: pread)" << std::endl;
@@ -85,8 +85,8 @@ int main(int argc, char* argv[]) {
             std::string ts = argv[++i];
             if (ts == "auto") {
                 unsigned hw = std::thread::hardware_concurrency();
-                numThreads = static_cast<int>(std::max(1u, hw / 2));
-                std::cout << "Auto threads: " << numThreads << " (hw=" << hw << ")" << std::endl;
+                numThreads = static_cast<int>(std::min(std::max(1u, hw / 2), 8u));
+                std::cout << "Auto threads: " << numThreads << " (hw=" << hw << ", capped at 8)" << std::endl;
             } else {
                 numThreads = std::stoi(ts);
             }
