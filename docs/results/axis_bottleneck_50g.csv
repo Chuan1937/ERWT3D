@@ -1,7 +1,12 @@
 axis,mode,avg_time_ms,read_wall_ms,unpack_ms,write_ms,superblocks,bytes_read_MB,notes
-x,random,684,659,5.9,12.8,1645,1724.9,worst axis; 1.7GB read per slice
-y,random,524,505,4.0,9.1,1504,1577.1,second worst; 1.6GB read
-z,random,425,409,2.6,6.7,1120,1174.4,fastest; 1.2GB read
+Static baseline (from #21):
+x,random,531,,,0,1645,1724.9,X is worst axis static (531ms)
+y,random,511,,,0,1504,1577.1,Y is close second (511ms)
+z,random,365,,,0,1120,1174.4,Z is fastest static (365ms)
+Dynamic measured (this issue):
+x,random,684,659,5.9,12.8,1645,1724.9,X is worst axis dynamic (684ms); read=96% of time
+y,random,524,505,4.0,9.1,1504,1577.1,Y second (524ms); read=96%
+z,random,425,409,2.6,6.7,1120,1174.4,Z fastest (425ms); read=96%
 x,cont,194,151,6.6,30.4,1645,1724.9,continuous still slower than Y/Z random
 y,cont,179,155,7.3,11.1,1504,1577.1,--
 z,cont,102,82,5.5,8.7,1120,1174.4,--

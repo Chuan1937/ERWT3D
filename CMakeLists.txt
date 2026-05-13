@@ -7,13 +7,16 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Options
 option(ERWT3D_BUILD_TESTS "Build tests" ON)
-option(ERWT3D_NATIVE_OPT "Use -march=native -mtune=native optimization" OFF)
+option(ERWT3D_NATIVE_OPT "Experimental: use -march=native -mtune=native (Release only)" OFF)
 
 # Thread support
 find_package(Threads REQUIRED)
 
-# Native optimization (optional)
+# Native optimization (optional, Release only)
 if(ERWT3D_NATIVE_OPT)
+    if(NOT CMAKE_BUILD_TYPE MATCHES "Release")
+        message(WARNING "ERWT3D_NATIVE_OPT is intended for Release builds; current: ${CMAKE_BUILD_TYPE}")
+    endif()
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         add_compile_options(-O3 -march=native -mtune=native)
         include(CheckIPOSupported)

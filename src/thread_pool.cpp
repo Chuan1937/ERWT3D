@@ -2,6 +2,7 @@
 #ifdef __linux__
 #include <pthread.h>
 #endif
+#include <iostream>
 
 namespace erwt3d {
 
@@ -12,9 +13,14 @@ ThreadPool::ThreadPool(size_t numThreads, bool pinThreads) : stop_(false), activ
             if (pinThreads) {
                 cpu_set_t cpuset;
                 CPU_ZERO(&cpuset);
-                CPU_SET(i, &cpuset);
-                pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+                CPU_SET(static_cast<int>(i), &cpuset);
+                int rc = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+                if (rc != 0)
+                    std::cerr << "Warning: pthread_setaffinity_np failed for thread " << i << " (err=" << rc << ")" << std::endl;
             }
+#else
+            if (pinThreads)
+                std::cerr << "Warning: --pin-threads not supported on this platform" << std::endl;
 #endif
             while (true) {
                 std::function<void()> task;
@@ -42,9 +48,7 @@ ThreadPool::~ThreadPool() {
         std::unique_lock<std::mutex> lock(mutex_);
         stop_ = true;
     }
-    
     condition_.notify_all();
-    
     for (std::thread& worker : workers_) {
         worker.join();
     }
