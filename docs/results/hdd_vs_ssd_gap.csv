@@ -1,5 +1,0 @@
-dataset,metric,SSD_best,HDD_SB_parallel,HDD_read_window_best,HDD_batch_planner_best,HDD_vs_SSD_slowdown,notes
-20G_small,T_total_ms,1577,1413,1308,229,0.15x,HDD batch planner actually FASTER than SSD due to global sort + merge
-20G_small,T_x_random_ms,2977,2543,2406,333,0.11x,batch planner minimizes HDD seeks for worst-case X axis
-50G_big,T_total_ms,n/a,2607,2279,1169,n/a,SSD 50G data not yet benchmarked; batch planner 2.0x faster than parallel-read
-50G_big,T_x_random_ms,n/a,4254,2610,1919,n/a,batch planner substantially improves worst-case random X on HDD

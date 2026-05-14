@@ -1,6 +1,0 @@
-dataset,metric,SB_baseline_serial,SB_parallel_read,HDD_read_window_best,winner,margin,recommendation
-20G reduced,T_total_ms,2786.38,1309.76,1390.47,SB parallel-read,-52.9%,SB parallel-read wins 20G reduced
-50G reduced,T_total_ms,7152.89,2306.63,2278.57,HDD read-window,-68.1%,HDD read-window wins 50G reduced marginally
-20G full,T_total_ms,n/a,1412.59,1308.33,HDD read-window,-7.4% vs parallel-read,HDD read-window wins 20G full
-50G full,T_total_ms,n/a,2607.45,2318.85,HDD read-window,-11.1% vs parallel-read,HDD read-window wins 50G full
-FINAL DECISION,,,,,,,HDD read-window (--sb-read-mode hdd-read-window --hdd-read-window-bytes 16777216 --hdd-max-gap-bytes 65536) is recommended as the HDD-max default strategy
