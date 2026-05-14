@@ -17,3 +17,6 @@ reduced,HDD batch planner,50G_big,75,z,20,5,0,0,0,SB parallel-read
 final,HDD batch planner,20G_small,330,x,100,10,0,0,0,SB parallel-read
 final,HDD batch planner,20G_small,330,y,100,10,0,0,0,SB parallel-read
 final,HDD batch planner,20G_small,330,z,100,10,0,0,0,SB parallel-read
+final,HDD batch planner,50G_big,330,x,100,10,0,0,0,SB parallel-read
+final,HDD batch planner,50G_big,330,y,100,10,0,0,0,SB parallel-read
+final,HDD batch planner,50G_big,330,z,100,10,0,0,0,SB parallel-read

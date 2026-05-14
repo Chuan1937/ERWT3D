@@ -5,5 +5,6 @@ SB parallel-read,single_slice_latency,1,50G_big,20,5,3,2437.18,32.50,2497.72,243
 HDD batch planner,batch_throughput,25,50G_big,20,5,1,1194.45,15.93,1156.51,1129.89,1194.45,33.13,0,0
 HDD batch planner,batch_throughput,25,50G_big,20,5,2,1129.89,15.07,1156.51,1129.89,1194.45,33.13,0,0
 HDD batch planner,batch_throughput,25,50G_big,20,5,3,1145.18,15.27,1156.51,1129.89,1194.45,33.13,0,0
-HDD batch planner,batch_throughput,110,50G_big,100,10,1,888.97,2.69,n/a,528.76,888.97,n/a,0,0
-HDD batch planner,batch_throughput,110,50G_big,100,10,2,528.76,1.60,n/a,528.76,888.97,n/a,0,0
+HDD batch planner,batch_throughput,110,50G_big,100,10,1,888.97,2.69,656.07,528.76,888.97,199.78,0,0
+HDD batch planner,batch_throughput,110,50G_big,100,10,2,528.76,1.60,656.07,528.76,888.97,199.78,0,0
+HDD batch planner,batch_throughput,110,50G_big,100,10,3,549.91,1.67,656.07,528.76,888.97,199.78,0,0

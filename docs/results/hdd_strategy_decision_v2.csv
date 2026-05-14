@@ -1,5 +1,0 @@
-rank,strategy,CLI_flags,20G_full_T_total_ms,50G_red_T_total_ms,advantage,recommendation
-1,HDD batch planner,"--hdd-batch-planner on --hdd-batch-window-bytes 33554432 --hdd-batch-max-gap-bytes 262144",229.33,1168.59,"6.2x vs parallel-read on 20G","PRIMARY recommendation for HDD-max"
-2,HDD read-window,"--sb-read-mode hdd-read-window --hdd-read-window-bytes 67108864 --hdd-max-gap-bytes 65536",1308.33,2278.57,"1.1x vs parallel-read","Fallback if memory for batch is insufficient"
-3,SB parallel-read,"--sb-read-mode pread --sb-parallel-mode parallel-read",1412.59,2306.63,"Baseline","Good general-purpose strategy"
-4,SB file-offset,"--sb-task-order file-offset --sb-read-mode pread --sb-parallel-mode serial",n/a,4555.86,"1.6x vs serial baseline for 50G","Simple improvement if parallel not available"
