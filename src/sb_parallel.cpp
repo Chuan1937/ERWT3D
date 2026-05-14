@@ -728,6 +728,92 @@ bool executeSBPlanHDDReadWindow(int fd, const SBTaskPlan& plan, const ERWT3DHead
     return true;
 }
 
+// --- Batch planner: global task sort + merge across slice boundaries ---
+SBBatchPlan buildSBBatchPlan(const std::vector<const SBTaskPlan*>& plans) {
+    SBBatchPlan bp; bp.plans = plans;
+    for (uint32_t pid = 0; pid < plans.size(); ++pid) {
+        bp.total_sb_touched += plans[pid]->tasks.size();
+        for (const auto& t : plans[pid]->tasks)
+            bp.batch_tasks.push_back({t.file_offset, t.first_leaf, t.leaf_count, pid, plans[pid]});
+    }
+    std::sort(bp.batch_tasks.begin(), bp.batch_tasks.end(),
+        [](const SBBatchTask& a, const SBBatchTask& b) { return a.file_offset < b.file_offset; });
+    return bp;
+}
+
+bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr,
+                       float* const* outputs, int numThreads, size_t memoryLimitMB,
+                       const HDDReadWindowConfig& wcfg, bool pinThreads) {
+    const uint64_t sbBV = sbBytes(hdr);
+    const size_t n = batch.batch_tasks.size();
+    if (n == 0) return true;
+    if (numThreads <= 1) numThreads = 1;
+    const uint64_t rwB = wcfg.read_window_bytes > 0 ? wcfg.read_window_bytes : sbBV * 256;
+    const uint64_t gapB = wcfg.max_gap_bytes;
+
+    struct Win { uint64_t fo, rb; size_t ft, tc; };
+    std::vector<Win> wins;
+    for (size_t i = 0; i < n; ) {
+        Win w; w.fo = batch.batch_tasks[i].file_offset; w.ft = i; w.tc = 1; w.rb = sbBV;
+        while (i + w.tc < n) {
+            uint64_t no = batch.batch_tasks[i + w.tc].file_offset;
+            uint64_t ce = w.fo + w.rb;
+            if (no < ce) { ++w.tc; continue; }
+            uint64_t g = no - ce;
+            uint64_t ext = ce + g + sbBV - w.fo;
+            if (g == 0 && ext <= rwB) { w.rb += sbBV; ++w.tc; }
+            else if (g > 0 && g <= gapB && ext <= rwB) { w.rb += g + sbBV; ++w.tc; }
+            else break;
+        }
+        wins.push_back(w); i += w.tc;
+    }
+    size_t mwb = 0; for (auto& w : wins) mwb = std::max(mwb, w.rb);
+    size_t mbpt = memoryLimitMB * 1024ULL * 1024ULL / static_cast<size_t>(numThreads);
+    if (mbpt < sbBV) return false;
+    mbpt = std::min(mbpt, std::max(mwb, sbBV * 4));
+
+    auto pw = [&](size_t sw, size_t ew) -> bool {
+        std::vector<uint8_t> buf(mbpt);
+        for (size_t wi = sw; wi < ew; ++wi) {
+            const auto& win = wins[wi];
+            if (win.rb > mbpt) {
+                uint64_t wo = win.fo, rem = win.rb; size_t ti = win.ft;
+                size_t mtpc = mbpt / sbBV; if (mtpc == 0) return false;
+                while (rem > 0) {
+                    size_t ttc = std::min(static_cast<size_t>(win.tc - (ti - win.ft)), mtpc);
+                    uint64_t chunk = ttc * sbBV;
+                    if (pread(fd, buf.data(), chunk, wo + (ti - win.ft) * sbBV) != static_cast<ssize_t>(chunk))
+                        return false;
+                    for (size_t j = 0; j < ttc; ++j) {
+                        const auto& bt = batch.batch_tasks[ti + j];
+                        SBTask t{bt.file_offset, bt.first_leaf, bt.leaf_count};
+                        unpackLeaves(hdr, *bt.plan, t, buf.data() + j * sbBV, outputs[bt.output_id]);
+                    }
+                    ti += ttc; rem -= chunk;
+                }
+            } else {
+                if (pread(fd, buf.data(), win.rb, win.fo) != static_cast<ssize_t>(win.rb)) return false;
+                for (size_t j = 0; j < win.tc; ++j) {
+                    const auto& bt = batch.batch_tasks[win.ft + j];
+                    uint64_t toff = bt.file_offset - win.fo;
+                    SBTask t{bt.file_offset, bt.first_leaf, bt.leaf_count};
+                    unpackLeaves(hdr, *bt.plan, t, buf.data() + toff, outputs[bt.output_id]);
+                }
+            }
+        }
+        return true;
+    };
+    if (numThreads == 1) return pw(0, wins.size());
+    ThreadPool pool(static_cast<size_t>(numThreads), pinThreads);
+    std::vector<std::future<bool>> futs;
+    size_t nw = wins.size();
+    for (int t = 0; t < numThreads; ++t)
+        futs.push_back(pool.submit([&, t]() -> bool { return pw(t*nw/numThreads, (t+1)*nw/numThreads); }));
+    pool.waitAll();
+    for (auto& f : futs) if (!f.get()) return false;
+    return true;
+}
+
 bool tryReadSliceXPanels(int fd, const ERWT3DHeader& hdr, uint64_t x,
                           float* output, IOProfile* profile) {
     if (!hasXPanels(hdr)) return false;

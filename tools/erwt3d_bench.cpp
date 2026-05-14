@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <filesystem>
 #include <sstream>
+#include <functional>
 #include <thread>
 
 struct BenchmarkResult {
@@ -59,7 +60,10 @@ void printUsage(const char* progName) {
     std::cerr << "  --leaf-merge-bytes N   Leaf-index merge extent size (default: 4096)" << std::endl;
     std::cerr << "  --sb-task-order MODE  SB task order: logical, file-offset (default: logical)" << std::endl;
     std::cerr << "  --hdd-read-window-bytes N  HDD read window max bytes (0=disabled, default: 0)" << std::endl;
-    std::cerr << "  --hdd-max-gap-bytes N      HDD max gap bytes to merge into window (0=adjacent only, default: 0)" << std::endl;
+    std::cerr << "  --hdd-max-gap-bytes N      HDD max gap bytes to merge (0=adjacent only, default: 0)" << std::endl;
+    std::cerr << "  --hdd-batch-planner on|off  Global task sort + merge across all slices (default: off)" << std::endl;
+    std::cerr << "  --hdd-batch-window-bytes N  Batch read window max bytes (0=auto, default: 0)" << std::endl;
+    std::cerr << "  --hdd-batch-max-gap-bytes N Batch max gap bytes to merge (0=adjacent, default: 0)" << std::endl;
     std::cerr << "  --profile-io          Enable per-slice I/O phase profiling (writes io_profile.csv)" << std::endl;
     std::cerr << "  --pin-threads         Pin worker threads to CPU cores (Linux only)" << std::endl;
     std::cerr << "  --seed N              Random seed (default: 20260511)" << std::endl;
@@ -82,6 +86,9 @@ int main(int argc, char* argv[]) {
     std::string sbTaskOrderStr = "logical";
     uint64_t hddReadWindowBytes = 0;
     uint64_t hddMaxGapBytes = 0;
+    bool hddBatchPlanner = false;
+    uint64_t hddBatchWindowBytes = 0;
+    uint64_t hddBatchMaxGapBytes = 0;
     bool profileIO = false;
     bool pinThreads = false;
     
@@ -124,6 +131,12 @@ int main(int argc, char* argv[]) {
             hddReadWindowBytes = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--hdd-max-gap-bytes") == 0 && i + 1 < argc) {
             hddMaxGapBytes = std::stoul(argv[++i]);
+        } else if (std::strcmp(argv[i], "--hdd-batch-planner") == 0 && i + 1 < argc) {
+            hddBatchPlanner = (std::strcmp(argv[++i], "on") == 0);
+        } else if (std::strcmp(argv[i], "--hdd-batch-window-bytes") == 0 && i + 1 < argc) {
+            hddBatchWindowBytes = std::stoul(argv[++i]);
+        } else if (std::strcmp(argv[i], "--hdd-batch-max-gap-bytes") == 0 && i + 1 < argc) {
+            hddBatchMaxGapBytes = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--profile-io") == 0) {
             profileIO = true;
         } else if (std::strcmp(argv[i], "--pin-threads") == 0) {
@@ -226,6 +239,11 @@ int main(int argc, char* argv[]) {
         if (sbReadModeStr == "hdd-read-window") {
             std::cout << "HDD read window bytes: " << hddReadWindowBytes << std::endl;
             std::cout << "HDD max gap bytes: " << hddMaxGapBytes << std::endl;
+        }
+        if (hddBatchPlanner) {
+            std::cout << "HDD batch planner: ON" << std::endl;
+            std::cout << "HDD batch window bytes: " << hddBatchWindowBytes << std::endl;
+            std::cout << "HDD batch max gap bytes: " << hddBatchMaxGapBytes << std::endl;
         }
     }
     if (profileIO) {
@@ -350,6 +368,52 @@ int main(int argc, char* argv[]) {
         
         return true;
     };
+
+    // Batch planner benchmark: collect all slices, global sort, one read pass
+    auto benchmarkSliceBatch = [&](erwt3d::SliceAxis axis, const std::string& axisName,
+                                    const std::vector<uint64_t>& indices, const std::string& mode) -> bool {
+        uint64_t sliceSize;
+        switch (axis) {
+            case erwt3d::SliceAxis::X: sliceSize = header.ny * header.nz; break;
+            case erwt3d::SliceAxis::Y: sliceSize = header.nx * header.nz; break;
+            case erwt3d::SliceAxis::Z: sliceSize = header.nx * header.ny; break;
+        }
+        uint64_t outBytes = sliceSize * sizeof(float);
+        std::cout << "  " << axisName << " " << mode << " (" << indices.size() << " slices, batch):" << std::endl;
+        std::vector<std::vector<float>> outputs(indices.size());
+        std::vector<erwt3d::ERWT3DReader::SliceBatchRequest> reqs;
+        for (size_t i = 0; i < indices.size(); ++i) {
+            outputs[i].resize(sliceSize);
+            reqs.push_back({axis, indices[i], outputs[i].data()});
+        }
+        erwt3d::HDDReadWindowConfig bwcfg{hddBatchWindowBytes, hddBatchMaxGapBytes};
+        auto t0 = std::chrono::high_resolution_clock::now();
+        if (!reader.readSlicesBatch(reqs, numThreads, memoryLimitMB, bwcfg)) {
+            std::cerr << "Error: batch read failed" << std::endl; return false;
+        }
+        auto t1 = std::chrono::high_resolution_clock::now();
+        double totalMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        double avgMs = totalMs / indices.size();
+        for (size_t i = 0; i < indices.size(); ++i) {
+            std::string op = outputDir + "/" + axisName + "_" + mode + "_" + std::to_string(i) + ".raw";
+            std::ofstream of(op, std::ios::binary);
+            of.write(reinterpret_cast<const char*>(outputs[i].data()), outBytes); of.close();
+            std::ostringstream dl;
+            dl << axisName << "," << mode << "," << i << "," << indices[i] << ","
+               << std::fixed << std::setprecision(3) << avgMs << "," << outBytes << ","
+               << ioBackendStr << "," << numThreads << "," << cacheMB << "," << memoryLimitMB
+               << "," << sbParallelModeStr;
+            detailLines.push_back(dl.str());
+        }
+        BenchmarkResult r; r.method = "erwt3d"; r.ioBackend = ioBackendStr;
+        r.axis = axisName; r.mode = mode; r.count = indices.size();
+        r.avgTimeMs = avgMs; r.minTimeMs = avgMs; r.maxTimeMs = avgMs;
+        r.totalTimeMs = totalMs; r.outputBytes = outBytes;
+        results.push_back(r);
+        std::cout << "  " << axisName << " " << mode << ": batch_avg=" << std::fixed
+                  << std::setprecision(2) << avgMs << "ms, batch_total=" << totalMs << "ms" << std::endl;
+        return true;
+    };
     
     // Generate random indices
     std::uniform_int_distribution<uint64_t> distX(0, header.nx - 1);
@@ -380,15 +444,17 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < countZ; ++i) continuousZ.push_back(sZ + i);
     
     // Run benchmarks
-    std::cout << "\nRunning random slice benchmarks..." << std::endl;
-    benchmarkSlice(erwt3d::SliceAxis::X, "x", randomX, "random") || (benchOk = false);
-    benchmarkSlice(erwt3d::SliceAxis::Y, "y", randomY, "random") || (benchOk = false);
-    benchmarkSlice(erwt3d::SliceAxis::Z, "z", randomZ, "random") || (benchOk = false);
+    std::function<bool(erwt3d::SliceAxis,const std::string&,const std::vector<uint64_t>&,const std::string&)> bn;
+    bn = hddBatchPlanner ? (decltype(bn))benchmarkSliceBatch : (decltype(bn))benchmarkSlice;
+    std::cout << "\nRunning random slice benchmarks..." << (hddBatchPlanner ? " [BATCH]" : "") << std::endl;
+    bn(erwt3d::SliceAxis::X, "x", randomX, "random") || (benchOk = false);
+    bn(erwt3d::SliceAxis::Y, "y", randomY, "random") || (benchOk = false);
+    bn(erwt3d::SliceAxis::Z, "z", randomZ, "random") || (benchOk = false);
     
-    std::cout << "\nRunning continuous slice benchmarks..." << std::endl;
-    benchmarkSlice(erwt3d::SliceAxis::X, "x", continuousX, "continuous") || (benchOk = false);
-    benchmarkSlice(erwt3d::SliceAxis::Y, "y", continuousY, "continuous") || (benchOk = false);
-    benchmarkSlice(erwt3d::SliceAxis::Z, "z", continuousZ, "continuous") || (benchOk = false);
+    std::cout << "\nRunning continuous slice benchmarks..." << (hddBatchPlanner ? " [BATCH]" : "") << std::endl;
+    bn(erwt3d::SliceAxis::X, "x", continuousX, "continuous") || (benchOk = false);
+    bn(erwt3d::SliceAxis::Y, "y", continuousY, "continuous") || (benchOk = false);
+    bn(erwt3d::SliceAxis::Z, "z", continuousZ, "continuous") || (benchOk = false);
     
     // Write CSV
     if (!benchOk) {

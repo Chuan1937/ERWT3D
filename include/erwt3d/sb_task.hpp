@@ -23,8 +23,12 @@ enum class SBTaskOrder {
 };
 
 struct HDDReadWindowConfig {
-    uint64_t read_window_bytes = 0; // max bytes per single pread (0 = disabled)
-    uint64_t max_gap_bytes = 0;     // max gap to merge into same window (0 = adjacent only)
+    uint64_t read_window_bytes = 0;
+    uint64_t max_gap_bytes = 0;
+};
+
+struct HDDContiguousConfig {
+    uint32_t prefetch_slices = 0;
 };
 
 struct SBTask {
@@ -84,6 +88,21 @@ bool executeSBPlanHDDReadWindow(int fd, const SBTaskPlan& plan, const ERWT3DHead
                                 float* output, int numThreads, size_t memoryLimitMB,
                                 const HDDReadWindowConfig& cfg, IOProfile* profile,
                                 bool pinThreads = false);
+
+// --- Batch planner: global sort + merge across slice boundaries ---
+struct SBBatchTask {
+    uint64_t file_offset; uint32_t first_leaf, leaf_count, output_id;
+    const SBTaskPlan* plan;
+};
+struct SBBatchPlan {
+    std::vector<const SBTaskPlan*> plans;
+    std::vector<SBBatchTask> batch_tasks;
+    uint64_t total_sb_touched = 0;
+};
+SBBatchPlan buildSBBatchPlan(const std::vector<const SBTaskPlan*>& plans);
+bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr,
+                       float* const* outputs, int numThreads, size_t memoryLimitMB,
+                       const HDDReadWindowConfig& wcfg, bool pinThreads = false);
 
 bool tryReadSliceXPanels(int fd, const ERWT3DHeader& hdr, uint64_t x,
                           float* output, IOProfile* profile);

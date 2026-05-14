@@ -71,7 +71,12 @@ public:
     
     void setHDDReadWindowConfig(const HDDReadWindowConfig& cfg) { hddReadWindowCfg_ = cfg; }
     const HDDReadWindowConfig& hddReadWindowConfig() const { return hddReadWindowCfg_; }
-    
+    void setHDDContiguousConfig(const HDDContiguousConfig& c) { hddContigCfg_ = c; }
+    const HDDContiguousConfig& hddContiguousConfig() const { return hddContigCfg_; }
+    struct SliceBatchRequest { SliceAxis axis; uint64_t index; float* output; };
+    bool readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
+                         int numThreads, size_t memoryLimitMB,
+                         const HDDReadWindowConfig& wcfg);
     void setProfileIO(bool enable) { profileIO_ = enable; }
     bool profileIO() const { return profileIO_; }
     const IOProfile& lastProfile() const { return lastProfile_; }
@@ -90,6 +95,7 @@ private:
     size_t leafMergeBytes_ = 16384;
     SBTaskOrder sbTaskOrder_ = SBTaskOrder::Logical;
     HDDReadWindowConfig hddReadWindowCfg_;
+    HDDContiguousConfig hddContigCfg_;
     bool profileIO_ = false;
     IOProfile lastProfile_;
     
