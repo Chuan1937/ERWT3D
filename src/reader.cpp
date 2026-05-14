@@ -708,6 +708,11 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
     }
     if (plan.tasks.empty()) return true;
 
+    // Apply task ordering if requested
+    if (sbTaskOrder_ == SBTaskOrder::FileOffset) {
+        sortTasksByFileOffset(plan);
+    }
+
     auto planEnd = std::chrono::high_resolution_clock::now();
     double planMs = std::chrono::duration<double, std::milli>(planEnd - planStart).count();
 
@@ -719,10 +724,20 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
     lastProfile_.output_bytes = plan.output_bytes;
 
     bool ok;
-    if (sbReadMode_ == SBReadMode::RunBatch) {
+    if (sbReadMode_ == SBReadMode::HDDReadWindow) {
+        ok = executeSBPlanHDDReadWindow(fd_, plan, header_, output, numThreads,
+                                        memoryLimitMB, hddReadWindowCfg_,
+                                        profileIO_ ? &lastProfile_ : nullptr,
+                                        pinThreads_);
+    } else if (sbReadMode_ == SBReadMode::RunBatch) {
         ok = executeSBPlanRunBatch(fd_, plan, header_, output, numThreads,
                                     memoryLimitMB, profileIO_ ? &lastProfile_ : nullptr,
                                     pinThreads_);
+    } else if (sbReadMode_ == SBReadMode::LeafIndex) {
+        ok = executeSBPlanLeafIndex(fd_, plan, header_, output, numThreads,
+                                     memoryLimitMB, leafMergeBytes_,
+                                     profileIO_ ? &lastProfile_ : nullptr,
+                                     pinThreads_);
     } else if (sbParallelMode_ == SBParallelMode::ParallelRead && numThreads > 1) {
         ok = executeSBPlanParallelRead(fd_, plan, header_, output, numThreads,
                                         profileIO_ ? &lastProfile_ : nullptr,

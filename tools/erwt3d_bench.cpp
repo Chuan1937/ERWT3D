@@ -55,7 +55,11 @@ void printUsage(const char* progName) {
     std::cerr << "  --io-backend MODE     I/O backend: pread, sb (default: pread)" << std::endl;
     std::cerr << "  --sb-parallel-mode M  SB parallel mode: serial, parallel-read (default: serial)" << std::endl;
     std::cerr << "  --sb-schedule MODE    SB task schedule: static, dynamic (default: static)" << std::endl;
-    std::cerr << "  --sb-read-mode MODE   SB read mode: pread, run-batch (default: pread)" << std::endl;
+    std::cerr << "  --sb-read-mode MODE   SB read mode: pread, run-batch, leaf-index, hdd-read-window (default: pread)" << std::endl;
+    std::cerr << "  --leaf-merge-bytes N   Leaf-index merge extent size (default: 4096)" << std::endl;
+    std::cerr << "  --sb-task-order MODE  SB task order: logical, file-offset (default: logical)" << std::endl;
+    std::cerr << "  --hdd-read-window-bytes N  HDD read window max bytes (0=disabled, default: 0)" << std::endl;
+    std::cerr << "  --hdd-max-gap-bytes N      HDD max gap bytes to merge into window (0=adjacent only, default: 0)" << std::endl;
     std::cerr << "  --profile-io          Enable per-slice I/O phase profiling (writes io_profile.csv)" << std::endl;
     std::cerr << "  --pin-threads         Pin worker threads to CPU cores (Linux only)" << std::endl;
     std::cerr << "  --seed N              Random seed (default: 20260511)" << std::endl;
@@ -74,6 +78,10 @@ int main(int argc, char* argv[]) {
     std::string sbParallelModeStr = "serial";
     std::string sbScheduleStr = "static";
     std::string sbReadModeStr = "pread";
+    size_t leafMergeBytes = 16384;
+    std::string sbTaskOrderStr = "logical";
+    uint64_t hddReadWindowBytes = 0;
+    uint64_t hddMaxGapBytes = 0;
     bool profileIO = false;
     bool pinThreads = false;
     
@@ -108,6 +116,14 @@ int main(int argc, char* argv[]) {
             sbScheduleStr = argv[++i];
         } else if (std::strcmp(argv[i], "--sb-read-mode") == 0 && i + 1 < argc) {
             sbReadModeStr = argv[++i];
+        } else if (std::strcmp(argv[i], "--leaf-merge-bytes") == 0 && i + 1 < argc) {
+            leafMergeBytes = std::stoul(argv[++i]);
+        } else if (std::strcmp(argv[i], "--sb-task-order") == 0 && i + 1 < argc) {
+            sbTaskOrderStr = argv[++i];
+        } else if (std::strcmp(argv[i], "--hdd-read-window-bytes") == 0 && i + 1 < argc) {
+            hddReadWindowBytes = std::stoul(argv[++i]);
+        } else if (std::strcmp(argv[i], "--hdd-max-gap-bytes") == 0 && i + 1 < argc) {
+            hddMaxGapBytes = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--profile-io") == 0) {
             profileIO = true;
         } else if (std::strcmp(argv[i], "--pin-threads") == 0) {
@@ -170,8 +186,24 @@ int main(int argc, char* argv[]) {
     
     if (sbReadModeStr == "run-batch") {
         reader.setSBReadMode(erwt3d::SBReadMode::RunBatch);
+    } else if (sbReadModeStr == "leaf-index") {
+        reader.setSBReadMode(erwt3d::SBReadMode::LeafIndex);
+        reader.setLeafMergeBytes(leafMergeBytes);
+    } else if (sbReadModeStr == "hdd-read-window") {
+        reader.setSBReadMode(erwt3d::SBReadMode::HDDReadWindow);
+        erwt3d::HDDReadWindowConfig cfg;
+        cfg.read_window_bytes = hddReadWindowBytes;
+        cfg.max_gap_bytes = hddMaxGapBytes;
+        reader.setHDDReadWindowConfig(cfg);
     } else if (sbReadModeStr != "pread") {
-        std::cerr << "Error: Unknown --sb-read-mode: " << sbReadModeStr << " (valid: pread, run-batch)" << std::endl;
+        std::cerr << "Error: Unknown --sb-read-mode: " << sbReadModeStr << " (valid: pread, run-batch, leaf-index, hdd-read-window)" << std::endl;
+        return 1;
+    }
+    
+    if (sbTaskOrderStr == "file-offset") {
+        reader.setSBTaskOrder(erwt3d::SBTaskOrder::FileOffset);
+    } else if (sbTaskOrderStr != "logical") {
+        std::cerr << "Error: Unknown --sb-task-order: " << sbTaskOrderStr << " (valid: logical, file-offset)" << std::endl;
         return 1;
     }
     reader.setProfileIO(profileIO);
@@ -189,6 +221,12 @@ int main(int argc, char* argv[]) {
     if (ioBackendStr == "sb" || ioBackendStr == "superblock") {
         std::cout << "SB parallel mode: " << sbParallelModeStr << std::endl;
         std::cout << "SB schedule: " << sbScheduleStr << std::endl;
+        std::cout << "SB read mode: " << sbReadModeStr << std::endl;
+        std::cout << "SB task order: " << sbTaskOrderStr << std::endl;
+        if (sbReadModeStr == "hdd-read-window") {
+            std::cout << "HDD read window bytes: " << hddReadWindowBytes << std::endl;
+            std::cout << "HDD max gap bytes: " << hddMaxGapBytes << std::endl;
+        }
     }
     if (profileIO) {
         std::cout << "Profile IO: enabled" << std::endl;

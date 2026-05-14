@@ -63,6 +63,15 @@ public:
     void setSBReadMode(SBReadMode m) { sbReadMode_ = m; }
     SBReadMode sbReadMode() const { return sbReadMode_; }
     
+    void setLeafMergeBytes(size_t bytes) { leafMergeBytes_ = bytes; }
+    size_t leafMergeBytes() const { return leafMergeBytes_; }
+    
+    void setSBTaskOrder(SBTaskOrder o) { sbTaskOrder_ = o; }
+    SBTaskOrder sbTaskOrder() const { return sbTaskOrder_; }
+    
+    void setHDDReadWindowConfig(const HDDReadWindowConfig& cfg) { hddReadWindowCfg_ = cfg; }
+    const HDDReadWindowConfig& hddReadWindowConfig() const { return hddReadWindowCfg_; }
+    
     void setProfileIO(bool enable) { profileIO_ = enable; }
     bool profileIO() const { return profileIO_; }
     const IOProfile& lastProfile() const { return lastProfile_; }
@@ -78,6 +87,9 @@ private:
     SBSchedule sbSchedule_ = SBSchedule::Static;
     bool pinThreads_ = false;
     SBReadMode sbReadMode_ = SBReadMode::PRead;
+    size_t leafMergeBytes_ = 16384;
+    SBTaskOrder sbTaskOrder_ = SBTaskOrder::Logical;
+    HDDReadWindowConfig hddReadWindowCfg_;
     bool profileIO_ = false;
     IOProfile lastProfile_;
     

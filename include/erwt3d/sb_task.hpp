@@ -11,8 +11,20 @@ enum class SBSchedule {
 };
 
 enum class SBReadMode {
-    PRead,     // per-superblock pread (default)
-    RunBatch,  // batch contiguous superblock runs into single pread
+    PRead,         // per-superblock pread (default)
+    RunBatch,      // batch contiguous superblock runs into single pread
+    LeafIndex,     // read only needed leaf blocks, merge into extents
+    HDDReadWindow, // HDD-max: large contiguous read windows with configurable gap tolerance
+};
+
+enum class SBTaskOrder {
+    Logical,    // as produced by plan builder (default)
+    FileOffset, // sort tasks by file_offset ascending (minimizes HDD seeks)
+};
+
+struct HDDReadWindowConfig {
+    uint64_t read_window_bytes = 0; // max bytes per single pread (0 = disabled)
+    uint64_t max_gap_bytes = 0;     // max gap to merge into same window (0 = adjacent only)
 };
 
 struct SBTask {
@@ -61,6 +73,17 @@ bool executeSBPlanParallelRead(int fd, const SBTaskPlan& plan, const ERWT3DHeade
 bool executeSBPlanRunBatch(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr,
                             float* output, int numThreads, size_t memoryLimitMB,
                             IOProfile* profile, bool pinThreads = false);
+
+bool executeSBPlanLeafIndex(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr,
+                             float* output, int numThreads, size_t memoryLimitMB,
+                             size_t leafMergeBytes, IOProfile* profile, bool pinThreads = false);
+
+void sortTasksByFileOffset(SBTaskPlan& plan);
+
+bool executeSBPlanHDDReadWindow(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr,
+                                float* output, int numThreads, size_t memoryLimitMB,
+                                const HDDReadWindowConfig& cfg, IOProfile* profile,
+                                bool pinThreads = false);
 
 bool tryReadSliceXPanels(int fd, const ERWT3DHeader& hdr, uint64_t x,
                           float* output, IOProfile* profile);
