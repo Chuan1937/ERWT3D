@@ -1,0 +1,13 @@
+rw_mb,gap,strategy,count,T_total_ms
+16,64K,HDD batch planner,20+5,1767.88
+16,256K,HDD batch planner,20+5,868.54
+16,1M,HDD batch planner,20+5,966.85
+16,4M,HDD batch planner,20+5,892.56
+32,64K,HDD batch planner,20+5,840.59
+32,256K,HDD batch planner,20+5,829.18
+32,1M,HDD batch planner,20+5,949.31
+32,4M,HDD batch planner,20+5,919.08
+64,64K,HDD batch planner,20+5,974.26
+64,256K,HDD batch planner,20+5,1071.56
+64,1M,HDD batch planner,20+5,1157.14
+32,256K,HDD batch planner,100+10,229.33

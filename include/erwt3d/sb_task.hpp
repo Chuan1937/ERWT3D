@@ -11,8 +11,24 @@ enum class SBSchedule {
 };
 
 enum class SBReadMode {
-    PRead,     // per-superblock pread (default)
-    RunBatch,  // batch contiguous superblock runs into single pread
+    PRead,         // per-superblock pread (default)
+    RunBatch,      // batch contiguous superblock runs into single pread
+    LeafIndex,     // read only needed leaf blocks, merge into extents
+    HDDReadWindow, // HDD-max: large contiguous read windows with configurable gap tolerance
+};
+
+enum class SBTaskOrder {
+    Logical,    // as produced by plan builder (default)
+    FileOffset, // sort tasks by file_offset ascending (minimizes HDD seeks)
+};
+
+struct HDDReadWindowConfig {
+    uint64_t read_window_bytes = 0;
+    uint64_t max_gap_bytes = 0;
+};
+
+struct HDDContiguousConfig {
+    uint32_t prefetch_slices = 0;
 };
 
 struct SBTask {
@@ -61,6 +77,32 @@ bool executeSBPlanParallelRead(int fd, const SBTaskPlan& plan, const ERWT3DHeade
 bool executeSBPlanRunBatch(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr,
                             float* output, int numThreads, size_t memoryLimitMB,
                             IOProfile* profile, bool pinThreads = false);
+
+bool executeSBPlanLeafIndex(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr,
+                             float* output, int numThreads, size_t memoryLimitMB,
+                             size_t leafMergeBytes, IOProfile* profile, bool pinThreads = false);
+
+void sortTasksByFileOffset(SBTaskPlan& plan);
+
+bool executeSBPlanHDDReadWindow(int fd, const SBTaskPlan& plan, const ERWT3DHeader& hdr,
+                                float* output, int numThreads, size_t memoryLimitMB,
+                                const HDDReadWindowConfig& cfg, IOProfile* profile,
+                                bool pinThreads = false);
+
+// --- Batch planner: global sort + merge across slice boundaries ---
+struct SBBatchTask {
+    uint64_t file_offset; uint32_t first_leaf, leaf_count, output_id;
+    const SBTaskPlan* plan;
+};
+struct SBBatchPlan {
+    std::vector<const SBTaskPlan*> plans;
+    std::vector<SBBatchTask> batch_tasks;
+    uint64_t total_sb_touched = 0;
+};
+SBBatchPlan buildSBBatchPlan(const std::vector<const SBTaskPlan*>& plans);
+bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr,
+                       float* const* outputs, int numThreads, size_t memoryLimitMB,
+                       const HDDReadWindowConfig& wcfg, bool pinThreads = false);
 
 bool tryReadSliceXPanels(int fd, const ERWT3DHeader& hdr, uint64_t x,
                           float* output, IOProfile* profile);
