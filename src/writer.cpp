@@ -5,8 +5,21 @@
 #include <cstring>
 #include <algorithm>
 #include <iostream>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 namespace erwt3d {
+
+struct MmapGuard {
+    void* ptr;
+    size_t len;
+    MmapGuard(void* p, size_t l) : ptr(p), len(l) {}
+    ~MmapGuard() { if (ptr && ptr != MAP_FAILED) munmap(ptr, len); }
+    MmapGuard(const MmapGuard&) = delete;
+    MmapGuard& operator=(const MmapGuard&) = delete;
+};
 
 static void writeLeaves(std::ofstream& file, const ERWT3DHeader& header,
                         const std::vector<float>& superBuffer) {
@@ -41,26 +54,6 @@ static void fillSuperBuffer(std::vector<float>& sb, const float* rawData,
                 uint64_t gx = startX+x; if (gx >= nx) break;
                 sb[(z*superY+y)*superX+x] = rawData[(gz*ny+gy)*nx+gx];
             }
-        }
-    }
-}
-
-static void fillSuperBufferFromFile(std::vector<float>& sb, std::ifstream& inFile,
-                                     uint64_t nx, uint64_t ny, uint64_t nz,
-                                     uint64_t sx, uint64_t sy, uint64_t sz,
-                                     uint64_t superX, uint64_t superY, uint64_t superZ) {
-    std::memset(sb.data(), 0, superX*superY*superZ*sizeof(float));
-    uint64_t startX = sx*superX, startY = sy*superY, startZ = sz*superZ;
-    for (uint64_t z = 0; z < superZ; ++z) {
-        uint64_t gz = startZ+z; if (gz >= nz) break;
-        for (uint64_t y = 0; y < superY; ++y) {
-            uint64_t gy = startY+y; if (gy >= ny) break;
-            uint64_t foff = ((gz*ny+gy)*nx+startX)*sizeof(float);
-            uint64_t vx = std::min(static_cast<uint64_t>(superX), nx-startX);
-            inFile.seekg(foff); inFile.clear();
-            std::vector<float> row(vx);
-            inFile.read(reinterpret_cast<char*>(row.data()), vx*sizeof(float));
-            for (uint64_t x=0; x<vx; ++x) sb[(z*superY+y)*superX+x] = row[x];
         }
     }
 }
@@ -190,10 +183,30 @@ bool writeERWT3DFromFile(const std::string& outputPath,
                   << "x (main=" << mainSize << " panel=" << panelDataSize+panelIndexBytes << ")" << std::endl;
     }
 
+    size_t expectedRawBytes = nx * ny * nz * sizeof(float);
+    int fd = open(inputPath.c_str(), O_RDONLY);
+    if (fd < 0) {
+        std::cerr << "Error: cannot open input file: " << inputPath << std::endl;
+        return false;
+    }
+    struct stat st;
+    if (fstat(fd, &st) < 0 || static_cast<size_t>(st.st_size) < expectedRawBytes) {
+        std::cerr << "Error: input file too small (expected " << expectedRawBytes
+                  << " bytes, got " << st.st_size << ")" << std::endl;
+        close(fd);
+        return false;
+    }
+    void* mapped = mmap(nullptr, expectedRawBytes, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (mapped == MAP_FAILED) {
+        std::cerr << "Error: mmap failed on input file" << std::endl;
+        return false;
+    }
+    MmapGuard guard(mapped, expectedRawBytes);
+    const float* rawData = static_cast<const float*>(mapped);
+
     // Pass 1: write header + superblocks
     {
-        std::ifstream inFile(inputPath, std::ios::binary);
-        if (!inFile) return false;
         std::ofstream outFile(outputPath, std::ios::binary);
         if (!outFile) return false;
         outFile.write(reinterpret_cast<const char*>(&header), sizeof(header));
@@ -201,46 +214,44 @@ bool writeERWT3DFromFile(const std::string& outputPath,
         for (uint64_t sz=0; sz<sgZ; ++sz)
             for (uint64_t sy=0; sy<sgY; ++sy)
                 for (uint64_t sx=0; sx<sgX; ++sx) {
-                    fillSuperBufferFromFile(sb, inFile, nx, ny, nz, sx, sy, sz, superX, superY, superZ);
+                    fillSuperBuffer(sb, rawData, nx, ny, nz, sx, sy, sz, superX, superY, superZ);
                     writeLeaves(outFile, header, sb);
                 }
-    } // close files
+    }
 
-    // Pass 2: generate panels (streaming, one superblock at a time)
+    // Pass 2: generate panels from mmap'd data
     if (doPanels) {
-        std::ifstream inFile(inputPath, std::ios::binary);
-        if (!inFile) return false;
         std::fstream outFile(outputPath, std::ios::binary | std::ios::in | std::ios::out);
         if (!outFile) return false;
         outFile.seekp(0, std::ios::end);
-        uint64_t panelIndexOff=static_cast<uint64_t>(outFile.tellp());
+        uint64_t panelIndexOff = static_cast<uint64_t>(outFile.tellp());
         std::vector<uint64_t> panelIndex(totalSB);
-        outFile.seekp(panelIndexOff+panelIndexBytes);
+        outFile.seekp(panelIndexOff + panelIndexBytes);
         std::vector<float> sb(superX*superY*superZ);
         std::vector<float> plane(superY*superZ);
-        for (uint64_t sz=0; sz<sgZ; ++sz)
-            for (uint64_t sy=0; sy<sgY; ++sy)
-                for (uint64_t sx=0; sx<sgX; ++sx) {
-                    uint64_t si=(sz*sgY+sy)*sgX+sx;
-                    panelIndex[si]=static_cast<uint64_t>(outFile.tellp());
-                    fillSuperBufferFromFile(sb, inFile, nx, ny, nz, sx, sy, sz, superX, superY, superZ);
-                    for (uint32_t lx=0; lx<superX; lx+=panelStride) {
-                        for (uint64_t z=0; z<superZ; ++z)
-                            for (uint64_t y=0; y<superY; ++y)
-                                plane[z*superY+y]=sb[(z*superY+y)*superX+lx];
+        for (uint64_t sz = 0; sz < sgZ; ++sz)
+            for (uint64_t sy = 0; sy < sgY; ++sy)
+                for (uint64_t sx = 0; sx < sgX; ++sx) {
+                    uint64_t si = (sz * sgY + sy) * sgX + sx;
+                    panelIndex[si] = static_cast<uint64_t>(outFile.tellp());
+                    fillSuperBuffer(sb, rawData, nx, ny, nz, sx, sy, sz, superX, superY, superZ);
+                    for (uint32_t lx = 0; lx < superX; lx += panelStride) {
+                        for (uint64_t z = 0; z < superZ; ++z)
+                            for (uint64_t y = 0; y < superY; ++y)
+                                plane[z * superY + y] = sb[(z * superY + y) * superX + lx];
                         outFile.write(reinterpret_cast<const char*>(plane.data()), planeBytes);
                     }
                 }
-        uint64_t panelDataStart=panelIndexOff+panelIndexBytes;
-        uint64_t panelEnd=static_cast<uint64_t>(outFile.tellp());
+        uint64_t panelDataStart = panelIndexOff + panelIndexBytes;
+        uint64_t panelEnd = static_cast<uint64_t>(outFile.tellp());
         outFile.seekp(panelIndexOff);
         outFile.write(reinterpret_cast<const char*>(panelIndex.data()), panelIndexBytes);
         outFile.seekp(0);
-        header.flags|=FLAG_HAS_X_PANELS;
-        header.reserved[0]=panelStride;
-        header.reserved[3]=panelDataStart;
-        header.reserved[4]=panelIndexOff;
-        header.reserved[5]=panelEnd-panelDataStart;
+        header.flags |= FLAG_HAS_X_PANELS;
+        header.reserved[0] = panelStride;
+        header.reserved[3] = panelDataStart;
+        header.reserved[4] = panelIndexOff;
+        header.reserved[5] = panelEnd - panelDataStart;
         outFile.write(reinterpret_cast<const char*>(&header), sizeof(header));
     }
     return true;
