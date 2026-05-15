@@ -13,6 +13,7 @@
 #include <sstream>
 #include <functional>
 #include <thread>
+#include <future>
 
 struct BenchmarkResult {
     std::string method;
@@ -50,6 +51,7 @@ void printUsage(const char* progName) {
     std::cerr << "Options:" << std::endl;
     std::cerr << "  --mode MODE           Benchmark mode: normal, contest (default: normal)" << std::endl;
     std::cerr << "                        contest = global all-axis batch throughput (auto-enables batch planner)" << std::endl;
+    std::cerr << "  --contest-write-threads N  Parallel output writer threads (default: 1)" << std::endl;
     std::cerr << "  --random-count N      Number of random slice reads per axis (default: 100)" << std::endl;
     std::cerr << "  --continuous-count N  Number of continuous slice reads per axis (default: 10)" << std::endl;
     std::cerr << "  --threads N|auto    Number of threads; auto = min(hw/2, 8) (default: 1)" << std::endl;
@@ -93,6 +95,7 @@ int main(int argc, char* argv[]) {
     uint64_t hddBatchMaxGapBytes = 0;
     std::string benchMode = "normal";
     double contestReadMs = 0, contestWriteMs = 0, contestTotalMs = 0;
+    int contestWriteThreads = 1;
     bool profileIO = false;
     bool pinThreads = false;
     
@@ -143,6 +146,8 @@ int main(int argc, char* argv[]) {
             hddBatchMaxGapBytes = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
             benchMode = argv[++i];
+        } else if (std::strcmp(argv[i], "--contest-write-threads") == 0 && i + 1 < argc) {
+            contestWriteThreads = std::stoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--profile-io") == 0) {
             profileIO = true;
         } else if (std::strcmp(argv[i], "--pin-threads") == 0) {
@@ -490,22 +495,36 @@ int main(int argc, char* argv[]) {
         auto tr = std::chrono::high_resolution_clock::now();
         double readMs = std::chrono::duration<double, std::milli>(tr - t0).count();
 
-        // Write all outputs with proper per-axis counters
+        // Write all outputs (parallel if contest-write-threads > 1)
+        std::vector<std::string> outPaths(reqs.size());
+        struct { const char* ax; const char* md; int cnt; } wp[] = {
+            {"x","random",randomCount},{"y","random",randomCount},{"z","random",randomCount},
+            {"x","continuous",countX},{"y","continuous",countY},{"z","continuous",countZ}
+        };
         size_t gi = 0;
-        auto writePass = [&](const std::string& an, const std::string& md, int cnt) {
-            for (int i = 0; i < cnt; ++i, ++gi) {
-                std::string op = outputDir + "/" + an + "_" + md + "_" + std::to_string(i) + ".raw";
-                std::ofstream of(op, std::ios::binary);
-                of.write(reinterpret_cast<const char*>(bufs[gi].data()), obf(reqs[gi].axis));
+        for (auto& w : wp) {
+            for (int i = 0; i < w.cnt; ++i, ++gi) {
+                outPaths[gi] = outputDir + "/" + w.ax + "_" + w.md + "_" + std::to_string(i) + ".raw";
+            }
+        }
+        if (contestWriteThreads > 1) {
+            std::vector<std::future<bool>> wfuts;
+            for (size_t i = 0; i < reqs.size(); ++i) {
+                wfuts.push_back(std::async(std::launch::async, [&, i]() -> bool {
+                    std::ofstream of(outPaths[i], std::ios::binary);
+                    of.write(reinterpret_cast<const char*>(bufs[i].data()), obf(reqs[i].axis));
+                    of.close();
+                    return of.good();
+                }));
+            }
+            for (auto& f : wfuts) if (!f.get()) { std::cerr << "Write failed\n"; return false; }
+        } else {
+            for (size_t i = 0; i < reqs.size(); ++i) {
+                std::ofstream of(outPaths[i], std::ios::binary);
+                of.write(reinterpret_cast<const char*>(bufs[i].data()), obf(reqs[i].axis));
                 of.close();
             }
-        };
-        writePass("x", "random", randomCount);
-        writePass("y", "random", randomCount);
-        writePass("z", "random", randomCount);
-        writePass("x", "continuous", countX);
-        writePass("y", "continuous", countY);
-        writePass("z", "continuous", countZ);
+        }
         auto t1 = std::chrono::high_resolution_clock::now();
         double totalMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
         double writeMs = totalMs - readMs;
