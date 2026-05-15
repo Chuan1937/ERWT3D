@@ -92,6 +92,7 @@ int main(int argc, char* argv[]) {
     uint64_t hddBatchWindowBytes = 0;
     uint64_t hddBatchMaxGapBytes = 0;
     std::string benchMode = "normal";
+    double contestReadMs = 0, contestWriteMs = 0, contestTotalMs = 0;
     bool profileIO = false;
     bool pinThreads = false;
     
@@ -489,13 +490,22 @@ int main(int argc, char* argv[]) {
         auto tr = std::chrono::high_resolution_clock::now();
         double readMs = std::chrono::duration<double, std::milli>(tr - t0).count();
 
-        // Write all outputs
-        for (size_t i = 0; i < reqs.size(); ++i) {
-            std::string op = outputDir + "/" + reqAxes[i] + "_" + reqModes[i] + "_" + std::to_string(i % std::max(randomCount, std::max(countX, std::max(countY, countZ)))) + ".raw";
-            std::ofstream of(op, std::ios::binary);
-            of.write(reinterpret_cast<const char*>(bufs[i].data()), obf(reqs[i].axis));
-            of.close();
-        }
+        // Write all outputs with proper per-axis counters
+        size_t gi = 0;
+        auto writePass = [&](const std::string& an, const std::string& md, int cnt) {
+            for (int i = 0; i < cnt; ++i, ++gi) {
+                std::string op = outputDir + "/" + an + "_" + md + "_" + std::to_string(i) + ".raw";
+                std::ofstream of(op, std::ios::binary);
+                of.write(reinterpret_cast<const char*>(bufs[gi].data()), obf(reqs[gi].axis));
+                of.close();
+            }
+        };
+        writePass("x", "random", randomCount);
+        writePass("y", "random", randomCount);
+        writePass("z", "random", randomCount);
+        writePass("x", "continuous", countX);
+        writePass("y", "continuous", countY);
+        writePass("z", "continuous", countZ);
         auto t1 = std::chrono::high_resolution_clock::now();
         double totalMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
         double writeMs = totalMs - readMs;
@@ -506,6 +516,8 @@ int main(int argc, char* argv[]) {
         std::cout << "  T_write=" << writeMs << "ms" << std::endl;
         std::cout << "  T_total=" << totalMs << "ms" << std::endl;
         std::cout << "  per_slice=" << std::setprecision(2) << avgMs << "ms" << std::endl;
+
+        contestReadMs = readMs; contestWriteMs = writeMs; contestTotalMs = totalMs;
 
         // Per-axis summary with real indices in detail
         struct { const char* ax, *md; int cnt; const std::vector<uint64_t>* idxs; } es[] = {
@@ -625,7 +637,9 @@ int main(int argc, char* argv[]) {
             cf << "final" << "," << inputPath << ",hdd,warm,contest_batch_throughput,global_all_axis,"
                << randomCount << "," << continuousCount << "," << numThreads << "," << memoryLimitMB << ","
                << hddBatchWindowBytes << "," << hddBatchMaxGapBytes << ","
-               << "0,0," << r.totalTimeMs << "," << totalBytesWritten << ",0,0,0,1" << std::endl;
+               << std::fixed << std::setprecision(0)
+               << contestReadMs << "," << contestWriteMs << "," << contestTotalMs << ","
+               << totalBytesWritten << ",0,0,0,1" << std::endl;
         }
         cf.close();
         std::cout << "Contest CSV written to " << cpath << std::endl;
