@@ -1,0 +1,7 @@
+benchmark_stage,strategy,dataset,axis,random_slices,continuous_slices,boundary_slices,max_abs_error,relative_error_max,mismatch_count,verified_against
+smoke,contest global batch,20G_small,x,3,1,0,0,0,0,per-axis batch planner
+smoke,contest global batch,20G_small,y,3,1,0,0,0,0,per-axis batch planner
+smoke,contest global batch,20G_small,z,3,1,0,0,0,0,per-axis batch planner
+final,contest global batch,50G_big,x,100,10,0,0,0,0,per-axis batch planner
+final,contest global batch,50G_big,y,100,10,0,0,0,0,per-axis batch planner
+final,contest global batch,50G_big,z,100,10,0,0,0,0,per-axis batch planner

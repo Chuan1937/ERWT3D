@@ -49,6 +49,7 @@ void printUsage(const char* progName) {
     std::cerr << std::endl;
     std::cerr << "Options:" << std::endl;
     std::cerr << "  --mode MODE           Benchmark mode: normal, contest (default: normal)" << std::endl;
+    std::cerr << "                        contest = global all-axis batch throughput (auto-enables batch planner)" << std::endl;
     std::cerr << "  --random-count N      Number of random slice reads per axis (default: 100)" << std::endl;
     std::cerr << "  --continuous-count N  Number of continuous slice reads per axis (default: 10)" << std::endl;
     std::cerr << "  --threads N|auto    Number of threads; auto = min(hw/2, 8) (default: 1)" << std::endl;
@@ -64,9 +65,7 @@ void printUsage(const char* progName) {
     std::cerr << "  --hdd-max-gap-bytes N      HDD max gap bytes to merge (0=adjacent only, default: 0)" << std::endl;
     std::cerr << "  --hdd-batch-planner on|off  Global task sort + merge across all slices (default: off)" << std::endl;
     std::cerr << "  --hdd-batch-window-bytes N  Batch read window max bytes (0=auto, default: 0)" << std::endl;
-    std::cerr << "  --hdd-batch-window-bytes N  Batch read window max bytes (0=auto, default: 0)" << std::endl;
     std::cerr << "  --hdd-batch-max-gap-bytes N Batch max gap bytes to merge (0=adjacent only, default: 0)" << std::endl;
-    std::cerr << "  --hdd-contiguous-prefetch N Contiguous slice prefetch count (0=off, default: 0)" << std::endl;
     std::cerr << "  --profile-io          Enable per-slice I/O phase profiling (writes io_profile.csv)" << std::endl;
     std::cerr << "  --pin-threads         Pin worker threads to CPU cores (Linux only)" << std::endl;
     std::cerr << "  --seed N              Random seed (default: 20260511)" << std::endl;
@@ -92,7 +91,6 @@ int main(int argc, char* argv[]) {
     bool hddBatchPlanner = false;
     uint64_t hddBatchWindowBytes = 0;
     uint64_t hddBatchMaxGapBytes = 0;
-    uint32_t hddContiguousPrefetch = 0;
     std::string benchMode = "normal";
     bool profileIO = false;
     bool pinThreads = false;
@@ -142,8 +140,6 @@ int main(int argc, char* argv[]) {
             hddBatchWindowBytes = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--hdd-batch-max-gap-bytes") == 0 && i + 1 < argc) {
             hddBatchMaxGapBytes = std::stoul(argv[++i]);
-        } else if (std::strcmp(argv[i], "--hdd-contiguous-prefetch") == 0 && i + 1 < argc) {
-            hddContiguousPrefetch = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
             benchMode = argv[++i];
         } else if (std::strcmp(argv[i], "--profile-io") == 0) {
@@ -455,52 +451,102 @@ int main(int argc, char* argv[]) {
     // Contest mode: global all-axis batch, includes write time
     auto benchmarkContest = [&]() -> bool {
         uint64_t sx = header.ny * header.nz, sy = header.nx * header.nz, sz = header.nx * header.ny;
-        std::cout << "Contest: " << (randomCount*3+countX+countY+countZ) << " slices global batch" << std::endl;
+        size_t total = randomCount*3 + countX + countY + countZ;
+        std::cout << "=== Contest: " << total << " slices global all-axis batch ===" << std::endl;
+
+        // Build requests with real slice indices
         using R = erwt3d::ERWT3DReader::SliceBatchRequest;
         std::vector<R> reqs;
-        for (int i=0;i<randomCount;++i) reqs.push_back(R{erwt3d::SliceAxis::X,randomX[i],nullptr});
-        for (int i=0;i<randomCount;++i) reqs.push_back(R{erwt3d::SliceAxis::Y,randomY[i],nullptr});
-        for (int i=0;i<randomCount;++i) reqs.push_back(R{erwt3d::SliceAxis::Z,randomZ[i],nullptr});
-        for (int i=0;i<countX;++i) reqs.push_back(R{erwt3d::SliceAxis::X,continuousX[i],nullptr});
-        for (int i=0;i<countY;++i) reqs.push_back(R{erwt3d::SliceAxis::Y,continuousY[i],nullptr});
-        for (int i=0;i<countZ;++i) reqs.push_back(R{erwt3d::SliceAxis::Z,continuousZ[i],nullptr});
+        std::vector<uint64_t> reqIndices; // track real slice index for each request
+        std::vector<std::string> reqAxes, reqModes;
 
-        auto obf=[&](erwt3d::SliceAxis a){return (a==erwt3d::SliceAxis::X?sx:(a==erwt3d::SliceAxis::Y?sy:sz))*sizeof(float);};
+        auto addReqs = [&](erwt3d::SliceAxis ax, const std::string& an, const std::string& md,
+                           const std::vector<uint64_t>& idxs) {
+            for (uint64_t idx : idxs) {
+                reqs.push_back(R{ax, idx, nullptr});
+                reqIndices.push_back(idx);
+                reqAxes.push_back(an); reqModes.push_back(md);
+            }
+        };
+        addReqs(erwt3d::SliceAxis::X, "x", "random", randomX);
+        addReqs(erwt3d::SliceAxis::Y, "y", "random", randomY);
+        addReqs(erwt3d::SliceAxis::Z, "z", "random", randomZ);
+        addReqs(erwt3d::SliceAxis::X, "x", "continuous", continuousX);
+        addReqs(erwt3d::SliceAxis::Y, "y", "continuous", continuousY);
+        addReqs(erwt3d::SliceAxis::Z, "z", "continuous", continuousZ);
+
+        auto obf = [&](erwt3d::SliceAxis a) { return (a == erwt3d::SliceAxis::X ? sx : a == erwt3d::SliceAxis::Y ? sy : sz) * sizeof(float); };
         std::vector<std::vector<float>> bufs(reqs.size());
-        for(size_t i=0;i<reqs.size();++i){auto a=reqs[i].axis;bufs[i].resize(a==erwt3d::SliceAxis::X?sx:a==erwt3d::SliceAxis::Y?sy:sz);reqs[i].output=bufs[i].data();}
+        for (size_t i = 0; i < reqs.size(); ++i) {
+            auto a = reqs[i].axis; bufs[i].resize(a == erwt3d::SliceAxis::X ? sx : a == erwt3d::SliceAxis::Y ? sy : sz);
+            reqs[i].output = bufs[i].data();
+        }
 
-        auto t0=std::chrono::high_resolution_clock::now();
-        if(!reader.readSlicesBatch(reqs,numThreads,memoryLimitMB,{hddBatchWindowBytes,hddBatchMaxGapBytes})){
-            std::cerr<<"Contest batch read failed\n";return false;}
-        auto tr=std::chrono::high_resolution_clock::now();
-        double readMs=std::chrono::duration<double,std::milli>(tr-t0).count();
+        auto t0 = std::chrono::high_resolution_clock::now();
+        if (!reader.readSlicesBatch(reqs, numThreads, memoryLimitMB, {hddBatchWindowBytes, hddBatchMaxGapBytes})) {
+            std::cerr << "Contest batch read failed\n"; return false;
+        }
+        auto tr = std::chrono::high_resolution_clock::now();
+        double readMs = std::chrono::duration<double, std::milli>(tr - t0).count();
 
         // Write all outputs
-        size_t ri=0;
-        auto wp=[&](erwt3d::SliceAxis ax,const std::string& an,int cnt,const std::string& md){
-            for(int i=0;i<cnt;++i,++ri){std::string op=outputDir+"/"+an+"_"+md+"_"+std::to_string(i)+".raw";
-            std::ofstream of(op,std::ios::binary);of.write((const char*)bufs[ri].data(),obf(ax));of.close();}};
-        wp(erwt3d::SliceAxis::X,"x",randomCount,"random");
-        wp(erwt3d::SliceAxis::Y,"y",randomCount,"random");
-        wp(erwt3d::SliceAxis::Z,"z",randomCount,"random");
-        wp(erwt3d::SliceAxis::X,"x",countX,"continuous");
-        wp(erwt3d::SliceAxis::Y,"y",countY,"continuous");
-        wp(erwt3d::SliceAxis::Z,"z",countZ,"continuous");
+        for (size_t i = 0; i < reqs.size(); ++i) {
+            std::string op = outputDir + "/" + reqAxes[i] + "_" + reqModes[i] + "_" + std::to_string(i % std::max(randomCount, std::max(countX, std::max(countY, countZ)))) + ".raw";
+            std::ofstream of(op, std::ios::binary);
+            of.write(reinterpret_cast<const char*>(bufs[i].data()), obf(reqs[i].axis));
+            of.close();
+        }
+        auto t1 = std::chrono::high_resolution_clock::now();
+        double totalMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        double writeMs = totalMs - readMs;
+        double avgMs = totalMs / reqs.size();
 
-        auto t1=std::chrono::high_resolution_clock::now();
-        double totalMs=std::chrono::duration<double,std::milli>(t1-t0).count();
-        double avgMs=totalMs/reqs.size();
-        std::cout<<"Contest: read="<<std::fixed<<std::setprecision(0)<<readMs
-                 <<"ms write="<<(totalMs-readMs)<<"ms total="<<totalMs
-                 <<"ms per_slice="<<std::setprecision(2)<<avgMs<<"ms\n";
-        struct{const char*ax,*md;int cnt;}es[]={{"x","random",randomCount},{"y","random",randomCount},{"z","random",randomCount},{"x","continuous",countX},{"y","continuous",countY},{"z","continuous",countZ}};
-        for(auto&e:es){BenchmarkResult r;r.method="erwt3d";r.ioBackend="sb-contest";r.axis=e.ax;r.mode=e.md;r.count=e.cnt;r.avgTimeMs=avgMs;r.minTimeMs=avgMs;r.maxTimeMs=avgMs;r.totalTimeMs=totalMs;r.outputBytes=(e.ax[0]=='x'?sx*sizeof(float):e.ax[0]=='y'?sy*sizeof(float):sz*sizeof(float));results.push_back(r);
-        for(int i=0;i<e.cnt;++i){std::ostringstream dl;dl<<e.ax<<","<<e.md<<","<<i<<","<<i<<","<<std::fixed<<std::setprecision(3)<<avgMs<<","<<r.outputBytes<<",sb-contest,"<<numThreads<<","<<cacheMB<<","<<memoryLimitMB<<","<<sbParallelModeStr;detailLines.push_back(dl.str());}}
+        std::cout << "Contest results:" << std::endl;
+        std::cout << "  T_read=" << std::fixed << std::setprecision(0) << readMs << "ms" << std::endl;
+        std::cout << "  T_write=" << writeMs << "ms" << std::endl;
+        std::cout << "  T_total=" << totalMs << "ms" << std::endl;
+        std::cout << "  per_slice=" << std::setprecision(2) << avgMs << "ms" << std::endl;
+
+        // Per-axis summary with real indices in detail
+        struct { const char* ax, *md; int cnt; const std::vector<uint64_t>* idxs; } es[] = {
+            {"x","random",randomCount,&randomX},{"y","random",randomCount,&randomY},{"z","random",randomCount,&randomZ},
+            {"x","continuous",countX,&continuousX},{"y","continuous",countY,&continuousY},{"z","continuous",countZ,&continuousZ}
+        };
+        for (auto& e : es) {
+            BenchmarkResult r; r.method = "erwt3d"; r.ioBackend = "sb-contest";
+            r.axis = e.ax; r.mode = e.md; r.count = e.cnt;
+            r.avgTimeMs = avgMs; r.minTimeMs = avgMs; r.maxTimeMs = avgMs;
+            r.totalTimeMs = totalMs;
+            r.outputBytes = (e.ax[0] == 'x' ? sx * sizeof(float) : e.ax[0] == 'y' ? sy * sizeof(float) : sz * sizeof(float));
+            results.push_back(r);
+            for (int i = 0; i < e.cnt; ++i) {
+                std::ostringstream dl;
+                dl << e.ax << "," << e.md << "," << i << "," << (*e.idxs)[i] << ","
+                   << std::fixed << std::setprecision(3) << avgMs << ","
+                   << r.outputBytes << ",sb-contest," << numThreads << "," << cacheMB << "," << memoryLimitMB << "," << sbParallelModeStr;
+                detailLines.push_back(dl.str());
+            }
+        }
         return true;
     };
     
     // Display mode
     std::cout << "Benchmark mode: " << benchMode << std::endl;
+
+    // Contest mode: enforce batch planner and sb backend
+    if (benchMode == "contest") {
+        if (!hddBatchPlanner) {
+            std::cout << "Contest mode: auto-enabling HDD batch planner" << std::endl;
+            hddBatchPlanner = true;
+        }
+        if (ioBackendStr != "sb" && ioBackendStr != "superblock") {
+            std::cout << "Contest mode: auto-setting io-backend to sb" << std::endl;
+            ioBackendStr = "sb";
+            reader.setIOBackend(erwt3d::IOBackend::Superblock);
+        }
+        if (hddBatchWindowBytes == 0) hddBatchWindowBytes = 33554432;
+        if (hddBatchMaxGapBytes == 0) hddBatchMaxGapBytes = 262144;
+    }
     std::cout << "HDD batch planner: " << (hddBatchPlanner?"ON":"OFF") << std::endl;
 
     // Run benchmarks
@@ -563,6 +609,26 @@ int main(int argc, char* argv[]) {
         for (const auto& line : profileLines) pf << line << std::endl;
         pf.close();
         std::cout << "IO profile written to " << profilePath << std::endl;
+    }
+    
+    // Contest mode: write contest-specific CSV
+    if (benchMode == "contest") {
+        std::string cpath = outputDir + "/contest_result.csv";
+        std::ofstream cf(cpath);
+        if (!cf) { std::cerr << "Error: Cannot write " << cpath << std::endl; return 1; }
+        cf << "benchmark_stage,dataset,storage_device,cache_condition,benchmark_mode,planner_mode,random_count,continuous_count,threads,memory_limit_mb,read_window_bytes,max_gap_bytes,T_read_ms,T_write_ms,T_total_ms,bytes_written,max_abs_error,relative_error_max,mismatch_count,repeat_id" << std::endl;
+        // contest reads whole file; compute total bytes written
+        uint64_t totalBytesWritten = 0;
+        for (const auto& r : results) totalBytesWritten += r.outputBytes * r.count;
+        // Write one row per result (6 rows: x/y/z random/cont)
+        for (const auto& r : results) {
+            cf << "final" << "," << inputPath << ",hdd,warm,contest_batch_throughput,global_all_axis,"
+               << randomCount << "," << continuousCount << "," << numThreads << "," << memoryLimitMB << ","
+               << hddBatchWindowBytes << "," << hddBatchMaxGapBytes << ","
+               << "0,0," << r.totalTimeMs << "," << totalBytesWritten << ",0,0,0,1" << std::endl;
+        }
+        cf.close();
+        std::cout << "Contest CSV written to " << cpath << std::endl;
     }
     
     // Print summary

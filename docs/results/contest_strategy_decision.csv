@@ -1,0 +1,4 @@
+rank,strategy,status,benchmark_mode,20G_warm_per_slice_ms,50G_warm_per_slice_ms,20G_warm_total_ms,50G_warm_total_ms,20G_cold_total_ms,50G_cold_total_ms,recommendation
+1,Contest global all-axis batch,STABLE_CONTEST_DEFAULT,contest_batch_throughput,216,481,71316,158755,168688,596573,"--mode contest --hdd-batch-window-bytes 33554432 --hdd-batch-max-gap-bytes 262144 --threads 8 --memory-limit-mb 16384"
+2,Per-axis batch planner (PR #34),EXPERIMENTAL,batch_throughput,231,656,76230,216480,n/a,n/a,"--hdd-batch-planner on (per-axis mode)"
+3,HDD read-window (PR #34),STABLE,single_slice_latency,1467,2279,484110,752070,n/a,n/a,"--sb-read-mode hdd-read-window (stable single-slice)"

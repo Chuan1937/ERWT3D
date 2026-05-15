@@ -1,0 +1,4 @@
+benchmark_stage,dataset,storage_device,cache_condition,benchmark_mode,planner_mode,random_count,continuous_count,threads,memory_limit_mb,read_window_bytes,max_gap_bytes,T_read_ms,T_write_ms,T_total_ms,bytes_written,max_abs_error,relative_error_max,mismatch_count,repeat_id,mean,min,max,std
+final,20G_small,hdd,cold,contest_batch_throughput,global_all_axis,100,10,8,16384,33554432,262144,136023,32665,168688,754261440,0,0,0,1,103773,70232,168688,56064
+final,20G_small,hdd,warm,contest_batch_throughput,global_all_axis,100,10,8,16384,33554432,262144,38012,34389,72400,754261440,0,0,0,2,103773,70232,168688,56064
+final,20G_small,hdd,warm,contest_batch_throughput,global_all_axis,100,10,8,16384,33554432,262144,37449,32784,70232,754261440,0,0,0,3,103773,70232,168688,56064
