@@ -48,6 +48,7 @@ void printUsage(const char* progName) {
     std::cerr << "Usage: " << progName << " --input data.erwt3d --output-dir DIR [options]" << std::endl;
     std::cerr << std::endl;
     std::cerr << "Options:" << std::endl;
+    std::cerr << "  --mode MODE           Benchmark mode: normal, contest (default: normal)" << std::endl;
     std::cerr << "  --random-count N      Number of random slice reads per axis (default: 100)" << std::endl;
     std::cerr << "  --continuous-count N  Number of continuous slice reads per axis (default: 10)" << std::endl;
     std::cerr << "  --threads N|auto    Number of threads; auto = min(hw/2, 8) (default: 1)" << std::endl;
@@ -63,7 +64,9 @@ void printUsage(const char* progName) {
     std::cerr << "  --hdd-max-gap-bytes N      HDD max gap bytes to merge (0=adjacent only, default: 0)" << std::endl;
     std::cerr << "  --hdd-batch-planner on|off  Global task sort + merge across all slices (default: off)" << std::endl;
     std::cerr << "  --hdd-batch-window-bytes N  Batch read window max bytes (0=auto, default: 0)" << std::endl;
-    std::cerr << "  --hdd-batch-max-gap-bytes N Batch max gap bytes to merge (0=adjacent, default: 0)" << std::endl;
+    std::cerr << "  --hdd-batch-window-bytes N  Batch read window max bytes (0=auto, default: 0)" << std::endl;
+    std::cerr << "  --hdd-batch-max-gap-bytes N Batch max gap bytes to merge (0=adjacent only, default: 0)" << std::endl;
+    std::cerr << "  --hdd-contiguous-prefetch N Contiguous slice prefetch count (0=off, default: 0)" << std::endl;
     std::cerr << "  --profile-io          Enable per-slice I/O phase profiling (writes io_profile.csv)" << std::endl;
     std::cerr << "  --pin-threads         Pin worker threads to CPU cores (Linux only)" << std::endl;
     std::cerr << "  --seed N              Random seed (default: 20260511)" << std::endl;
@@ -89,6 +92,8 @@ int main(int argc, char* argv[]) {
     bool hddBatchPlanner = false;
     uint64_t hddBatchWindowBytes = 0;
     uint64_t hddBatchMaxGapBytes = 0;
+    uint32_t hddContiguousPrefetch = 0;
+    std::string benchMode = "normal";
     bool profileIO = false;
     bool pinThreads = false;
     
@@ -137,6 +142,10 @@ int main(int argc, char* argv[]) {
             hddBatchWindowBytes = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--hdd-batch-max-gap-bytes") == 0 && i + 1 < argc) {
             hddBatchMaxGapBytes = std::stoul(argv[++i]);
+        } else if (std::strcmp(argv[i], "--hdd-contiguous-prefetch") == 0 && i + 1 < argc) {
+            hddContiguousPrefetch = std::stoul(argv[++i]);
+        } else if (std::strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
+            benchMode = argv[++i];
         } else if (std::strcmp(argv[i], "--profile-io") == 0) {
             profileIO = true;
         } else if (std::strcmp(argv[i], "--pin-threads") == 0) {
@@ -414,7 +423,7 @@ int main(int argc, char* argv[]) {
                   << std::setprecision(2) << avgMs << "ms, batch_total=" << totalMs << "ms" << std::endl;
         return true;
     };
-    
+
     // Generate random indices
     std::uniform_int_distribution<uint64_t> distX(0, header.nx - 1);
     std::uniform_int_distribution<uint64_t> distY(0, header.ny - 1);
@@ -443,18 +452,73 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < countY; ++i) continuousY.push_back(sY + i);
     for (int i = 0; i < countZ; ++i) continuousZ.push_back(sZ + i);
     
-    // Run benchmarks
-    std::function<bool(erwt3d::SliceAxis,const std::string&,const std::vector<uint64_t>&,const std::string&)> bn;
-    bn = hddBatchPlanner ? (decltype(bn))benchmarkSliceBatch : (decltype(bn))benchmarkSlice;
-    std::cout << "\nRunning random slice benchmarks..." << (hddBatchPlanner ? " [BATCH]" : "") << std::endl;
-    bn(erwt3d::SliceAxis::X, "x", randomX, "random") || (benchOk = false);
-    bn(erwt3d::SliceAxis::Y, "y", randomY, "random") || (benchOk = false);
-    bn(erwt3d::SliceAxis::Z, "z", randomZ, "random") || (benchOk = false);
+    // Contest mode: global all-axis batch, includes write time
+    auto benchmarkContest = [&]() -> bool {
+        uint64_t sx = header.ny * header.nz, sy = header.nx * header.nz, sz = header.nx * header.ny;
+        std::cout << "Contest: " << (randomCount*3+countX+countY+countZ) << " slices global batch" << std::endl;
+        using R = erwt3d::ERWT3DReader::SliceBatchRequest;
+        std::vector<R> reqs;
+        for (int i=0;i<randomCount;++i) reqs.push_back(R{erwt3d::SliceAxis::X,randomX[i],nullptr});
+        for (int i=0;i<randomCount;++i) reqs.push_back(R{erwt3d::SliceAxis::Y,randomY[i],nullptr});
+        for (int i=0;i<randomCount;++i) reqs.push_back(R{erwt3d::SliceAxis::Z,randomZ[i],nullptr});
+        for (int i=0;i<countX;++i) reqs.push_back(R{erwt3d::SliceAxis::X,continuousX[i],nullptr});
+        for (int i=0;i<countY;++i) reqs.push_back(R{erwt3d::SliceAxis::Y,continuousY[i],nullptr});
+        for (int i=0;i<countZ;++i) reqs.push_back(R{erwt3d::SliceAxis::Z,continuousZ[i],nullptr});
+
+        auto obf=[&](erwt3d::SliceAxis a){return (a==erwt3d::SliceAxis::X?sx:(a==erwt3d::SliceAxis::Y?sy:sz))*sizeof(float);};
+        std::vector<std::vector<float>> bufs(reqs.size());
+        for(size_t i=0;i<reqs.size();++i){auto a=reqs[i].axis;bufs[i].resize(a==erwt3d::SliceAxis::X?sx:a==erwt3d::SliceAxis::Y?sy:sz);reqs[i].output=bufs[i].data();}
+
+        auto t0=std::chrono::high_resolution_clock::now();
+        if(!reader.readSlicesBatch(reqs,numThreads,memoryLimitMB,{hddBatchWindowBytes,hddBatchMaxGapBytes})){
+            std::cerr<<"Contest batch read failed\n";return false;}
+        auto tr=std::chrono::high_resolution_clock::now();
+        double readMs=std::chrono::duration<double,std::milli>(tr-t0).count();
+
+        // Write all outputs
+        size_t ri=0;
+        auto wp=[&](erwt3d::SliceAxis ax,const std::string& an,int cnt,const std::string& md){
+            for(int i=0;i<cnt;++i,++ri){std::string op=outputDir+"/"+an+"_"+md+"_"+std::to_string(i)+".raw";
+            std::ofstream of(op,std::ios::binary);of.write((const char*)bufs[ri].data(),obf(ax));of.close();}};
+        wp(erwt3d::SliceAxis::X,"x",randomCount,"random");
+        wp(erwt3d::SliceAxis::Y,"y",randomCount,"random");
+        wp(erwt3d::SliceAxis::Z,"z",randomCount,"random");
+        wp(erwt3d::SliceAxis::X,"x",countX,"continuous");
+        wp(erwt3d::SliceAxis::Y,"y",countY,"continuous");
+        wp(erwt3d::SliceAxis::Z,"z",countZ,"continuous");
+
+        auto t1=std::chrono::high_resolution_clock::now();
+        double totalMs=std::chrono::duration<double,std::milli>(t1-t0).count();
+        double avgMs=totalMs/reqs.size();
+        std::cout<<"Contest: read="<<std::fixed<<std::setprecision(0)<<readMs
+                 <<"ms write="<<(totalMs-readMs)<<"ms total="<<totalMs
+                 <<"ms per_slice="<<std::setprecision(2)<<avgMs<<"ms\n";
+        struct{const char*ax,*md;int cnt;}es[]={{"x","random",randomCount},{"y","random",randomCount},{"z","random",randomCount},{"x","continuous",countX},{"y","continuous",countY},{"z","continuous",countZ}};
+        for(auto&e:es){BenchmarkResult r;r.method="erwt3d";r.ioBackend="sb-contest";r.axis=e.ax;r.mode=e.md;r.count=e.cnt;r.avgTimeMs=avgMs;r.minTimeMs=avgMs;r.maxTimeMs=avgMs;r.totalTimeMs=totalMs;r.outputBytes=(e.ax[0]=='x'?sx*sizeof(float):e.ax[0]=='y'?sy*sizeof(float):sz*sizeof(float));results.push_back(r);
+        for(int i=0;i<e.cnt;++i){std::ostringstream dl;dl<<e.ax<<","<<e.md<<","<<i<<","<<i<<","<<std::fixed<<std::setprecision(3)<<avgMs<<","<<r.outputBytes<<",sb-contest,"<<numThreads<<","<<cacheMB<<","<<memoryLimitMB<<","<<sbParallelModeStr;detailLines.push_back(dl.str());}}
+        return true;
+    };
     
-    std::cout << "\nRunning continuous slice benchmarks..." << (hddBatchPlanner ? " [BATCH]" : "") << std::endl;
-    bn(erwt3d::SliceAxis::X, "x", continuousX, "continuous") || (benchOk = false);
-    bn(erwt3d::SliceAxis::Y, "y", continuousY, "continuous") || (benchOk = false);
-    bn(erwt3d::SliceAxis::Z, "z", continuousZ, "continuous") || (benchOk = false);
+    // Display mode
+    std::cout << "Benchmark mode: " << benchMode << std::endl;
+    std::cout << "HDD batch planner: " << (hddBatchPlanner?"ON":"OFF") << std::endl;
+
+    // Run benchmarks
+    if (benchMode == "contest") {
+        std::cout << "\nRunning contest benchmark [GLOBAL BATCH, ALL AXES]..." << std::endl;
+        benchmarkContest() || (benchOk = false);
+    } else {
+        std::function<bool(erwt3d::SliceAxis,const std::string&,const std::vector<uint64_t>&,const std::string&)> bn;
+        bn = hddBatchPlanner ? (decltype(bn))benchmarkSliceBatch : (decltype(bn))benchmarkSlice;
+        std::cout << "\nRunning random slice benchmarks..." << (hddBatchPlanner ? " [BATCH]" : "") << std::endl;
+        bn(erwt3d::SliceAxis::X, "x", randomX, "random") || (benchOk = false);
+        bn(erwt3d::SliceAxis::Y, "y", randomY, "random") || (benchOk = false);
+        bn(erwt3d::SliceAxis::Z, "z", randomZ, "random") || (benchOk = false);
+        std::cout << "\nRunning continuous slice benchmarks..." << (hddBatchPlanner ? " [BATCH]" : "") << std::endl;
+        bn(erwt3d::SliceAxis::X, "x", continuousX, "continuous") || (benchOk = false);
+        bn(erwt3d::SliceAxis::Y, "y", continuousY, "continuous") || (benchOk = false);
+        bn(erwt3d::SliceAxis::Z, "z", continuousZ, "continuous") || (benchOk = false);
+    }
     
     // Write CSV
     if (!benchOk) {
