@@ -1,0 +1,4 @@
+benchmark_stage,dataset,storage_device,cache_condition,benchmark_mode,planner_mode,random_count,continuous_count,threads,memory_limit_mb,read_window_bytes,max_gap_bytes,T_read_ms,T_write_ms,T_total_ms,per_slice_ms,cold_mean_total,warm_mean_total,cold_std,warm_std,max_abs_error,relative_error_max,mismatch_count,notes
+final,50G_big,hdd,cold,contest_batch_throughput,global_all_axis,100,10,8,16384,33554432,262144,539520,57053,596573,1807.80,596573,N/A,N/A,N/A,0,0,0,cold cache
+final,50G_big,hdd,warm,contest_batch_throughput,global_all_axis,100,10,8,16384,33554432,262144,97040,66067,163107,494.26,N/A,158755,N/A,6155,0,0,0,warm repeat 2
+final,50G_big,hdd,warm,contest_batch_throughput,global_all_axis,100,10,8,16384,33554432,262144,96499,57904,154403,467.89,N/A,158755,N/A,6155,0,0,0,warm repeat 3
