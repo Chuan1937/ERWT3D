@@ -1,0 +1,3 @@
+tile_shape,tile_order,window_count,pread_calls,bytes_actual_read,physical_seek_distance_est,T_no_write,T_packed,storage_ratio,notes
+64x64x64,linear,1,1,20719862016,0,37500,58000,1.075,baseline; sequential scan across entire file
+64x64x64,morton3d,1,1,20719862016,sequential within Morton clusters,not yet benchmarked,,1.075,Morton3D layout implemented; correctness verified; benchmark pending

@@ -1,0 +1,4 @@
+tile_shape,tile_order,slice_index,raw_size_bytes,erwt3d_size_bytes,index_size_bytes,storage_ratio,storage_ratio_with_index,status,notes
+64x64x64,linear,off,19271755620,20719862016,0,1.075,1.075,PASS,baseline
+64x64x64,morton3d,off,19271755620,20719862016,158080,1.075,1.075,PASS,tile directory: 19760*8 = 158KB
+,,on,,,,,,,REJECTED_STORAGE_RATIO,slice index not yet implemented
