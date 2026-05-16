@@ -99,10 +99,17 @@ struct SBBatchPlan {
     std::vector<SBBatchTask> batch_tasks;
     uint64_t total_sb_touched = 0;
 };
+struct SBBatchProfile {
+    uint64_t windows_count = 0;
+    uint64_t pread_calls = 0;
+    uint64_t bytes_actual_read = 0;
+    uint64_t superblocks_decoded = 0;
+};
 SBBatchPlan buildSBBatchPlan(const std::vector<const SBTaskPlan*>& plans);
 bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr,
                        float* const* outputs, int numThreads, size_t memoryLimitMB,
-                       const HDDReadWindowConfig& wcfg, bool pinThreads = false);
+                       const HDDReadWindowConfig& wcfg, bool pinThreads = false,
+                       SBBatchProfile* profile = nullptr);
 
 bool tryReadSliceXPanels(int fd, const ERWT3DHeader& hdr, uint64_t x,
                           float* output, IOProfile* profile);

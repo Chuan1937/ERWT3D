@@ -1,0 +1,13 @@
+metric,20G_small_value,50G_big_value,unit
+bytes_total_file,20719862016,55197040896,bytes
+superblocks_total,19760,52640,count
+superblock_bytes,1048576,1048576,bytes
+storage_ratio,1.075,1.044,ratio_vs_raw
+T_read_ms,none:37192 packed:37741,none:93671 packed:98968,ms
+T_write_ms,none:0 packed:20274,none:0 packed:48759,ms
+T_total_ms,none:37486 packed:58014,none:94149 packed:147727,ms
+per_slice_ms,none:114 packed:176,none:285 packed:448,ms
+output_files,330,330,count
+eff_read_bandwidth_mbps,557,590,MB/s
+eff_write_bandwidth_mbps,216,154,MB/s packed mode
+notes,contest workload reads nearly all superblocks; bottleneck is sequential HDD bandwidth,"55GB file; read dominates; write is ~15% of total"

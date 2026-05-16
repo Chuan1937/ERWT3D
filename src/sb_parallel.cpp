@@ -743,7 +743,7 @@ SBBatchPlan buildSBBatchPlan(const std::vector<const SBTaskPlan*>& plans) {
 
 bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr,
                        float* const* outputs, int numThreads, size_t memoryLimitMB,
-                       const HDDReadWindowConfig& wcfg, bool pinThreads) {
+                       const HDDReadWindowConfig& wcfg, bool pinThreads, SBBatchProfile* profile) {
     const uint64_t sbBV = sbBytes(hdr);
     const size_t n = batch.batch_tasks.size();
     if (n == 0) return true;
@@ -771,6 +771,16 @@ bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr
     size_t mbpt = memoryLimitMB * 1024ULL * 1024ULL / static_cast<size_t>(numThreads);
     if (mbpt < sbBV) return false;
     mbpt = std::min(mbpt, std::max(mwb, sbBV * 4));
+
+    // Profile: compute from windows before execution
+    if (profile) {
+        profile->windows_count = wins.size();
+        profile->superblocks_decoded = batch.batch_tasks.size(); // one SB per task
+        for (auto& w : wins) {
+            profile->bytes_actual_read += w.rb;
+            profile->pread_calls += (w.rb > mbpt) ? (w.rb + mbpt - 1) / mbpt : 1;
+        }
+    }
 
     auto pw = [&](size_t sw, size_t ew) -> bool {
         std::vector<uint8_t> buf(mbpt);
