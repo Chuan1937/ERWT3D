@@ -34,6 +34,7 @@ int main(int argc, char* argv[]) {
     int numThreads = 1;
     size_t memoryLimitMB = 2048;
     uint32_t superSize = 64;
+    uint32_t tileX = 0, tileY = 0, tileZ = 0;
     uint32_t leafSize = 4;
     uint32_t panelAxis = 0;
     uint32_t panelStride = 0;
@@ -58,6 +59,12 @@ int main(int argc, char* argv[]) {
             memoryLimitMB = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--super-size") == 0 && i + 1 < argc) {
             superSize = std::stoul(argv[++i]);
+        } else if (std::strcmp(argv[i], "--tile-x") == 0 && i + 1 < argc) {
+            tileX = std::stoul(argv[++i]);
+        } else if (std::strcmp(argv[i], "--tile-y") == 0 && i + 1 < argc) {
+            tileY = std::stoul(argv[++i]);
+        } else if (std::strcmp(argv[i], "--tile-z") == 0 && i + 1 < argc) {
+            tileZ = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--leaf-size") == 0 && i + 1 < argc) {
             leafSize = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--panel-axis") == 0 && i + 1 < argc) {
@@ -111,7 +118,9 @@ int main(int argc, char* argv[]) {
         std::cout << "Dimensions: " << nx << " x " << ny << " x " << nz << std::endl;
         
         if (!erwt3d::writeERWT3DFromFile(outputPath, inputPath, nx, ny, nz,
-                                         superSize, superSize, superSize,
+                                         tileX ? tileX : superSize,
+                                         tileY ? tileY : superSize,
+                                         tileZ ? tileZ : superSize,
                                          leafSize, leafSize, leafSize,
                                          numThreads, memoryLimitMB,
                                          panelAxis, panelStride)) {
