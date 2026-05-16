@@ -1,3 +1,5 @@
-tile_shape,tile_order,window_count,pread_calls,bytes_actual_read,physical_seek_distance_est,T_no_write,T_packed,storage_ratio,notes
-64x64x64,linear,1,1,20719862016,0,37500,58000,1.075,baseline; sequential scan across entire file
-64x64x64,morton3d,1,1,20719862016,sequential within Morton clusters,not yet benchmarked,,1.075,Morton3D layout implemented; correctness verified; benchmark pending
+tile_shape,tile_order,T_no_write_20G_ms,T_no_write_50G_ms,T_packed_20G_ms,T_packed_50G_ms,storage_ratio,index_size_bytes,notes
+64x64x64,linear (baseline),37500,94000,58000,147000,1.075,0,baseline; 100% coverage makes order irrelevant
+64x64x64,morton3d,35962,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,1.075,158080,Morton3D verified correct (max_abs_error=0); same speed as linear because reads entire file
+32x32x32,linear,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,,,not yet benchmarked
+32x32x32,morton3d,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,,,not yet benchmarked

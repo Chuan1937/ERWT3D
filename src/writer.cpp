@@ -5,6 +5,10 @@
 #include <cstring>
 #include <algorithm>
 #include <iostream>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace erwt3d {
 
@@ -232,14 +236,25 @@ bool writeERWT3DFromFile(const std::string& outputPath,
 
     // Pass 1: write header + superblocks
     {
+        // For Morton ordering, mmap the raw input for fast random access
+        const float* mapped = nullptr; size_t mlen = 0; int mfd = -1;
+        if (useMorton2) {
+            mfd = open(inputPath.c_str(), O_RDONLY);
+            if (mfd < 0) { std::cerr << "Error: cannot open for Morton\n"; return false; }
+            struct stat st; fstat(mfd, &st);
+            mlen = st.st_size;
+            mapped = (const float*)mmap(nullptr, mlen, PROT_READ, MAP_PRIVATE, mfd, 0);
+            if (mapped == MAP_FAILED) { std::cerr << "mmap failed\n"; close(mfd); return false; }
+        }
+
         std::ofstream outFile(outputPath, std::ios::binary);
-        if (!outFile) return false;
+        if (!outFile) { if(mfd>=0){munmap((void*)mapped,mlen);close(mfd);} return false; }
         outFile.write(reinterpret_cast<const char*>(&header), sizeof(header));
         std::vector<uint64_t> tileDir2;
         if (useMorton2) { tileDir2.resize(totalSB, 0); outFile.write(reinterpret_cast<const char*>(tileDir2.data()), dirSize2); }
         std::vector<float> sb(superX*superY*superZ);
-        std::ifstream inFile(inputPath, std::ios::binary);
-        if (!inFile) return false;
+        std::ifstream inFile;
+        if (!useMorton2) { inFile.open(inputPath, std::ios::binary); if (!inFile) return false; }
         struct TP2 { uint64_t sx,sy,sz; };
         std::vector<TP2> order2;
         for (uint64_t sz=0; sz<sgZ; ++sz)
@@ -252,10 +267,12 @@ bool writeERWT3DFromFile(const std::string& outputPath,
         for (const auto& tp : order2) {
             uint64_t si = (tp.sz*sgY+tp.sy)*sgX+tp.sx;
             if (useMorton2) tileDir2[si] = static_cast<uint64_t>(outFile.tellp());
-            fillSuperBufferFromFile(sb, inFile, nx, ny, nz, tp.sx, tp.sy, tp.sz, superX, superY, superZ);
+            if (useMorton2) fillSuperBuffer(sb, mapped, nx, ny, nz, tp.sx, tp.sy, tp.sz, superX, superY, superZ);
+            else fillSuperBufferFromFile(sb, inFile, nx, ny, nz, tp.sx, tp.sy, tp.sz, superX, superY, superZ);
             writeLeaves(outFile, header, sb);
         }
         if (useMorton2) { outFile.seekp(sizeof(header)); outFile.write(reinterpret_cast<const char*>(tileDir2.data()), dirSize2); }
+        if (mfd >= 0) { munmap((void*)mapped, mlen); close(mfd); }
     } // close files
 
     // Pass 2: generate panels (streaming, one superblock at a time)

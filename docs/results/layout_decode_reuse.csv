@@ -1,0 +1,2 @@
+unique_tiles_read,tile_decode_count,tile_reuse_count,avg_outputs_per_tile,T_read_ms,T_decode_ms,T_scatter_ms,T_total_no_write_ms,memory_peak_mb,notes
+NOT_IMPLEMENTED,,,,,,,,,decode-once scatter-many not yet implemented; current batch planner already processes each tile once

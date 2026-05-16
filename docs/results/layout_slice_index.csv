@@ -1,0 +1,2 @@
+index_type,index_size_mb,index_build_time_ms,slice_lookup_time_ms,storage_ratio_with_index,x_index_entries,y_index_entries,z_index_entries,notes
+NOT_IMPLEMENTED,,,,,,,,slice-to-tile index compute-on-the-fly; not stored on disk

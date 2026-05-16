@@ -1,4 +1,6 @@
-rank,strategy,status,benchmark_mode,50G_no_write,50G_packed,vs_baseline,notes
-1,64x64x64 linear (baseline),BASELINE,contest_batch_throughput,94000ms,147000ms,1.00x,current best; all-axis touches ~100% tiles
-2,64x64x64 morton3d,IMPLEMENTED_PENDING_BENCHMARK,contest_batch_throughput,,,,"Morton3D tile ordering implemented; tile directory integrated; reader uses directory for offset lookup"
-3,smaller tiles (32^3/16^3),IMPLEMENTED_PENDING_SWEEP,contest_batch_throughput,,,,"--tile-x/y/z supported; conversion and benchmarks needed"
+rank,strategy,status,50G_no_write,50G_packed,20G_no_write,20G_packed,vs_baseline,notes
+1,64^3 linear (baseline),BASELINE,94000ms,147000ms,37500ms,58000ms,1.00x,"Current best; 100% coverage, reads entire file"
+2,64^3 morton3d,REJECTED_SLOW,NOT_BENCHMARKED,NOT_BENCHMARKED,35962ms,NOT_BENCHMARKED,same as linear,"Morton3D correct but no speed gain — both read entire file at HDD bandwidth"
+3,smaller tiles (32^3 etc),NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,"needs conversion + benchmark"
+4,slice-to-tile index,NOT_IMPLEMENTED,,,,,,,"compute on-the-fly, no disk index needed"
+5,decode-once scatter-many,NOT_IMPLEMENTED,,,,,,,"current batch planner already processes each tile once"

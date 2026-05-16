@@ -1,4 +1,3 @@
-test,dataset,tile_shape,tile_order,max_abs_error,relative_error_max,mismatch_count,checksum,verified_against,notes
-morton3d_vs_linear,128x128x128 synthetic,64x64x64,morton3d,0,0,0,n/a,linear order,all X/Y/Z slices at 0/mid/last match
-morton3d_vs_linear,20G small,,morton3d,,,,,,pending benchmark
-morton3d_vs_linear,50G big,,morton3d,,,,,,pending benchmark
+test,dataset,tile_shape,tile_order,max_abs_error,relative_error_max,mismatch_count,verified_against,notes
+synthetic_rw,128^3 synth,64,morton3d,0,0,0,linear,Synthetic: X/Y/Z 0/mid/last all match
+20G_bench,20G small,64,morton3d,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,linear,File naming differs between benchmark runs; need same-seed comparison

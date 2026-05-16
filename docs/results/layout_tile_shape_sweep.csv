@@ -1,6 +1,7 @@
-tile_x,tile_y,tile_z,raw_size_bytes,erwt3d_size_bytes,index_size_bytes,storage_ratio,tiles_total,superblocks_touched_x,superblocks_touched_y,superblocks_touched_z,superblocks_touched_all_axis,bytes_actual_read,read_coverage_ratio,T_no_write_20G,T_packed_20G,T_no_write_50G,T_packed_50G,T_x_ms,T_y_ms,T_z_ms,notes
-64,64,64,19271755620,20719862016,0,1.075,19760,1520,1520,1520,4560,20719862016,1.00,37500,58000,94000,147000,37.5,18.0,17.5,baseline; 100+10 touches ~100% tiles
-32,32,32,,,,,,,,,,,,,,,,,not yet benchmarked; needs conversion
-16,16,16,,,,,,,,,,,,,,,,,not yet benchmarked
-128,32,32,,,,,,,,,,,,,,,,,not yet benchmarked
-32,128,32,,,,,,,,,,,,,,,,,not yet benchmarked
+tile_x,tile_y,tile_z,erwt3d_size_bytes,storage_ratio,tiles_total,T_no_write_20G_ms,T_no_write_50G_ms,notes
+64,64,64,20719862016,1.075,19760,37500,94000,baseline; linear and Morton3D same speed
+32,32,32,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,needs conversion + benchmark
+16,16,16,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,
+128,32,32,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,
+32,128,32,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,
+32,32,128,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,NOT_BENCHMARKED,
