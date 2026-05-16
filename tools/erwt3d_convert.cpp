@@ -36,8 +36,8 @@ int main(int argc, char* argv[]) {
     uint32_t superSize = 64;
     uint32_t tileX = 0, tileY = 0, tileZ = 0;
     uint32_t leafSize = 4;
-    uint32_t panelAxis = 0;
-    uint32_t panelStride = 0;
+    uint32_t panelAxis = 0, panelStride = 0;
+    uint32_t tileOrder = 0;
     
     // Parse arguments
     for (int i = 1; i < argc; ++i) {
@@ -65,6 +65,9 @@ int main(int argc, char* argv[]) {
             tileY = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--tile-z") == 0 && i + 1 < argc) {
             tileZ = std::stoul(argv[++i]);
+        } else if (std::strcmp(argv[i], "--tile-order") == 0 && i + 1 < argc) {
+            std::string to = argv[++i];
+            if (to == "morton3d" || to == "morton") tileOrder = 1;
         } else if (std::strcmp(argv[i], "--leaf-size") == 0 && i + 1 < argc) {
             leafSize = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--panel-axis") == 0 && i + 1 < argc) {
@@ -123,7 +126,7 @@ int main(int argc, char* argv[]) {
                                          tileZ ? tileZ : superSize,
                                          leafSize, leafSize, leafSize,
                                          numThreads, memoryLimitMB,
-                                         panelAxis, panelStride)) {
+                                         panelAxis, panelStride, tileOrder)) {
             std::cerr << "Error: Failed to convert raw to ERWT3D" << std::endl;
             return 1;
         }

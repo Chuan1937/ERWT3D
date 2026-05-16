@@ -14,6 +14,7 @@ constexpr uint32_t DTYPE_FLOAT32 = 1;
 constexpr uint64_t FLAG_HAS_X_PANELS = 1ULL << 0;
 constexpr uint64_t FLAG_HAS_Y_PANELS = 1ULL << 1;
 constexpr uint64_t FLAG_HAS_Z_PANELS = 1ULL << 2;
+constexpr uint64_t FLAG_HAS_TILE_DIR = 1ULL << 3;
 
 // Default block sizes
 constexpr uint32_t DEFAULT_SUPER_X = 64;

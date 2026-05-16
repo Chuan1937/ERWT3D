@@ -33,6 +33,13 @@ ERWT3DReader::ERWT3DReader(const std::string& path, size_t cacheMB)
     if (cacheMB > 0) {
         cache_ = std::make_unique<LeafCache>(cacheMB * 1024 * 1024);
     }
+    // Read tile directory if present
+    if (header_.flags & FLAG_HAS_TILE_DIR) {
+        uint64_t totalSB = getTotalSuperblocks(header_);
+        uint64_t dirBytes = totalSB * sizeof(uint64_t);
+        tileDir_.resize(totalSB);
+        pread(fd_, tileDir_.data(), dirBytes, sizeof(header_));
+    }
 }
 
 ERWT3DReader::~ERWT3DReader() {
@@ -708,6 +715,15 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
     }
     if (plan.tasks.empty()) return true;
 
+    // Apply tile directory offset translation
+    if (!tileDir_.empty()) {
+        uint64_t sbBV = getSuperblockBytes(header_);
+        for (auto& task : plan.tasks) {
+            uint64_t sbIdx = (task.file_offset - header_.data_offset) / sbBV;
+            if (sbIdx < tileDir_.size()) task.file_offset = tileDir_[sbIdx];
+        }
+    }
+
     // Apply task ordering if requested
     if (sbTaskOrder_ == SBTaskOrder::FileOffset) {
         sortTasksByFileOffset(plan);
@@ -766,6 +782,15 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
         }
         if (sbTaskOrder_ == SBTaskOrder::FileOffset) sortTasksByFileOffset(p);
         plans.push_back(std::move(p)); outputs.push_back(r.output);
+    }
+    // Apply tile directory offset translation
+    if (!tileDir_.empty()) {
+        uint64_t sbBV = getSuperblockBytes(header_);
+        for (auto& p : plans)
+            for (auto& t : p.tasks) {
+                uint64_t si = (t.file_offset - header_.data_offset) / sbBV;
+                if (si < tileDir_.size()) t.file_offset = tileDir_[si];
+            }
     }
     for (auto& p : plans) pp.push_back(&p);
     return executeSBBatchHDD(fd_, buildSBBatchPlan(pp), header_, outputs.data(),

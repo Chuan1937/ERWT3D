@@ -6,7 +6,6 @@
 
 namespace erwt3d {
 
-// Write raw float32 data to ERWT3D format
 bool writeERWT3D(const std::string& outputPath,
                  const float* rawData,
                  uint64_t nx, uint64_t ny, uint64_t nz,
@@ -19,9 +18,9 @@ bool writeERWT3D(const std::string& outputPath,
                  int numThreads = 1,
                  size_t memoryLimitMB = 2048,
                  uint32_t panelAxis = 0,
-                 uint32_t panelStride = 0);
+                 uint32_t panelStride = 0,
+                 uint32_t tileOrder = 0);
 
-// Write raw float32 data from file to ERWT3D format
 bool writeERWT3DFromFile(const std::string& outputPath,
                          const std::string& inputPath,
                          uint64_t nx, uint64_t ny, uint64_t nz,
@@ -34,6 +33,7 @@ bool writeERWT3DFromFile(const std::string& outputPath,
                          int numThreads = 1,
                          size_t memoryLimitMB = 2048,
                          uint32_t panelAxis = 0,
-                         uint32_t panelStride = 0);
+                         uint32_t panelStride = 0,
+                         uint32_t tileOrder = 0);
 
 } // namespace erwt3d

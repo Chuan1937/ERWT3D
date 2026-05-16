@@ -96,6 +96,7 @@ private:
     SBTaskOrder sbTaskOrder_ = SBTaskOrder::Logical;
     HDDReadWindowConfig hddReadWindowCfg_;
     HDDContiguousConfig hddContigCfg_;
+    std::vector<uint64_t> tileDir_;
     bool profileIO_ = false;
     IOProfile lastProfile_;
     

@@ -71,7 +71,8 @@ bool writeERWT3D(const std::string& outputPath,
                  uint32_t superX, uint32_t superY, uint32_t superZ,
                  uint32_t leafX, uint32_t leafY, uint32_t leafZ,
                  int, size_t,
-                 uint32_t panelAxis, uint32_t panelStride) {
+                 uint32_t panelAxis, uint32_t panelStride,
+                 uint32_t tileOrder) {
     bool doPanels = (panelAxis == 0) && panelStride > 0 && panelStride <= superX;
 
     ERWT3DHeader header;
@@ -89,7 +90,11 @@ bool writeERWT3D(const std::string& outputPath,
     uint64_t panelDataSize=totalSB*sbPanelBytes;
     uint64_t panelIndexBytes=totalSB*sizeof(uint64_t);
     uint64_t mainSize=sizeof(header)+totalSB*sbBytes;
-    uint64_t projectedSize=mainSize+(doPanels?panelDataSize+panelIndexBytes:0);
+    bool useMorton = (tileOrder == 1);
+    if (useMorton) header.flags |= FLAG_HAS_TILE_DIR;
+    uint64_t dirSize = useMorton ? totalSB * sizeof(uint64_t) : 0;
+    header.data_offset = sizeof(header) + dirSize;
+    uint64_t projectedSize = mainSize + dirSize + (doPanels?panelDataSize+panelIndexBytes:0);
     double projectedRatio=static_cast<double>(projectedSize)/rawSize;
 
     if (doPanels && projectedRatio > 1.45) {
@@ -107,15 +112,43 @@ bool writeERWT3D(const std::string& outputPath,
     if (!file) return false;
     file.write(reinterpret_cast<const char*>(&header), sizeof(header));
 
+    // Write empty tile directory placeholder if Morton3D
+    std::vector<uint64_t> tileDir;
+    if (useMorton) {
+        tileDir.resize(totalSB, 0);
+        file.write(reinterpret_cast<const char*>(tileDir.data()), dirSize);
+    }
+
     std::vector<float> sb(superX*superY*superZ);
 
-    // Pass 1: write superblocks (in-memory data, streaming)
+    // Build ordered tile list
+    struct TP { uint64_t sx,sy,sz; };
+    std::vector<TP> order;
     for (uint64_t sz=0; sz<sgZ; ++sz)
         for (uint64_t sy=0; sy<sgY; ++sy)
-            for (uint64_t sx=0; sx<sgX; ++sx) {
-                fillSuperBuffer(sb, rawData, nx, ny, nz, sx, sy, sz, superX, superY, superZ);
-                writeLeaves(file, header, sb);
-            }
+            for (uint64_t sx=0; sx<sgX; ++sx)
+                order.push_back({sx, sy, sz});
+
+    if (useMorton) {
+        std::sort(order.begin(), order.end(), [](const TP& a, const TP& b) {
+            return morton3D((uint32_t)a.sx, (uint32_t)a.sy, (uint32_t)a.sz)
+                 < morton3D((uint32_t)b.sx, (uint32_t)b.sy, (uint32_t)b.sz);
+        });
+    }
+
+    for (const auto& tp : order) {
+        uint64_t si = (tp.sz*sgY + tp.sy)*sgX + tp.sx;
+        if (useMorton) tileDir[si] = static_cast<uint64_t>(file.tellp());
+        fillSuperBuffer(sb, rawData, nx, ny, nz, tp.sx, tp.sy, tp.sz, superX, superY, superZ);
+        writeLeaves(file, header, sb);
+    }
+
+    // Backfill tile directory
+    if (useMorton) {
+        file.seekp(sizeof(header));
+        file.write(reinterpret_cast<const char*>(tileDir.data()), dirSize);
+        file.seekp(0, std::ios::end);
+    }
 
     // Pass 2: generate panels from in-memory raw data
     if (doPanels) {
@@ -158,7 +191,8 @@ bool writeERWT3DFromFile(const std::string& outputPath,
                          uint32_t superX, uint32_t superY, uint32_t superZ,
                          uint32_t leafX, uint32_t leafY, uint32_t leafZ,
                          int, size_t,
-                         uint32_t panelAxis, uint32_t panelStride) {
+                         uint32_t panelAxis, uint32_t panelStride,
+                         uint32_t tileOrder) {
     bool doPanels = (panelAxis == 0) && panelStride > 0 && panelStride <= superX;
 
     ERWT3DHeader header;
@@ -190,20 +224,38 @@ bool writeERWT3DFromFile(const std::string& outputPath,
                   << "x (main=" << mainSize << " panel=" << panelDataSize+panelIndexBytes << ")" << std::endl;
     }
 
+    // Morton3D support: useMorton2 and dirSize2
+    bool useMorton2 = (tileOrder == 1);
+    if (useMorton2) header.flags |= FLAG_HAS_TILE_DIR;
+    uint64_t dirSize2 = useMorton2 ? totalSB * sizeof(uint64_t) : 0;
+    header.data_offset = sizeof(header) + dirSize2;
+
     // Pass 1: write header + superblocks
     {
-        std::ifstream inFile(inputPath, std::ios::binary);
-        if (!inFile) return false;
         std::ofstream outFile(outputPath, std::ios::binary);
         if (!outFile) return false;
         outFile.write(reinterpret_cast<const char*>(&header), sizeof(header));
+        std::vector<uint64_t> tileDir2;
+        if (useMorton2) { tileDir2.resize(totalSB, 0); outFile.write(reinterpret_cast<const char*>(tileDir2.data()), dirSize2); }
         std::vector<float> sb(superX*superY*superZ);
+        std::ifstream inFile(inputPath, std::ios::binary);
+        if (!inFile) return false;
+        struct TP2 { uint64_t sx,sy,sz; };
+        std::vector<TP2> order2;
         for (uint64_t sz=0; sz<sgZ; ++sz)
             for (uint64_t sy=0; sy<sgY; ++sy)
-                for (uint64_t sx=0; sx<sgX; ++sx) {
-                    fillSuperBufferFromFile(sb, inFile, nx, ny, nz, sx, sy, sz, superX, superY, superZ);
-                    writeLeaves(outFile, header, sb);
-                }
+                for (uint64_t sx=0; sx<sgX; ++sx) order2.push_back({sx,sy,sz});
+        if (useMorton2) {
+            std::sort(order2.begin(), order2.end(), [](const TP2& a, const TP2& b) {
+                return morton3D((uint32_t)a.sx,(uint32_t)a.sy,(uint32_t)a.sz) < morton3D((uint32_t)b.sx,(uint32_t)b.sy,(uint32_t)b.sz); });
+        }
+        for (const auto& tp : order2) {
+            uint64_t si = (tp.sz*sgY+tp.sy)*sgX+tp.sx;
+            if (useMorton2) tileDir2[si] = static_cast<uint64_t>(outFile.tellp());
+            fillSuperBufferFromFile(sb, inFile, nx, ny, nz, tp.sx, tp.sy, tp.sz, superX, superY, superZ);
+            writeLeaves(outFile, header, sb);
+        }
+        if (useMorton2) { outFile.seekp(sizeof(header)); outFile.write(reinterpret_cast<const char*>(tileDir2.data()), dirSize2); }
     } // close files
 
     // Pass 2: generate panels (streaming, one superblock at a time)
