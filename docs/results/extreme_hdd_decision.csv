@@ -1,4 +1,4 @@
-rank,strategy,status,benchmark_mode,write_threads,20G_warm_mean_total_ms,50G_warm_mean_total_ms,20G_vs_PR37,50G_vs_PR37,recommendation
-1,Contest global batch (32MB/256K) + single-thread write,EXTREME_CONTEST_DEFAULT,contest_batch_throughput,1,70875,153512,similar (PR37=71316),3.3% faster (PR37=158755),"--mode contest --hdd-batch-window-bytes 33554432 --hdd-batch-max-gap-bytes 262144 --contest-write-threads 1 --threads 8 --memory-limit-mb 16384"
-2,Contest global batch (256MB/4M) + single-thread write,COMPETITIVE,contest_batch_throughput,1,n/a,153512,n/a,similar to 32MB/256K,"--hdd-batch-window-bytes 268435456 --hdd-batch-max-gap-bytes 4194304"
-3,Parallel writes (4-8 threads),REJECTED_SLOW,contest_batch_throughput,4-8,74789,n/a,5% slower,n/a,"HDD: parallel writes cause head contention, not recommended"
+rank,strategy,status,write_mode,20G_total_sec,50G_total_sec,20G_vs_baseline,50G_vs_baseline,recommendation
+1,Contest packed output,EXTREME_CONTEST_DEFAULT,packed,63.5,141.5,"10.5% faster","10.7% faster","--mode contest --contest-write-mode packed"
+2,Contest per-slice,COMPETITIVE,per-slice,70.9,158.8,baseline,baseline,"--mode contest (default)"
+3,Contest no-write,BOUNDARY,none,37.6,96.4,"HDD lower bound","HDD lower bound","--contest-write-mode none (diagnostic only)"

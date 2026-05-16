@@ -52,6 +52,7 @@ void printUsage(const char* progName) {
     std::cerr << "  --mode MODE           Benchmark mode: normal, contest (default: normal)" << std::endl;
     std::cerr << "                        contest = global all-axis batch throughput (auto-enables batch planner)" << std::endl;
     std::cerr << "  --contest-write-threads N  Parallel output writer threads (default: 1)" << std::endl;
+    std::cerr << "  --contest-write-mode MODE  Write mode: per-slice, packed, none (default: per-slice)" << std::endl;
     std::cerr << "  --random-count N      Number of random slice reads per axis (default: 100)" << std::endl;
     std::cerr << "  --continuous-count N  Number of continuous slice reads per axis (default: 10)" << std::endl;
     std::cerr << "  --threads N|auto    Number of threads; auto = min(hw/2, 8) (default: 1)" << std::endl;
@@ -96,6 +97,7 @@ int main(int argc, char* argv[]) {
     std::string benchMode = "normal";
     double contestReadMs = 0, contestWriteMs = 0, contestTotalMs = 0;
     int contestWriteThreads = 1;
+    std::string contestWriteMode = "per-slice";
     bool profileIO = false;
     bool pinThreads = false;
     
@@ -148,6 +150,8 @@ int main(int argc, char* argv[]) {
             benchMode = argv[++i];
         } else if (std::strcmp(argv[i], "--contest-write-threads") == 0 && i + 1 < argc) {
             contestWriteThreads = std::stoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--contest-write-mode") == 0 && i + 1 < argc) {
+            contestWriteMode = argv[++i];
         } else if (std::strcmp(argv[i], "--profile-io") == 0) {
             profileIO = true;
         } else if (std::strcmp(argv[i], "--pin-threads") == 0) {
@@ -495,8 +499,57 @@ int main(int argc, char* argv[]) {
         auto tr = std::chrono::high_resolution_clock::now();
         double readMs = std::chrono::duration<double, std::milli>(tr - t0).count();
 
-        // Write all outputs (parallel if contest-write-threads > 1)
-        std::vector<std::string> outPaths(reqs.size());
+        // Output: none / packed / per-slice
+        uint64_t checksum = 0;
+        if (contestWriteMode == "none") {
+            for (size_t i = 0; i < reqs.size(); ++i) {
+                auto* d = reinterpret_cast<const uint32_t*>(bufs[i].data());
+                size_t n = obf(reqs[i].axis) / 4;
+                for (size_t j = 0; j < n; ++j) checksum += d[j];
+            }
+            double unpackMs = readMs; // read+unpack are together in readMs
+            auto t1 = std::chrono::high_resolution_clock::now();
+            double totalMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+            std::cout << "Contest results (--contest-write-mode none):" << std::endl;
+            std::cout << "  T_read+unpack=" << std::fixed << std::setprecision(0) << readMs << "ms" << std::endl;
+            std::cout << "  checksum=" << std::hex << checksum << std::dec << std::endl;
+            contestReadMs = readMs; contestWriteMs = 0; contestTotalMs = totalMs;
+        } else if (contestWriteMode == "packed") {
+            std::string packedPath = outputDir + "/contest_output.bin";
+            std::string indexPath = outputDir + "/contest_output_index.csv";
+            std::ofstream pf(packedPath, std::ios::binary);
+            std::ofstream ix(indexPath);
+            ix << "axis,slice_index,offset,bytes,checksum" << std::endl;
+            uint64_t off = 0;
+            struct { const char* ax,*md; int cnt; } wp[] = {
+                {"x","random",randomCount},{"y","random",randomCount},{"z","random",randomCount},
+                {"x","continuous",countX},{"y","continuous",countY},{"z","continuous",countZ}
+            };
+            size_t gi = 0;
+            for (auto& w : wp) {
+                for (int i = 0; i < w.cnt; ++i, ++gi) {
+                    uint64_t ob = obf(reqs[gi].axis);
+                    uint64_t ck = 0;
+                    auto* d = reinterpret_cast<const uint32_t*>(bufs[gi].data());
+                    for (uint64_t j = 0; j < ob/4; ++j) ck += d[j];
+                    pf.write(reinterpret_cast<const char*>(bufs[gi].data()), ob);
+                    ix << w.ax << "," << i << "," << off << "," << ob << "," << std::hex << ck << std::dec << std::endl;
+                    off += ob;
+                }
+            }
+            pf.close(); ix.close();
+            auto t1 = std::chrono::high_resolution_clock::now();
+            double totalMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+            double writeMs = totalMs - readMs;
+            contestReadMs = readMs; contestWriteMs = writeMs; contestTotalMs = totalMs;
+            std::cout << "Contest results (--contest-write-mode packed):" << std::endl;
+            std::cout << "  T_read=" << std::fixed << std::setprecision(0) << readMs << "ms" << std::endl;
+            std::cout << "  T_write=" << writeMs << "ms" << std::endl;
+            std::cout << "  T_total=" << totalMs << "ms" << std::endl;
+            std::cout << "  packed_size=" << off << " bytes" << std::endl;
+            std::cout << "  per_slice=" << std::setprecision(2) << totalMs/reqs.size() << "ms" << std::endl;
+        } else { // per-slice (default)
+        // Write individual .raw files
         struct { const char* ax; const char* md; int cnt; } wp[] = {
             {"x","random",randomCount},{"y","random",randomCount},{"z","random",randomCount},
             {"x","continuous",countX},{"y","continuous",countY},{"z","continuous",countZ}
@@ -504,39 +557,25 @@ int main(int argc, char* argv[]) {
         size_t gi = 0;
         for (auto& w : wp) {
             for (int i = 0; i < w.cnt; ++i, ++gi) {
-                outPaths[gi] = outputDir + "/" + w.ax + "_" + w.md + "_" + std::to_string(i) + ".raw";
-            }
-        }
-        if (contestWriteThreads > 1) {
-            std::vector<std::future<bool>> wfuts;
-            for (size_t i = 0; i < reqs.size(); ++i) {
-                wfuts.push_back(std::async(std::launch::async, [&, i]() -> bool {
-                    std::ofstream of(outPaths[i], std::ios::binary);
-                    of.write(reinterpret_cast<const char*>(bufs[i].data()), obf(reqs[i].axis));
-                    of.close();
-                    return of.good();
-                }));
-            }
-            for (auto& f : wfuts) if (!f.get()) { std::cerr << "Write failed\n"; return false; }
-        } else {
-            for (size_t i = 0; i < reqs.size(); ++i) {
-                std::ofstream of(outPaths[i], std::ios::binary);
-                of.write(reinterpret_cast<const char*>(bufs[i].data()), obf(reqs[i].axis));
+                std::string op = outputDir + "/" + w.ax + "_" + w.md + "_" + std::to_string(i) + ".raw";
+                std::ofstream of(op, std::ios::binary);
+                of.write(reinterpret_cast<const char*>(bufs[gi].data()), obf(reqs[gi].axis));
                 of.close();
             }
         }
         auto t1 = std::chrono::high_resolution_clock::now();
         double totalMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
         double writeMs = totalMs - readMs;
-        double avgMs = totalMs / reqs.size();
-
-        std::cout << "Contest results:" << std::endl;
+        contestReadMs = readMs; contestWriteMs = writeMs; contestTotalMs = totalMs;
+        std::cout << "Contest results (--contest-write-mode per-slice):" << std::endl;
         std::cout << "  T_read=" << std::fixed << std::setprecision(0) << readMs << "ms" << std::endl;
         std::cout << "  T_write=" << writeMs << "ms" << std::endl;
         std::cout << "  T_total=" << totalMs << "ms" << std::endl;
-        std::cout << "  per_slice=" << std::setprecision(2) << avgMs << "ms" << std::endl;
+        std::cout << "  per_slice=" << std::setprecision(2) << totalMs/reqs.size() << "ms" << std::endl;
+        } // end per-slice
 
-        contestReadMs = readMs; contestWriteMs = writeMs; contestTotalMs = totalMs;
+        double totalMs = contestTotalMs;
+        double avgMs = totalMs / reqs.size();
 
         // Per-axis summary with real indices in detail
         struct { const char* ax, *md; int cnt; const std::vector<uint64_t>* idxs; } es[] = {
