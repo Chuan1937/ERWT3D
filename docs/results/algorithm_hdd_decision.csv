@@ -1,0 +1,7 @@
+direction,status,estimated_improvement,reasoning,recommendation
+A. Coverage-aware planner,REJECTED,near-zero,"100+10 random all-axis touches ~100% of superblocks; coverage-aware switching adds complexity with no benefit","Use sequential scan instead"
+B. Sequential scan reader,PROMISING,0-5%,"Current merged-window already reads sequentially; explicit scan may reduce small overhead","Implement if seeking micro-optimizations"
+C. Superblock decode reuse,PROMISING,5-15%,"X/Y/Z overlap on same superblocks; cache can avoid re-decode for shared tiles","Most promising algorithmic direction"
+D. Scatter optimization,MODERATE,2-8%,"Current scatter is already efficient; SIMD/cache-friendly loops may help","Low priority vs C"
+E. Layout/index under 1.5x,PROMISING,10-30%,"Different tile/superblock shape could reduce over-read for all-axis workload","High effort, high reward"
+F. Tile size sweep,PROMISING,0-15%,"Current 64^3 may not be optimal for balanced X/Y/Z slicing","Quick experiment worth doing"

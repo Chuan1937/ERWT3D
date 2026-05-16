@@ -769,7 +769,7 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
     }
     for (auto& p : plans) pp.push_back(&p);
     return executeSBBatchHDD(fd_, buildSBBatchPlan(pp), header_, outputs.data(),
-                              numThreads, memoryLimitMB, wcfg, pinThreads_);
+                              numThreads, memoryLimitMB, wcfg, pinThreads_, nullptr);
 }
 
 bool ERWT3DReader::readExtents(const std::vector<Extent>& extents, void* buffer) {

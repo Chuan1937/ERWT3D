@@ -53,6 +53,7 @@ void printUsage(const char* progName) {
     std::cerr << "                        contest = global all-axis batch throughput (auto-enables batch planner)" << std::endl;
     std::cerr << "  --contest-write-threads N  Parallel output writer threads (default: 1)" << std::endl;
     std::cerr << "  --contest-write-mode MODE  Write mode: per-slice, packed, none (default: per-slice)" << std::endl;
+    std::cerr << "  --contest-profile on|off   Output profiling CSV metrics (default: off)" << std::endl;
     std::cerr << "  --random-count N      Number of random slice reads per axis (default: 100)" << std::endl;
     std::cerr << "  --continuous-count N  Number of continuous slice reads per axis (default: 10)" << std::endl;
     std::cerr << "  --threads N|auto    Number of threads; auto = min(hw/2, 8) (default: 1)" << std::endl;
@@ -98,6 +99,7 @@ int main(int argc, char* argv[]) {
     double contestReadMs = 0, contestWriteMs = 0, contestTotalMs = 0;
     int contestWriteThreads = 1;
     std::string contestWriteMode = "per-slice";
+    bool contestProfile = false;
     bool profileIO = false;
     bool pinThreads = false;
     
@@ -152,6 +154,8 @@ int main(int argc, char* argv[]) {
             contestWriteThreads = std::stoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--contest-write-mode") == 0 && i + 1 < argc) {
             contestWriteMode = argv[++i];
+        } else if (std::strcmp(argv[i], "--contest-profile") == 0 && i + 1 < argc) {
+            contestProfile = (std::strcmp(argv[++i], "on") == 0);
         } else if (std::strcmp(argv[i], "--profile-io") == 0) {
             profileIO = true;
         } else if (std::strcmp(argv[i], "--pin-threads") == 0) {
@@ -596,6 +600,29 @@ int main(int argc, char* argv[]) {
                    << r.outputBytes << ",sb-contest," << numThreads << "," << cacheMB << "," << memoryLimitMB << "," << sbParallelModeStr;
                 detailLines.push_back(dl.str());
             }
+        }
+        // Write contest_profile.csv if requested
+        if (contestProfile) {
+            struct stat fst; uint64_t fileSize = 0;
+            stat(inputPath.c_str(), &fst); fileSize = fst.st_size;
+            uint64_t totalSB = erwt3d::getTotalSuperblocks(header);
+            uint64_t sbBV = erwt3d::getSuperblockBytes(header);
+            std::string pp = outputDir + "/contest_profile.csv";
+            std::ofstream pf(pp);
+            pf << "metric,value" << std::endl;
+            pf << "bytes_total_file," << fileSize << std::endl;
+            pf << "superblocks_total," << totalSB << std::endl;
+            pf << "superblock_bytes," << sbBV << std::endl;
+            pf << "storage_ratio," << std::fixed << std::setprecision(3) << (double)fileSize/(header.nx*header.ny*header.nz*sizeof(float)) << std::endl;
+            pf << "T_read_ms," << std::fixed << std::setprecision(0) << contestReadMs << std::endl;
+            pf << "T_write_ms," << contestWriteMs << std::endl;
+            pf << "T_total_ms," << contestTotalMs << std::endl;
+            pf << "per_slice_ms," << std::setprecision(2) << contestTotalMs/reqs.size() << std::endl;
+            pf << "output_files," << reqs.size() << std::endl;
+            pf << "write_mode," << contestWriteMode << std::endl;
+            pf << "checksum," << std::hex << checksum << std::dec << std::endl;
+            pf.close();
+            std::cout << "Profile written to " << pp << std::endl;
         }
         return true;
     };

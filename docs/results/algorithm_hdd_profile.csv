@@ -1,0 +1,22 @@
+metric,20G_small_value,50G_big_value,unit,notes
+bytes_total_file,20719862016,55197040896,bytes,from stat
+superblocks_total,19760,52640,count,getTotalSuperblocks
+superblock_bytes,1048576,1048576,bytes,64^3*4
+storage_ratio,1.075,1.044,ratio_vs_raw,file_size/raw_size
+superblocks_touched_est,~19760,~52640,count,"approximate: 100+10 random all-axis touches nearly all SB"
+superblocks_touched_ratio_est,~1.00,~1.00,ratio,"100+10 full-range random essentially covers entire volume"
+superblocks_decoded_est,~19760,~52640,count,"each unique SB decoded once per batch"
+bytes_actual_read_est,~20719862016,~55197040896,bytes,"reads entire data; merged windows = sequential scan"
+read_coverage_ratio_est,~1.00,~1.00,ratio,"near 100% coverage for all-axis contest workload"
+windows_count_est,1,1,count,"global batch with 32MB/256K merges into near-single sequential window"
+pread_calls_est,1,1,count,"one large pread per merged window"
+T_read_ms,none:37192 packed:37741,none:93671 packed:98968,ms,from contest timing
+T_write_ms,none:0 packed:20274,none:0 packed:48759,ms,from contest timing
+T_total_ms,none:37486 packed:58014,none:94149 packed:147727,ms,from contest timing
+per_slice_ms,none:114 packed:176,none:285 packed:448,ms,T_total/330 slices
+eff_read_bandwidth_mbps,557,590,MB/s,T_total_no_write/bytes_total
+eff_write_bandwidth_mbps,216,154,MB/s packed mode,T_write/output_bytes
+output_files,330,330,count,total slice outputs
+cache_condition,"warm (data cached after prior benchmarks; HDD cold ~136s read)","warm (cold ~540s read)",annotated
+environment,"WSL2; /mnt/d is NTFS via DrvFS; single 5.5TB mechanical disk","same",annotated
+notes,"100+10 all-axis touches ~100% SB; bottleneck is HDD seq bandwidth; algorithmic gains limited without layout changes","55GB file; read dominates; write ~33% of total packed; layout change may help","profile context"
