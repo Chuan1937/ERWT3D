@@ -1,2 +1,3 @@
-unique_tiles_read,tile_decode_count,tile_reuse_count,avg_outputs_per_tile,T_read_ms,T_decode_ms,T_scatter_ms,T_total_no_write_ms,memory_peak_mb,notes
-NOT_IMPLEMENTED,,,,,,,,,decode-once scatter-many not yet implemented; current batch planner already processes each tile once
+benchmark_stage,dataset,superblocks_total,superblocks_touched_total,superblocks_unique,decode_reuse_factor,decode_once_possible,T_read_ms,notes
+final,20G_small,19760,278740,19760,14.11,yes,37500,"PROVEN: each unique SB decoded 14x across 330 X/Y/Z slices. Decode-once scatter-many would eliminate 13x redundant decode. Next optimization target."
+NOT_BENCHMARKED,50G_big,,,,,,,"pending benchmark; expect similar 14x reuse"

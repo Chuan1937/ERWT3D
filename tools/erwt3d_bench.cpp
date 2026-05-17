@@ -14,6 +14,7 @@
 #include <functional>
 #include <thread>
 #include <future>
+#include <set>
 
 struct BenchmarkResult {
     std::string method;
@@ -614,6 +615,28 @@ int main(int argc, char* argv[]) {
             pf << "superblocks_total," << totalSB << std::endl;
             pf << "superblock_bytes," << sbBV << std::endl;
             pf << "storage_ratio," << std::fixed << std::setprecision(3) << (double)fileSize/(header.nx*header.ny*header.nz*sizeof(float)) << std::endl;
+            // Decode metrics: compute from batch plan
+            {
+                std::vector<erwt3d::SBTaskPlan> dplans;
+                std::vector<const erwt3d::SBTaskPlan*> dpp;
+                for (auto& r : reqs) {
+                    erwt3d::SBTaskPlan p;
+                    switch(r.axis){case erwt3d::SliceAxis::X:p=erwt3d::buildSBPlanX(header,r.index);break;
+                    case erwt3d::SliceAxis::Y:p=erwt3d::buildSBPlanY(header,r.index);break;
+                    case erwt3d::SliceAxis::Z:p=erwt3d::buildSBPlanZ(header,r.index);break;}
+                    dplans.push_back(std::move(p));
+                }
+                for(auto&p:dplans)dpp.push_back(&p);
+                erwt3d::SBBatchPlan dbp = erwt3d::buildSBBatchPlan(dpp);
+                uint64_t totalTasks = dbp.batch_tasks.size();
+                std::set<uint64_t> uniq;
+                for(auto&bt:dbp.batch_tasks)uniq.insert(bt.file_offset);
+                uint64_t uniqueSB = uniq.size();
+                pf << "superblocks_touched_total," << totalTasks << std::endl;
+                pf << "superblocks_unique," << uniqueSB << std::endl;
+                pf << "decode_reuse_factor," << std::fixed << std::setprecision(2) << (uniqueSB>0?(double)totalTasks/uniqueSB:0) << std::endl;
+                pf << "decode_once_possible," << (uniqueSB==totalSB?"yes":"no") << std::endl;
+            }
             pf << "T_read_ms," << std::fixed << std::setprecision(0) << contestReadMs << std::endl;
             pf << "T_write_ms," << contestWriteMs << std::endl;
             pf << "T_total_ms," << contestTotalMs << std::endl;
