@@ -474,6 +474,7 @@ int main(int argc, char* argv[]) {
         std::vector<uint64_t> reqIndices; // track real slice index for each request
         std::vector<std::string> reqAxes, reqModes;
 
+        auto treq0 = std::chrono::high_resolution_clock::now();
         auto addReqs = [&](erwt3d::SliceAxis ax, const std::string& an, const std::string& md,
                            const std::vector<uint64_t>& idxs) {
             for (uint64_t idx : idxs) {
@@ -488,30 +489,46 @@ int main(int argc, char* argv[]) {
         addReqs(erwt3d::SliceAxis::X, "x", "continuous", continuousX);
         addReqs(erwt3d::SliceAxis::Y, "y", "continuous", continuousY);
         addReqs(erwt3d::SliceAxis::Z, "z", "continuous", continuousZ);
+        auto treq1 = std::chrono::high_resolution_clock::now();
+        double T_request_build_ms = std::chrono::duration<double, std::milli>(treq1 - treq0).count();
 
         auto obf = [&](erwt3d::SliceAxis a) { return (a == erwt3d::SliceAxis::X ? sx : a == erwt3d::SliceAxis::Y ? sy : sz) * sizeof(float); };
         std::vector<std::vector<float>> bufs(reqs.size());
+
+        auto tbuf0 = std::chrono::high_resolution_clock::now();
         for (size_t i = 0; i < reqs.size(); ++i) {
             auto a = reqs[i].axis; bufs[i].resize(a == erwt3d::SliceAxis::X ? sx : a == erwt3d::SliceAxis::Y ? sy : sz);
             reqs[i].output = bufs[i].data();
         }
+        auto tbuf1 = std::chrono::high_resolution_clock::now();
+        double T_buffer_alloc_ms = std::chrono::duration<double, std::milli>(tbuf1 - tbuf0).count();
 
         auto t0 = std::chrono::high_resolution_clock::now();
-        if (!reader.readSlicesBatch(reqs, numThreads, memoryLimitMB, {hddBatchWindowBytes, hddBatchMaxGapBytes})) {
+        erwt3d::SBBatchProfile prof;
+        if (!reader.readSlicesBatch(reqs, numThreads, memoryLimitMB, {hddBatchWindowBytes, hddBatchMaxGapBytes}, &prof)) {
             std::cerr << "Contest batch read failed\n"; return false;
         }
         auto tr = std::chrono::high_resolution_clock::now();
         double readMs = std::chrono::duration<double, std::milli>(tr - t0).count();
 
+        double T_plan_ms = prof.plan_time_ms;
+        double T_pread_ms = prof.pread_time_ms;
+        double T_unpack_ms = prof.unpack_time_ms;
+        // pread + unpack are measured as sum across all threads; readMs is the wall clock
+        // For the CSV we use the profiled sum times as the best internal instrumentation available
+
         // Output: none / packed / per-slice
         uint64_t checksum = 0;
+        double T_checksum_ms = 0;
         if (contestWriteMode == "none") {
+            auto tck0 = std::chrono::high_resolution_clock::now();
             for (size_t i = 0; i < reqs.size(); ++i) {
                 auto* d = reinterpret_cast<const uint32_t*>(bufs[i].data());
                 size_t n = obf(reqs[i].axis) / 4;
                 for (size_t j = 0; j < n; ++j) checksum += d[j];
             }
-            double unpackMs = readMs; // read+unpack are together in readMs
+            auto tck1 = std::chrono::high_resolution_clock::now();
+            T_checksum_ms = std::chrono::duration<double, std::milli>(tck1 - tck0).count();
             auto t1 = std::chrono::high_resolution_clock::now();
             double totalMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
             std::cout << "Contest results (--contest-write-mode none):" << std::endl;
@@ -624,6 +641,77 @@ int main(int argc, char* argv[]) {
             pf.close();
             std::cout << "Profile written to " << pp << std::endl;
         }
+
+        // Write contest_internal_profile.csv with fine-grained timing and structural counters
+        {
+            uint64_t totalSB = erwt3d::getTotalSuperblocks(header);
+            struct stat fst; uint64_t fileSize = 0;
+            stat(inputPath.c_str(), &fst); fileSize = fst.st_size;
+            uint64_t outputSliceCount = reqs.size();
+            uint64_t totalOutputBytes = 0;
+            for (size_t i = 0; i < reqs.size(); ++i)
+                totalOutputBytes += obf(reqs[i].axis);
+            double T_total_none_ms = (contestWriteMode == "none") ? contestTotalMs : readMs;
+            double T_scatter_ms = T_unpack_ms;
+
+            uint64_t superblocks_total = totalSB;
+            uint64_t superblock_task_count = prof.total_sb_tasks;
+            uint64_t unique_superblocks_touched = prof.unique_sb_offsets;
+            uint64_t decode_count = prof.superblocks_decoded;
+            double reuse_factor = unique_superblocks_touched > 0
+                ? static_cast<double>(superblock_task_count) / unique_superblocks_touched : 1.0;
+
+            std::string ip = outputDir + "/contest_internal_profile.csv";
+            std::ofstream ipf(ip);
+            ipf << "dataset,dataset_path,storage_device,cache_condition,benchmark_mode,write_mode,"
+                << "random_count,continuous_count,output_slice_count,threads,memory_limit_mb,"
+                << "T_request_build_ms,T_buffer_alloc_ms,T_plan_ms,T_pread_ms,T_unpack_ms,T_scatter_ms,"
+                << "T_checksum_ms,T_total_none_ms,"
+                << "superblocks_total,superblock_task_count,unique_superblocks_touched,"
+                << "decode_count,estimated_decode_reuse_factor,bytes_read,bytes_output,"
+                << "memory_peak_mb,notes" << std::endl;
+            ipf << inputPath << "," << inputPath << ",hdd,warm,contest," << contestWriteMode << ","
+                << randomCount << "," << continuousCount << "," << outputSliceCount << ","
+                << numThreads << "," << memoryLimitMB << ","
+                << std::fixed << std::setprecision(3)
+                << T_request_build_ms << "," << T_buffer_alloc_ms << "," << T_plan_ms << ","
+                << T_pread_ms << "," << T_unpack_ms << "," << T_scatter_ms << ","
+                << T_checksum_ms << "," << T_total_none_ms << ","
+                << superblocks_total << "," << superblock_task_count << "," << unique_superblocks_touched << ","
+                << decode_count << "," << std::setprecision(2) << reuse_factor << std::setprecision(3) << ","
+                << prof.bytes_actual_read << "," << totalOutputBytes << ","
+                << "0," << "decode_count=unique_sb_tasks_per_slice" << std::endl;
+            ipf.close();
+            std::cout << "Internal profile written to " << ip << std::endl;
+
+            // Write contest_internal_decision.csv
+            std::string dp = outputDir + "/contest_internal_decision.csv";
+            std::ofstream dpf(dp);
+            dpf << "decision,evidence" << std::endl;
+            double totalInternal = T_pread_ms + T_unpack_ms + T_checksum_ms + T_buffer_alloc_ms + T_plan_ms + T_request_build_ms;
+            std::string decision;
+            std::string evidence;
+            if (totalInternal > 0 && T_pread_ms / totalInternal > 0.7) {
+                decision = "BANDWIDTH_LIMITED";
+                evidence = "T_pread_ms dominates at " + std::to_string(static_cast<int>(100 * T_pread_ms / totalInternal)) + "% of measurable time";
+            } else if (T_unpack_ms > 0 && T_unpack_ms > T_pread_ms) {
+                decision = "DECODE_SCATTER_TARGET";
+                evidence = "T_unpack_ms(" + std::to_string(static_cast<int>(T_unpack_ms)) + "ms) > T_pread_ms(" + std::to_string(static_cast<int>(T_pread_ms)) + "ms)";
+            } else if (T_checksum_ms > 0 && T_unpack_ms > 0 && T_checksum_ms > T_unpack_ms * 0.3) {
+                decision = "CHECKSUM_TARGET";
+                evidence = "T_checksum_ms(" + std::to_string(static_cast<int>(T_checksum_ms)) + "ms) significant vs unpack(" + std::to_string(static_cast<int>(T_unpack_ms)) + "ms)";
+            } else if (T_buffer_alloc_ms > T_total_none_ms * 0.05) {
+                decision = "BUFFER_ALLOC_TARGET";
+                evidence = "T_buffer_alloc_ms(" + std::to_string(static_cast<int>(T_buffer_alloc_ms)) + "ms) > 5% of total";
+            } else {
+                decision = "BANDWIDTH_LIMITED";
+                evidence = "no other phase dominates; default to bandwidth-limited";
+            }
+            dpf << decision << "," << evidence << std::endl;
+            dpf.close();
+            std::cout << "Decision written to " << dp << std::endl;
+        }
+
         return true;
     };
     

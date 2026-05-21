@@ -752,7 +752,8 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
 
 bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
                                     int numThreads, size_t memoryLimitMB,
-                                    const HDDReadWindowConfig& wcfg) {
+                                    const HDDReadWindowConfig& wcfg,
+                                    SBBatchProfile* profile) {
     if (fd_ < 0 || requests.empty()) return false;
     std::vector<SBTaskPlan> plans; plans.reserve(requests.size());
     std::vector<float*> outputs; outputs.reserve(requests.size());
@@ -768,8 +769,14 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
         plans.push_back(std::move(p)); outputs.push_back(r.output);
     }
     for (auto& p : plans) pp.push_back(&p);
-    return executeSBBatchHDD(fd_, buildSBBatchPlan(pp), header_, outputs.data(),
-                              numThreads, memoryLimitMB, wcfg, pinThreads_, nullptr);
+    auto planStart = std::chrono::high_resolution_clock::now();
+    SBBatchPlan batch = buildSBBatchPlan(pp);
+    auto planEnd = std::chrono::high_resolution_clock::now();
+    double planMs = std::chrono::duration<double, std::milli>(planEnd - planStart).count();
+    bool ok = executeSBBatchHDD(fd_, batch, header_, outputs.data(),
+                                 numThreads, memoryLimitMB, wcfg, pinThreads_, profile);
+    if (profile) profile->plan_time_ms = planMs;
+    return ok;
 }
 
 bool ERWT3DReader::readExtents(const std::vector<Extent>& extents, void* buffer) {

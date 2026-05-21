@@ -76,7 +76,8 @@ public:
     struct SliceBatchRequest { SliceAxis axis; uint64_t index; float* output; };
     bool readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
                          int numThreads, size_t memoryLimitMB,
-                         const HDDReadWindowConfig& wcfg);
+                         const HDDReadWindowConfig& wcfg,
+                         SBBatchProfile* profile = nullptr);
     void setProfileIO(bool enable) { profileIO_ = enable; }
     bool profileIO() const { return profileIO_; }
     const IOProfile& lastProfile() const { return lastProfile_; }

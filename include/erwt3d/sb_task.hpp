@@ -104,6 +104,12 @@ struct SBBatchProfile {
     uint64_t pread_calls = 0;
     uint64_t bytes_actual_read = 0;
     uint64_t superblocks_decoded = 0;
+    double plan_time_ms = 0;
+    double pread_time_ms = 0;
+    double unpack_time_ms = 0;
+    uint64_t output_bytes = 0;
+    uint64_t total_sb_tasks = 0;
+    uint64_t unique_sb_offsets = 0;
 };
 SBBatchPlan buildSBBatchPlan(const std::vector<const SBTaskPlan*>& plans);
 bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr,

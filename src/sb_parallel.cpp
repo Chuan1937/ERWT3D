@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <unistd.h>
 
 namespace erwt3d {
@@ -741,6 +742,14 @@ SBBatchPlan buildSBBatchPlan(const std::vector<const SBTaskPlan*>& plans) {
     return bp;
 }
 
+static uint64_t countUniqueSBOffsets(const std::vector<SBBatchTask>& tasks) {
+    if (tasks.empty()) return 0;
+    uint64_t count = 1;
+    for (size_t i = 1; i < tasks.size(); ++i)
+        if (tasks[i].file_offset != tasks[i-1].file_offset) ++count;
+    return count;
+}
+
 bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr,
                        float* const* outputs, int numThreads, size_t memoryLimitMB,
                        const HDDReadWindowConfig& wcfg, bool pinThreads, SBBatchProfile* profile) {
@@ -772,18 +781,30 @@ bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr
     if (mbpt < sbBV) return false;
     mbpt = std::min(mbpt, std::max(mwb, sbBV * 4));
 
-    // Profile: compute from windows before execution
+    uint64_t outputBytesTotal = 0;
+    for (size_t i = 0; i < batch.plans.size(); ++i)
+        outputBytesTotal += batch.plans[i]->output_bytes;
+
     if (profile) {
         profile->windows_count = wins.size();
-        profile->superblocks_decoded = batch.batch_tasks.size(); // one SB per task
+        profile->superblocks_decoded = batch.batch_tasks.size();
+        profile->total_sb_tasks = batch.batch_tasks.size();
+        profile->unique_sb_offsets = countUniqueSBOffsets(batch.batch_tasks);
+        profile->output_bytes = outputBytesTotal;
         for (auto& w : wins) {
             profile->bytes_actual_read += w.rb;
             profile->pread_calls += (w.rb > mbpt) ? (w.rb + mbpt - 1) / mbpt : 1;
         }
     }
 
+    double preadAccum = 0;
+    double unpackAccum = 0;
+    std::mutex accumMtx;
+
     auto pw = [&](size_t sw, size_t ew) -> bool {
+        using Clock = std::chrono::high_resolution_clock;
         std::vector<uint8_t> buf(mbpt);
+        double localPread = 0, localUnpack = 0;
         for (size_t wi = sw; wi < ew; ++wi) {
             const auto& win = wins[wi];
             if (win.rb > mbpt) {
@@ -792,28 +813,52 @@ bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr
                 while (rem > 0) {
                     size_t ttc = std::min(static_cast<size_t>(win.tc - (ti - win.ft)), mtpc);
                     uint64_t chunk = ttc * sbBV;
+                    auto pr0 = Clock::now();
                     if (pread(fd, buf.data(), chunk, wo + (ti - win.ft) * sbBV) != static_cast<ssize_t>(chunk))
                         return false;
+                    auto pr1 = Clock::now();
+                    localPread += std::chrono::duration<double, std::milli>(pr1 - pr0).count();
                     for (size_t j = 0; j < ttc; ++j) {
                         const auto& bt = batch.batch_tasks[ti + j];
                         SBTask t{bt.file_offset, bt.first_leaf, bt.leaf_count};
+                        auto up0 = Clock::now();
                         unpackLeaves(hdr, *bt.plan, t, buf.data() + j * sbBV, outputs[bt.output_id]);
+                        auto up1 = Clock::now();
+                        localUnpack += std::chrono::duration<double, std::milli>(up1 - up0).count();
                     }
                     ti += ttc; rem -= chunk;
                 }
             } else {
+                auto pr0 = Clock::now();
                 if (pread(fd, buf.data(), win.rb, win.fo) != static_cast<ssize_t>(win.rb)) return false;
+                auto pr1 = Clock::now();
+                localPread += std::chrono::duration<double, std::milli>(pr1 - pr0).count();
                 for (size_t j = 0; j < win.tc; ++j) {
                     const auto& bt = batch.batch_tasks[win.ft + j];
                     uint64_t toff = bt.file_offset - win.fo;
                     SBTask t{bt.file_offset, bt.first_leaf, bt.leaf_count};
+                    auto up0 = Clock::now();
                     unpackLeaves(hdr, *bt.plan, t, buf.data() + toff, outputs[bt.output_id]);
+                    auto up1 = Clock::now();
+                    localUnpack += std::chrono::duration<double, std::milli>(up1 - up0).count();
                 }
             }
         }
+        {
+            std::lock_guard<std::mutex> lk(accumMtx);
+            preadAccum += localPread;
+            unpackAccum += localUnpack;
+        }
         return true;
     };
-    if (numThreads == 1) return pw(0, wins.size());
+    if (numThreads == 1) {
+        bool ok = pw(0, wins.size());
+        if (profile) {
+            profile->pread_time_ms = preadAccum;
+            profile->unpack_time_ms = unpackAccum;
+        }
+        return ok;
+    }
     ThreadPool pool(static_cast<size_t>(numThreads), pinThreads);
     std::vector<std::future<bool>> futs;
     size_t nw = wins.size();
@@ -821,6 +866,10 @@ bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr
         futs.push_back(pool.submit([&, t]() -> bool { return pw(t*nw/numThreads, (t+1)*nw/numThreads); }));
     pool.waitAll();
     for (auto& f : futs) if (!f.get()) return false;
+    if (profile) {
+        profile->pread_time_ms = preadAccum;
+        profile->unpack_time_ms = unpackAccum;
+    }
     return true;
 }
 
