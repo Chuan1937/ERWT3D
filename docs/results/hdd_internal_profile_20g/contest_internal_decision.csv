@@ -1,0 +1,2 @@
+decision,evidence
+DECODE_SCATTER_TARGET,estimated_decode_reuse_factor=14x supports decode-once-scatter-many

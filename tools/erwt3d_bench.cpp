@@ -695,27 +695,31 @@ int main(int argc, char* argv[]) {
             std::string decision;
             std::string evidence;
 
-            if (reuse_factor > 2.0) {
+            double perThreadPread = numThreads > 0 ? T_pread_thread_sum_ms / numThreads : T_pread_thread_sum_ms;
+            double preadWallPct = T_read_batch_wall_ms > 0 ? (perThreadPread / T_read_batch_wall_ms) * 100.0 : 0.0;
+
+            if (preadWallPct > 70.0) {
+                decision = "BANDWIDTH_LIMITED";
+                evidence = "per-thread pread is " + std::to_string(static_cast<int>(preadWallPct)) + "% of wall clock ("
+                    + std::to_string(static_cast<int>(perThreadPread)) + "ms / " + std::to_string(static_cast<int>(T_read_batch_wall_ms)) + "ms)";
+                if (reuse_factor > 2.0) {
+                    evidence += "; reuse_factor=" + std::to_string(static_cast<int>(reuse_factor)) + "x suggests decode-once-scatter-many could reduce I/O further";
+                }
+            } else if (reuse_factor > 4.0
+                       && T_unpack_scatter_thread_sum_ms > 0
+                       && numThreads > 0
+                       && T_unpack_scatter_thread_sum_ms / numThreads > T_read_batch_wall_ms * 0.10) {
                 decision = "DECODE_SCATTER_TARGET";
-                evidence = "estimated_decode_reuse_factor=" + std::to_string(static_cast<int>(reuse_factor)) + "x supports decode-once-scatter-many";
+                evidence = "per-thread unpack_scatter=" + std::to_string(static_cast<int>(T_unpack_scatter_thread_sum_ms / numThreads)) + "ms > 10% wall + reuse_factor=" + std::to_string(static_cast<int>(reuse_factor)) + "x";
             } else if (T_checksum_ms > 0 && (T_read_batch_wall_ms > 0) && (T_checksum_ms > T_read_batch_wall_ms * 0.10)) {
                 decision = "CHECKSUM_TARGET";
                 evidence = "T_checksum_ms(" + std::to_string(static_cast<int>(T_checksum_ms)) + "ms) > 10% of T_read_batch_wall_ms(" + std::to_string(static_cast<int>(T_read_batch_wall_ms)) + "ms)";
             } else if (T_buffer_alloc_ms > 0 && (T_read_batch_wall_ms > 0) && (T_buffer_alloc_ms > T_read_batch_wall_ms * 0.10)) {
                 decision = "BUFFER_ALLOC_TARGET";
                 evidence = "T_buffer_alloc_ms(" + std::to_string(static_cast<int>(T_buffer_alloc_ms)) + "ms) > 10% of T_read_batch_wall_ms(" + std::to_string(static_cast<int>(T_read_batch_wall_ms)) + "ms)";
-            } else if (T_read_batch_wall_ms > 0 && T_pread_thread_sum_ms > 0) {
-                double pctPread = T_pread_thread_sum_ms / numThreads / T_read_batch_wall_ms;
-                if (pctPread > 0.6) {
-                    decision = "BANDWIDTH_LIMITED";
-                    evidence = "estimated per-thread pread fraction ~" + std::to_string(static_cast<int>(pctPread * 100)) + "% of wall time";
-                } else {
-                    decision = "NEEDS_MORE_PROFILING";
-                    evidence = "per-thread pread fraction ~" + std::to_string(static_cast<int>(pctPread * 100)) + "%, non-I/O time not clearly attributable to single phase";
-                }
             } else {
                 decision = "NEEDS_MORE_PROFILING";
-                evidence = "insufficient timing data for clear decision; run on real HDD dataset";
+                evidence = "no single phase dominates wall-clock; pread=" + std::to_string(static_cast<int>(preadWallPct)) + "% per-thread";
             }
             dpf << decision << "," << evidence << std::endl;
             dpf.close();

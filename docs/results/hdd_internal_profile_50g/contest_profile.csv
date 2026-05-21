@@ -1,0 +1,12 @@
+metric,value
+bytes_total_file,55197040896
+superblocks_total,52640
+superblock_bytes,1048576
+storage_ratio,1.044
+T_read_ms,472049
+T_write_ms,0
+T_total_ms,472558
+per_slice_ms,1431.99
+output_files,330
+write_mode,none
+checksum,366a3b122dce6941
