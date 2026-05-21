@@ -512,10 +512,9 @@ int main(int argc, char* argv[]) {
         double readMs = std::chrono::duration<double, std::milli>(tr - t0).count();
 
         double T_plan_ms = prof.plan_time_ms;
-        double T_pread_ms = prof.pread_time_ms;
-        double T_unpack_ms = prof.unpack_time_ms;
-        // pread + unpack are measured as sum across all threads; readMs is the wall clock
-        // For the CSV we use the profiled sum times as the best internal instrumentation available
+        double T_pread_thread_sum_ms = prof.pread_thread_sum_ms;
+        double T_unpack_scatter_thread_sum_ms = prof.unpack_scatter_thread_sum_ms;
+        double T_read_batch_wall_ms = readMs;
 
         // Output: none / packed / per-slice
         uint64_t checksum = 0;
@@ -652,35 +651,40 @@ int main(int argc, char* argv[]) {
             for (size_t i = 0; i < reqs.size(); ++i)
                 totalOutputBytes += obf(reqs[i].axis);
             double T_total_none_ms = (contestWriteMode == "none") ? contestTotalMs : readMs;
-            double T_scatter_ms = T_unpack_ms;
 
             uint64_t superblocks_total = totalSB;
             uint64_t superblock_task_count = prof.total_sb_tasks;
             uint64_t unique_superblocks_touched = prof.unique_sb_offsets;
-            uint64_t decode_count = prof.superblocks_decoded;
+            uint64_t logical_decode_task_count = prof.superblocks_decoded;
             double reuse_factor = unique_superblocks_touched > 0
                 ? static_cast<double>(superblock_task_count) / unique_superblocks_touched : 1.0;
+
+            std::filesystem::path ipath(inputPath);
+            std::string dataset = ipath.filename().string();
 
             std::string ip = outputDir + "/contest_internal_profile.csv";
             std::ofstream ipf(ip);
             ipf << "dataset,dataset_path,storage_device,cache_condition,benchmark_mode,write_mode,"
                 << "random_count,continuous_count,output_slice_count,threads,memory_limit_mb,"
-                << "T_request_build_ms,T_buffer_alloc_ms,T_plan_ms,T_pread_ms,T_unpack_ms,T_scatter_ms,"
-                << "T_checksum_ms,T_total_none_ms,"
+                << "T_request_build_ms,T_buffer_alloc_ms,T_plan_ms,"
+                << "T_pread_thread_sum_ms,T_unpack_scatter_thread_sum_ms,"
+                << "T_read_batch_wall_ms,T_checksum_ms,T_total_none_ms,"
                 << "superblocks_total,superblock_task_count,unique_superblocks_touched,"
-                << "decode_count,estimated_decode_reuse_factor,bytes_read,bytes_output,"
+                << "logical_decode_task_count,estimated_decode_reuse_factor,bytes_read,bytes_output,"
                 << "memory_peak_mb,notes" << std::endl;
-            ipf << inputPath << "," << inputPath << ",hdd,warm,contest," << contestWriteMode << ","
+            ipf << dataset << "," << inputPath << ",hdd,warm,contest," << contestWriteMode << ","
                 << randomCount << "," << continuousCount << "," << outputSliceCount << ","
                 << numThreads << "," << memoryLimitMB << ","
                 << std::fixed << std::setprecision(3)
                 << T_request_build_ms << "," << T_buffer_alloc_ms << "," << T_plan_ms << ","
-                << T_pread_ms << "," << T_unpack_ms << "," << T_scatter_ms << ","
-                << T_checksum_ms << "," << T_total_none_ms << ","
+                << T_pread_thread_sum_ms << "," << T_unpack_scatter_thread_sum_ms << ","
+                << T_read_batch_wall_ms << "," << T_checksum_ms << "," << T_total_none_ms << ","
                 << superblocks_total << "," << superblock_task_count << "," << unique_superblocks_touched << ","
-                << decode_count << "," << std::setprecision(2) << reuse_factor << std::setprecision(3) << ","
+                << logical_decode_task_count << "," << std::setprecision(2) << reuse_factor << std::setprecision(3) << ","
                 << prof.bytes_actual_read << "," << totalOutputBytes << ","
-                << "0," << "decode_count=unique_sb_tasks_per_slice" << std::endl;
+                << "0,"
+                << "T_pread/T_unpack are thread-sum not wall-clock; unpack+scatter measured together in unpackLeaves"
+                << std::endl;
             ipf.close();
             std::cout << "Internal profile written to " << ip << std::endl;
 
@@ -688,24 +692,30 @@ int main(int argc, char* argv[]) {
             std::string dp = outputDir + "/contest_internal_decision.csv";
             std::ofstream dpf(dp);
             dpf << "decision,evidence" << std::endl;
-            double totalInternal = T_pread_ms + T_unpack_ms + T_checksum_ms + T_buffer_alloc_ms + T_plan_ms + T_request_build_ms;
             std::string decision;
             std::string evidence;
-            if (totalInternal > 0 && T_pread_ms / totalInternal > 0.7) {
-                decision = "BANDWIDTH_LIMITED";
-                evidence = "T_pread_ms dominates at " + std::to_string(static_cast<int>(100 * T_pread_ms / totalInternal)) + "% of measurable time";
-            } else if (T_unpack_ms > 0 && T_unpack_ms > T_pread_ms) {
+
+            if (reuse_factor > 2.0) {
                 decision = "DECODE_SCATTER_TARGET";
-                evidence = "T_unpack_ms(" + std::to_string(static_cast<int>(T_unpack_ms)) + "ms) > T_pread_ms(" + std::to_string(static_cast<int>(T_pread_ms)) + "ms)";
-            } else if (T_checksum_ms > 0 && T_unpack_ms > 0 && T_checksum_ms > T_unpack_ms * 0.3) {
+                evidence = "estimated_decode_reuse_factor=" + std::to_string(static_cast<int>(reuse_factor)) + "x supports decode-once-scatter-many";
+            } else if (T_checksum_ms > 0 && (T_read_batch_wall_ms > 0) && (T_checksum_ms > T_read_batch_wall_ms * 0.10)) {
                 decision = "CHECKSUM_TARGET";
-                evidence = "T_checksum_ms(" + std::to_string(static_cast<int>(T_checksum_ms)) + "ms) significant vs unpack(" + std::to_string(static_cast<int>(T_unpack_ms)) + "ms)";
-            } else if (T_buffer_alloc_ms > T_total_none_ms * 0.05) {
+                evidence = "T_checksum_ms(" + std::to_string(static_cast<int>(T_checksum_ms)) + "ms) > 10% of T_read_batch_wall_ms(" + std::to_string(static_cast<int>(T_read_batch_wall_ms)) + "ms)";
+            } else if (T_buffer_alloc_ms > 0 && (T_read_batch_wall_ms > 0) && (T_buffer_alloc_ms > T_read_batch_wall_ms * 0.10)) {
                 decision = "BUFFER_ALLOC_TARGET";
-                evidence = "T_buffer_alloc_ms(" + std::to_string(static_cast<int>(T_buffer_alloc_ms)) + "ms) > 5% of total";
+                evidence = "T_buffer_alloc_ms(" + std::to_string(static_cast<int>(T_buffer_alloc_ms)) + "ms) > 10% of T_read_batch_wall_ms(" + std::to_string(static_cast<int>(T_read_batch_wall_ms)) + "ms)";
+            } else if (T_read_batch_wall_ms > 0 && T_pread_thread_sum_ms > 0) {
+                double pctPread = T_pread_thread_sum_ms / numThreads / T_read_batch_wall_ms;
+                if (pctPread > 0.6) {
+                    decision = "BANDWIDTH_LIMITED";
+                    evidence = "estimated per-thread pread fraction ~" + std::to_string(static_cast<int>(pctPread * 100)) + "% of wall time";
+                } else {
+                    decision = "NEEDS_MORE_PROFILING";
+                    evidence = "per-thread pread fraction ~" + std::to_string(static_cast<int>(pctPread * 100)) + "%, non-I/O time not clearly attributable to single phase";
+                }
             } else {
-                decision = "BANDWIDTH_LIMITED";
-                evidence = "no other phase dominates; default to bandwidth-limited";
+                decision = "NEEDS_MORE_PROFILING";
+                evidence = "insufficient timing data for clear decision; run on real HDD dataset";
             }
             dpf << decision << "," << evidence << std::endl;
             dpf.close();

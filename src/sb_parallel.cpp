@@ -744,10 +744,11 @@ SBBatchPlan buildSBBatchPlan(const std::vector<const SBTaskPlan*>& plans) {
 
 static uint64_t countUniqueSBOffsets(const std::vector<SBBatchTask>& tasks) {
     if (tasks.empty()) return 0;
-    uint64_t count = 1;
-    for (size_t i = 1; i < tasks.size(); ++i)
-        if (tasks[i].file_offset != tasks[i-1].file_offset) ++count;
-    return count;
+    std::vector<uint64_t> offsets; offsets.reserve(tasks.size());
+    for (const auto& t : tasks) offsets.push_back(t.file_offset);
+    std::sort(offsets.begin(), offsets.end());
+    auto it = std::unique(offsets.begin(), offsets.end());
+    return static_cast<uint64_t>(std::distance(offsets.begin(), it));
 }
 
 bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr,
@@ -854,8 +855,8 @@ bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr
     if (numThreads == 1) {
         bool ok = pw(0, wins.size());
         if (profile) {
-            profile->pread_time_ms = preadAccum;
-            profile->unpack_time_ms = unpackAccum;
+            profile->pread_thread_sum_ms = preadAccum;
+            profile->unpack_scatter_thread_sum_ms = unpackAccum;
         }
         return ok;
     }
@@ -867,8 +868,8 @@ bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr
     pool.waitAll();
     for (auto& f : futs) if (!f.get()) return false;
     if (profile) {
-        profile->pread_time_ms = preadAccum;
-        profile->unpack_time_ms = unpackAccum;
+        profile->pread_thread_sum_ms = preadAccum;
+        profile->unpack_scatter_thread_sum_ms = unpackAccum;
     }
     return true;
 }
