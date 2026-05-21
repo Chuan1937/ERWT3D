@@ -1,0 +1,7 @@
+method,io_backend,sb_parallel_mode,axis,mode,count,avg_time_ms,min_time_ms,max_time_ms,total_time_ms,output_bytes
+erwt3d,sb-contest,serial,x,random,100,77.443,77.443,77.443,25556.264,24059620
+erwt3d,sb-contest,serial,y,random,100,77.443,77.443,77.443,25556.264,8013204
+erwt3d,sb-contest,serial,z,random,100,77.443,77.443,77.443,25556.264,7705620
+erwt3d,sb-contest,serial,x,continuous,10,77.443,77.443,77.443,25556.264,24059620
+erwt3d,sb-contest,serial,y,continuous,10,77.443,77.443,77.443,25556.264,8013204
+erwt3d,sb-contest,serial,z,continuous,10,77.443,77.443,77.443,25556.264,7705620

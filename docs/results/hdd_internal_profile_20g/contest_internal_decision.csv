@@ -1,2 +1,2 @@
 decision,evidence
-DECODE_SCATTER_TARGET,estimated_decode_reuse_factor=14x supports decode-once-scatter-many
+BANDWIDTH_LIMITED,per-thread pread is 89% of wall clock (22652ms / 25309ms); reuse_factor=14x suggests decode-once-scatter-many could reduce I/O further

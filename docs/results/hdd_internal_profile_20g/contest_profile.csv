@@ -3,10 +3,10 @@ bytes_total_file,20719862016
 superblocks_total,19760
 superblock_bytes,1048576
 storage_ratio,1.075
-T_read_ms,171919
+T_read_ms,25310
 T_write_ms,0
-T_total_ms,172208
-per_slice_ms,521.84
+T_total_ms,25556
+per_slice_ms,77.44
 output_files,330
 write_mode,none
 checksum,1d186dc4694e0000

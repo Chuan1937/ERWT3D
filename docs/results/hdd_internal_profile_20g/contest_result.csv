@@ -1,0 +1,7 @@
+benchmark_stage,dataset,storage_device,cache_condition,benchmark_mode,planner_mode,random_count,continuous_count,threads,memory_limit_mb,read_window_bytes,max_gap_bytes,T_read_ms,T_write_ms,T_total_ms,bytes_written,max_abs_error,relative_error_max,mismatch_count,repeat_id
+final,/mnt/d/CUP/cup_3d_small.erwt3d,hdd,warm,contest_batch_throughput,global_all_axis,100,10,8,16384,33554432,262144,25310,0,25556,4375628840,0,0,0,1
+final,/mnt/d/CUP/cup_3d_small.erwt3d,hdd,warm,contest_batch_throughput,global_all_axis,100,10,8,16384,33554432,262144,25310,0,25556,4375628840,0,0,0,1
+final,/mnt/d/CUP/cup_3d_small.erwt3d,hdd,warm,contest_batch_throughput,global_all_axis,100,10,8,16384,33554432,262144,25310,0,25556,4375628840,0,0,0,1
+final,/mnt/d/CUP/cup_3d_small.erwt3d,hdd,warm,contest_batch_throughput,global_all_axis,100,10,8,16384,33554432,262144,25310,0,25556,4375628840,0,0,0,1
+final,/mnt/d/CUP/cup_3d_small.erwt3d,hdd,warm,contest_batch_throughput,global_all_axis,100,10,8,16384,33554432,262144,25310,0,25556,4375628840,0,0,0,1
+final,/mnt/d/CUP/cup_3d_small.erwt3d,hdd,warm,contest_batch_throughput,global_all_axis,100,10,8,16384,33554432,262144,25310,0,25556,4375628840,0,0,0,1
