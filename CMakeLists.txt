@@ -41,7 +41,10 @@ set(LIB_SOURCES
     src/extent.cpp
     src/cache.cpp
     src/thread_pool.cpp
-    src/sb_parallel.cpp
+    src/sb_common.cpp
+    src/sb_ssd.cpp
+    src/sb_hdd.cpp
+    src/sb_panel.cpp
 )
 
 # Create library

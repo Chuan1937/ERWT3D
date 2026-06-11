@@ -3,7 +3,10 @@
 #include "format.hpp"
 #include "slice.hpp"
 #include "cache.hpp"
-#include "sb_task.hpp"
+#include "sb_plan.hpp"
+#include "sb_ssd.hpp"
+#include "sb_hdd.hpp"
+#include "sb_panel.hpp"
 #include <cstdint>
 #include <string>
 #include <memory>
@@ -18,6 +21,13 @@ enum class IOBackend {
 enum class SBParallelMode {
     Serial,       // current stable single-thread SB path (default)
     ParallelRead, // parallel pread over superblocks, disjoint output regions
+};
+
+enum class SBReadMode {
+    PRead,         // per-superblock pread (SSD default)
+    RunBatch,      // batch contiguous superblock runs into single pread
+    LeafIndex,     // read only needed leaf blocks, merge into extents
+    HDDReadWindow, // HDD-max: large contiguous read windows with configurable gap tolerance
 };
 
 class ERWT3DReader {
