@@ -76,40 +76,18 @@ add_executable(gen_test_data tools/gen_test_data.cpp)
 add_executable(erwt3d_bench_raw tools/erwt3d_bench_raw.cpp)
 
 # Tests
-if(ERWT3D_BUILD_TESTS)
+if(ERWT3D_BUILD_TESTS AND EXISTS "${CMAKE_SOURCE_DIR}/tests")
     enable_testing()
-    
-    add_executable(test_morton tests/test_morton.cpp)
-    target_link_libraries(test_morton PRIVATE erwt3d)
-    add_test(NAME test_morton COMMAND test_morton)
-    
-    add_executable(test_roundtrip tests/test_roundtrip.cpp)
-    target_link_libraries(test_roundtrip PRIVATE erwt3d)
-    add_test(NAME test_roundtrip COMMAND test_roundtrip)
-    
-    add_executable(test_slice tests/test_slice.cpp)
-    target_link_libraries(test_slice PRIVATE erwt3d)
-    add_test(NAME test_slice COMMAND test_slice)
-    
-    add_executable(test_backend tests/test_backend.cpp)
-    target_link_libraries(test_backend PRIVATE erwt3d)
-    add_test(NAME test_backend COMMAND test_backend)
-    
-    add_executable(test_sb_parallel_modes tests/test_sb_parallel_modes.cpp)
-    target_link_libraries(test_sb_parallel_modes PRIVATE erwt3d)
-    add_test(NAME test_sb_parallel_modes COMMAND test_sb_parallel_modes)
-    
-    add_executable(test_panel tests/test_panel.cpp)
-    target_link_libraries(test_panel PRIVATE erwt3d)
-    add_test(NAME test_panel COMMAND test_panel)
-    
-    add_executable(test_sb_read_modes tests/test_sb_read_modes.cpp)
-    target_link_libraries(test_sb_read_modes PRIVATE erwt3d)
-    add_test(NAME test_sb_read_modes COMMAND test_sb_read_modes)
-    
-    add_executable(test_line_reads tests/test_line_reads.cpp)
-    target_link_libraries(test_line_reads PRIVATE erwt3d)
-    add_test(NAME test_line_reads COMMAND test_line_reads)
+    file(GLOB TEST_SOURCES tests/test_*.cpp)
+    foreach(TEST_SRC ${TEST_SOURCES})
+        get_filename_component(TEST_NAME ${TEST_SRC} NAME_WE)
+        add_executable(${TEST_NAME} ${TEST_SRC})
+        target_link_libraries(${TEST_NAME} PRIVATE erwt3d)
+        add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
+    endforeach()
 endif()
 
 add_executable(erwt3d_layout_sim tools/erwt3d_layout_sim.cpp)
+
+add_executable(erwt3d_bench_contest tools/erwt3d_bench_contest.cpp)
+target_link_libraries(erwt3d_bench_contest PRIVATE erwt3d)

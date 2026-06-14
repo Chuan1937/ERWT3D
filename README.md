@@ -101,6 +101,37 @@ Read single lines along any axis (direct leaf access, not full-slice extraction)
 
 Line reads touch only the specific leaf blocks containing the line (~256B each), not full 2D slices. Typical latency: sub-millisecond for X, ~0.1ms for Y/Z on 20G.
 
+### erwt3d_bench_contest
+
+Competition-standard benchmark (赛题2 评分标准). Measures X/Y/Z random(100) + continuous(10) slice reads, computes composite time and storage score.
+
+```bash
+# Single configuration:
+./build/erwt3d_bench_contest \
+  --input data.erwt3d \
+  --output-dir contest_out \
+  --random-count 100 \
+  --continuous-count 10 \
+  --threads 8 \
+  --io-backend sb \
+  --sb-parallel-mode parallel-read \
+  --sb-task-order file-offset
+
+# Compare against baseline:
+./build/erwt3d_bench_contest \
+  --input data.erwt3d \
+  --output-dir contest_v2 \
+  --baseline-file contest_out/contest_score.csv
+
+# Sweep multiple configs:
+./scripts/run_contest_bench.sh data.erwt3d sweep_results
+```
+
+Outputs:
+- `contest_score.csv` — composite time, storage ratio, per-axis breakdown
+- `contest_summary.csv` — per-axis avg/min/max/median/p95/p99
+- `contest_detail.csv` — per-slice timing
+
 ### erwt3d_verify
 
 Verify correctness (supports streaming sampling for large datasets):
