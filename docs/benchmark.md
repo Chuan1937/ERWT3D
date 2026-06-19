@@ -40,19 +40,36 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 
 ### 20G 数据集 (801×2405×2501)
 
-| 模式 | T_x_rand | T_y_rand | T_z_rand | T_total |
+**关键发现**: HDD 必须单线程顺序读取，多线程并发会导致磁头跳动。
+
+#### 模式对比
+
+| 模式 | X random | Y random | Z random | T_total |
 |------|----------|----------|----------|---------|
-| 逐切片 | 1795ms | 609ms | 612ms | 994ms |
-| **Batch planner** | **244ms** | **221ms** | **207ms** | **170ms** |
+| 逐切片读取 | 4673ms | 2443ms | 2637ms | ~3200ms |
+| **Batch planner** | **927ms** | **1404ms** | **1263ms** | **877ms** |
 
-### 线程数对比
+#### 推荐配置
 
-| 线程 | T_total |
-|------|---------|
-| 1 | 395ms |
-| 4 | 884ms |
-| **8** | **170ms** |
-| 16 | 503ms |
+```bash
+./build/erwt3d_bench \
+  --input data.erwt3d \
+  --output-dir hdd_bench \
+  --random-count 100 \
+  --continuous-count 10 \
+  --threads 1 \
+  --memory-limit-mb 4096 \
+  --io-backend sb \
+  --sb-task-order file-offset \
+  --sb-read-mode hdd-read-window \
+  --hdd-read-window-bytes 33554432 \
+  --hdd-max-gap-bytes 1048576 \
+  --hdd-batch-planner on \
+  --hdd-batch-window-bytes 33554432 \
+  --hdd-batch-max-gap-bytes 1048576
+```
+
+**注意**: HDD 模式使用 `--threads 1`，多线程会导致磁头跳动反而更慢。
 
 ---
 
@@ -60,18 +77,12 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 
 | 指标 | SSD | HDD | 差距 |
 |------|-----|-----|------|
-| T_total (20G) | 49ms | 170ms | 3.5x |
-| T_x_random | 62ms | 244ms | 3.9x |
-| T_y_random | 35ms | 221ms | 6.3x |
+| T_total (20G) | 73ms | 877ms | 12x |
+| T_x_random | 155ms | 927ms | 6x |
+| T_y_random | 45ms | 1404ms | 31x |
+| T_z_random | 40ms | 1263ms | 32x |
 
----
-
-## 存储比例
-
-| 数据集 | 比例 |
-|--------|------|
-| 20G | 1.075x |
-| 50G | 1.044x |
+**结论**: HDD 比 SSD 慢 12-32 倍，主要瓶颈是随机寻道时间。
 
 ---
 
@@ -88,6 +99,22 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
   --io-backend sb \
   --sb-parallel-mode parallel-read \
   --sb-task-order file-offset
+```
+
+### HDD 环境
+
+```bash
+./build/erwt3d_bench_contest \
+  --input data.erwt3d \
+  --output-dir out \
+  --threads 1 \
+  --memory-limit-mb 4096 \
+  --io-backend sb \
+  --sb-task-order file-offset \
+  --sb-read-mode hdd-read-window \
+  --hdd-read-window-bytes 33554432 \
+  --hdd-max-gap-bytes 1048576 \
+  --batch
 ```
 
 ### HDD 环境

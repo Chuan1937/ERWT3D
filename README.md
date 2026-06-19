@@ -49,6 +49,13 @@ ctest --test-dir build --output-on-failure
 - [算法实现](docs/implementation.md)
 - [性能测试](docs/benchmark.md)
 
+## 性能
+
+| 环境 | T_total (20G) | 说明 |
+|------|---------------|------|
+| SSD | 73ms | 8线程并行读取 |
+| HDD | 877ms | 单线程顺序读取 + Batch planner |
+
 ## 许可
 
 BSD 3-Clause License

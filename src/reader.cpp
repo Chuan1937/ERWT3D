@@ -749,7 +749,8 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
 
     bool ok;
     if (sbReadMode_ == SBReadMode::HDDReadWindow) {
-        ok = executeSBPlanHDDReadWindow(fd_, plan, header_, output, numThreads,
+        // HDD优化: 强制单线程读取，避免多线程并发导致磁头跳动
+        ok = executeSBPlanHDDReadWindow(fd_, plan, header_, output, 1,
                                         memoryLimitMB, hddReadWindowCfg_,
                                         profileIO_ ? &lastProfile_ : nullptr,
                                         pinThreads_);
@@ -792,8 +793,9 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
         plans.push_back(std::move(p)); outputs.push_back(r.output);
     }
     for (auto& p : plans) pp.push_back(&p);
+    // HDD优化: 批量模式也强制单线程读取
     return executeSBBatchHDD(fd_, buildSBBatchPlan(pp), header_, outputs.data(),
-                              numThreads, memoryLimitMB, wcfg, pinThreads_, nullptr);
+                              1, memoryLimitMB, wcfg, pinThreads_, nullptr);
 }
 
 bool ERWT3DReader::readExtents(const std::vector<Extent>& extents, void* buffer) {
