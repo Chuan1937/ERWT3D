@@ -2,45 +2,49 @@
 
 三维空间数据高效读写库
 
-## 特性
-
-- **无冗余存储**: Morton 序物理布局，X/Y/Z 三轴访问均衡
-- **多线程 I/O**: 线程池并行 pread
-- **内存可控**: `--memory-limit-mb` 限制内存使用
-- **HDD 优化**: 大读窗口 + gap 容忍 + 批量合并
-
 ## 构建
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
-ctest --test-dir build --output-on-failure
 ```
 
-## 工具
-
-| 工具 | 用途 |
-|------|------|
-| `erwt3d_info` | 显示文件信息 |
-| `erwt3d_convert` | RAW ↔ ERWT3D 转换 |
-| `erwt3d_slice` | 读取切片 |
-| `erwt3d_line` | 读取单行 |
-| `erwt3d_verify` | 正确性验证 |
-| `erwt3d_bench` | 性能测试 |
-| `erwt3d_bench_contest` | 赛题评分测试 |
-
-## 快速开始
+## 使用
 
 ```bash
-# 转换
-./build/erwt3d_convert --input data.raw --output data.erwt3d --nx 801 --ny 2405 --nz 2501
-
-# 测试
-./build/erwt3d_bench_contest --input data.erwt3d --output-dir out --threads 8 --io-backend sb --sb-parallel-mode parallel-read
-
-# 验证
-./build/erwt3d_verify --raw data.raw --erwt3d data.erwt3d --nx 801 --ny 2405 --nz 2501
+./run_bench_hdd.sh    # HDD 测试
+./run_bench_ssd.sh    # SSD 测试
+./run_convert.sh      # 转换
+./run_verify.sh       # 验证
 ```
+
+脚本内容（可编辑调整参数）：
+
+```bash
+#!/bin/bash
+erwt3d begin mytest
+    erwt3d bench_hdd input=data.erwt3d output=/tmp/out
+erwt3d end
+```
+
+## 参数
+
+| 参数 | 说明 |
+|------|------|
+| `input=` | 输入文件 |
+| `output=` | 输出目录/文件 |
+| `nx=` `ny=` `nz=` | 数据维度 |
+| `random=` | 随机切片数 (默认 100) |
+| `continuous=` | 连续切片数 (默认 10) |
+| `threads=` | 线程数 |
+| `memory=` | 内存限制 (MB) |
+
+## 性能
+
+| 环境 | T_total (20G) |
+|------|---------------|
+| SSD | 73ms |
+| HDD | 877ms |
 
 ## 文档
 
@@ -48,13 +52,6 @@ ctest --test-dir build --output-on-failure
 - [索引原理](docs/index.md)
 - [算法实现](docs/implementation.md)
 - [性能测试](docs/benchmark.md)
-
-## 性能
-
-| 环境 | T_total (20G) | 说明 |
-|------|---------------|------|
-| SSD | 73ms | 8线程并行读取 |
-| HDD | 877ms | 单线程顺序读取 + Batch planner |
 
 ## 许可
 

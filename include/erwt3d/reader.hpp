@@ -87,6 +87,11 @@ public:
     bool readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
                          int numThreads, size_t memoryLimitMB,
                          const HDDReadWindowConfig& wcfg);
+
+    // 一键配置
+    void setSSDMode(int numThreads = 8);
+    void setHDDMode();
+
     void setProfileIO(bool enable) { profileIO_ = enable; }
     bool profileIO() const { return profileIO_; }
     const IOProfile& lastProfile() const { return lastProfile_; }

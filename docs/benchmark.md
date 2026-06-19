@@ -91,31 +91,17 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 ### SSD 环境
 
 ```bash
-./build/erwt3d_bench_contest \
-  --input data.erwt3d \
-  --output-dir out \
-  --threads 8 \
-  --memory-limit-mb 8192 \
-  --io-backend sb \
-  --sb-parallel-mode parallel-read \
-  --sb-task-order file-offset
+./build/erwt3d_bench_contest -i data.erwt3d -o out -t 8 -m 8192 \
+  --io-backend sb --sb-parallel-mode parallel-read --sb-task-order file-offset
 ```
 
 ### HDD 环境
 
 ```bash
-./build/erwt3d_bench_contest \
-  --input data.erwt3d \
-  --output-dir out \
-  --threads 1 \
-  --memory-limit-mb 4096 \
-  --io-backend sb \
-  --sb-task-order file-offset \
-  --sb-read-mode hdd-read-window \
-  --hdd-read-window-bytes 33554432 \
-  --hdd-max-gap-bytes 1048576 \
-  --batch
+./build/erwt3d_bench_contest -i data.erwt3d -o out --hdd
 ```
+
+`--hdd` 自动设置: 单线程、4GB 内存、顺序读取、批量合并。
 
 ### HDD 环境
 

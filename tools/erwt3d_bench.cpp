@@ -103,12 +103,13 @@ int main(int argc, char* argv[]) {
     bool profileIO = false;
     bool pinThreads = false;
     bool useMmap = false;
+    bool hddMode = false;
     
     // Parse arguments
     for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--input") == 0 && i + 1 < argc) {
+        if ((std::strcmp(argv[i], "--input") == 0 || std::strcmp(argv[i], "-i") == 0) && i + 1 < argc) {
             inputPath = argv[++i];
-        } else if (std::strcmp(argv[i], "--output-dir") == 0 && i + 1 < argc) {
+        } else if ((std::strcmp(argv[i], "--output-dir") == 0 || std::strcmp(argv[i], "-o") == 0) && i + 1 < argc) {
             outputDir = argv[++i];
         } else if (std::strcmp(argv[i], "--random-count") == 0 && i + 1 < argc) {
             randomCount = std::stoi(argv[++i]);
@@ -163,6 +164,19 @@ int main(int argc, char* argv[]) {
             pinThreads = true;
         } else if (std::strcmp(argv[i], "--mmap") == 0) {
             useMmap = true;
+        } else if (std::strcmp(argv[i], "--hdd") == 0) {
+            hddMode = true;
+            numThreads = 1;
+            memoryLimitMB = 4096;
+            ioBackendStr = "sb";
+            sbParallelModeStr = "serial";
+            sbReadModeStr = "hdd-read-window";
+            sbTaskOrderStr = "file-offset";
+            hddReadWindowBytes = 33554432;
+            hddMaxGapBytes = 1048576;
+            hddBatchPlanner = true;
+            hddBatchWindowBytes = 33554432;
+            hddBatchMaxGapBytes = 1048576;
         } else if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
             seed = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {

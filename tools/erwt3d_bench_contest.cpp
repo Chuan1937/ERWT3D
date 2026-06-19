@@ -174,6 +174,7 @@ int main(int argc, char* argv[]) {
     bool pinThreads = false, dryRun = false;
     bool useBatch = false;
     bool useMmap = false;
+    bool hddMode = false;
     double baselineMsOverride = 0;
     int repeats = 1;
 
@@ -184,18 +185,18 @@ int main(int argc, char* argv[]) {
             std::exit(1);
             return nullptr;
         };
-        if (std::strcmp(argv[i], "--input") == 0) { inputPath = next(); }
-        else if (std::strcmp(argv[i], "--output-dir") == 0) { outputDir = next(); }
+        if (std::strcmp(argv[i], "--input") == 0 || std::strcmp(argv[i], "-i") == 0) { inputPath = next(); }
+        else if (std::strcmp(argv[i], "--output-dir") == 0 || std::strcmp(argv[i], "-o") == 0) { outputDir = next(); }
         else if (std::strcmp(argv[i], "--random-count") == 0) { randomCount = std::stoi(next()); }
         else if (std::strcmp(argv[i], "--continuous-count") == 0) { continuousCount = std::stoi(next()); }
-        else if (std::strcmp(argv[i], "--threads") == 0) {
+        else if (std::strcmp(argv[i], "--threads") == 0 || std::strcmp(argv[i], "-t") == 0) {
             const char* v = next();
             if (std::strcmp(v, "auto") == 0) {
                 unsigned hw = std::thread::hardware_concurrency();
                 numThreads = static_cast<int>(std::min(std::max(1u, hw / 2), 8u));
             } else { numThreads = std::stoi(v); }
         }
-        else if (std::strcmp(argv[i], "--memory-limit-mb") == 0) { memoryLimitMB = std::stoul(next()); }
+        else if (std::strcmp(argv[i], "--memory-limit-mb") == 0 || std::strcmp(argv[i], "-m") == 0) { memoryLimitMB = std::stoul(next()); }
         else if (std::strcmp(argv[i], "--cache-mb") == 0) { cacheMB = std::stoul(next()); }
         else if (std::strcmp(argv[i], "--io-backend") == 0) { ioBackendStr = next(); }
         else if (std::strcmp(argv[i], "--sb-parallel-mode") == 0) { sbParallelModeStr = next(); }
@@ -208,6 +209,19 @@ int main(int argc, char* argv[]) {
         else if (std::strcmp(argv[i], "--dry-run") == 0) { dryRun = true; }
         else if (std::strcmp(argv[i], "--batch") == 0) { useBatch = true; }
         else if (std::strcmp(argv[i], "--mmap") == 0) { useMmap = true; }
+        else if (std::strcmp(argv[i], "--hdd") == 0) {
+            hddMode = true;
+            // HDD 优化默认值
+            numThreads = 1;
+            memoryLimitMB = 4096;
+            ioBackendStr = "sb";
+            sbParallelModeStr = "serial";
+            sbReadModeStr = "hdd-read-window";
+            sbTaskOrderStr = "file-offset";
+            hddReadWindowBytes = 33554432;  // 32MB
+            hddMaxGapBytes = 1048576;       // 1MB
+            useBatch = true;
+        }
         else if (std::strcmp(argv[i], "--baseline-ms") == 0) { baselineMsOverride = std::stod(next()); }
         else if (std::strcmp(argv[i], "--baseline-file") == 0) { baselineFile = next(); }
         else if (std::strcmp(argv[i], "--repeats") == 0) { repeats = std::stoi(next()); }

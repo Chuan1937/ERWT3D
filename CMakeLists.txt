@@ -45,6 +45,7 @@ set(LIB_SOURCES
     src/sb_ssd.cpp
     src/sb_hdd.cpp
     src/sb_panel.cpp
+    src/api.cpp
 )
 
 # Create library
@@ -91,3 +92,6 @@ add_executable(erwt3d_layout_sim tools/erwt3d_layout_sim.cpp)
 
 add_executable(erwt3d_bench_contest tools/erwt3d_bench_contest.cpp)
 target_link_libraries(erwt3d_bench_contest PRIVATE erwt3d)
+
+add_executable(example_api tools/example_api.cpp)
+target_link_libraries(example_api PRIVATE erwt3d)
