@@ -1,8 +1,0 @@
-dataset,mode,benchmark_count,T_total,vs_baseline,decision,rationale
-20G,pread,100+10,60,1.00x,keep default,baseline
-20G,run-batch,20+5,367,2.8x slower,not recommended,run-batch overhead exceeds benefit on 20G; full 100+10 not run
-50G,pread,100+10,315,1.00x,keep default,baseline
-50G,run-batch,5+2,601,2.5x FASTER,artifact,reduced-count advantage was cold-cache artifact; did not generalize
-50G,run-batch,100+10,795,2.5x slower,not recommended,full 100+10 confirms run-batch does not help
-both,preadv,not implemented,deferred,deferred,requires scatter-gather buffer management; no evidence syscall count is bottleneck with warm cache
-both,io_uring,not implemented,deferred,deferred,requires liburing dependency; better evaluated after preadv is tested

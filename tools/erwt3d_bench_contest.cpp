@@ -63,7 +63,9 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
                      const erwt3d::ERWT3DHeader& header,
                      int numThreads, size_t memoryLimitMB,
                      const std::string& outputDir,
-                     GroupResult& result) {
+                     GroupResult& result,
+                     bool useBatch = false,
+                     const erwt3d::HDDReadWindowConfig& wcfg = {}) {
     uint64_t sliceSize;
     switch (axis) {
         case erwt3d::SliceAxis::X: sliceSize = header.ny * header.nz; break;
@@ -82,32 +84,76 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
     // Group wall-clock timing (includes read + write, same as competition)
     auto groupStart = std::chrono::high_resolution_clock::now();
 
-    for (size_t i = 0; i < indices.size(); ++i) {
-        std::vector<float> output(sliceSize);
+    if (useBatch) {
+        // Batch mode: read slices in batches of batchSize, then write
+        const size_t batchSize = 20;  // Process 20 slices at a time
+        size_t totalSlices = indices.size();
 
-        auto t0 = std::chrono::high_resolution_clock::now();
-        if (!reader.readSlice(axis, indices[i], output.data(), numThreads, memoryLimitMB)) {
-            std::cerr << "\nError: readSlice failed for " << axisName << "[" << indices[i] << "]\n";
-            return false;
-        }
-        auto t1 = std::chrono::high_resolution_clock::now();
+        for (size_t batchStart = 0; batchStart < totalSlices; batchStart += batchSize) {
+            size_t batchEnd = std::min(batchStart + batchSize, totalSlices);
+            size_t batchLen = batchEnd - batchStart;
 
-        // Write to standard raw format
-        std::string outPath = outputDir + "/" + axisName + "_" + mode + "_" + std::to_string(i) + ".raw";
-        std::ofstream outFile(outPath, std::ios::binary);
-        if (!outFile) {
-            std::cerr << "\nError: Cannot write " << outPath << "\n";
-            return false;
-        }
-        outFile.write(reinterpret_cast<const char*>(output.data()), outBytes);
-        outFile.close();
-        if (!outFile.good()) {
-            std::cerr << "\nError: Write failed for " << outPath << "\n";
-            return false;
-        }
+            std::vector<erwt3d::ERWT3DReader::SliceBatchRequest> reqs;
+            std::vector<std::vector<float>> buffers(batchLen);
+            for (size_t i = 0; i < batchLen; ++i) {
+                buffers[i].resize(sliceSize);
+                reqs.push_back({axis, indices[batchStart + i], buffers[i].data()});
+            }
 
-        auto t2 = std::chrono::high_resolution_clock::now();
-        result.perSliceTimes.push_back(std::chrono::duration<double, std::milli>(t2 - t0).count());
+            auto readStart = std::chrono::high_resolution_clock::now();
+            if (!reader.readSlicesBatch(reqs, numThreads, memoryLimitMB, wcfg)) {
+                std::cerr << "\nError: batch read failed for " << axisName << "\n";
+                return false;
+            }
+            auto readEnd = std::chrono::high_resolution_clock::now();
+            double readMs = std::chrono::duration<double, std::milli>(readEnd - readStart).count();
+
+            // Write all slices in this batch
+            for (size_t i = 0; i < batchLen; ++i) {
+                std::string outPath = outputDir + "/" + axisName + "_" + mode + "_" + std::to_string(batchStart + i) + ".raw";
+                std::ofstream outFile(outPath, std::ios::binary);
+                if (!outFile) {
+                    std::cerr << "\nError: Cannot write " << outPath << "\n";
+                    return false;
+                }
+                outFile.write(reinterpret_cast<const char*>(buffers[i].data()), outBytes);
+                outFile.close();
+                if (!outFile.good()) {
+                    std::cerr << "\nError: Write failed for " << outPath << "\n";
+                    return false;
+                }
+                result.perSliceTimes.push_back(readMs / batchLen);
+            }
+        }
+    } else {
+        // Sequential mode: read and write one slice at a time
+        for (size_t i = 0; i < indices.size(); ++i) {
+            std::vector<float> output(sliceSize);
+
+            auto t0 = std::chrono::high_resolution_clock::now();
+            if (!reader.readSlice(axis, indices[i], output.data(), numThreads, memoryLimitMB)) {
+                std::cerr << "\nError: readSlice failed for " << axisName << "[" << indices[i] << "]\n";
+                return false;
+            }
+            auto t1 = std::chrono::high_resolution_clock::now();
+
+            // Write to standard raw format
+            std::string outPath = outputDir + "/" + axisName + "_" + mode + "_" + std::to_string(i) + ".raw";
+            std::ofstream outFile(outPath, std::ios::binary);
+            if (!outFile) {
+                std::cerr << "\nError: Cannot write " << outPath << "\n";
+                return false;
+            }
+            outFile.write(reinterpret_cast<const char*>(output.data()), outBytes);
+            outFile.close();
+            if (!outFile.good()) {
+                std::cerr << "\nError: Write failed for " << outPath << "\n";
+                return false;
+            }
+
+            auto t2 = std::chrono::high_resolution_clock::now();
+            result.perSliceTimes.push_back(std::chrono::duration<double, std::milli>(t2 - t0).count());
+        }
     }
 
     auto groupEnd = std::chrono::high_resolution_clock::now();
@@ -126,6 +172,8 @@ int main(int argc, char* argv[]) {
     std::string sbReadModeStr = "pread", sbTaskOrderStr = "logical";
     uint64_t hddReadWindowBytes = 0, hddMaxGapBytes = 0;
     bool pinThreads = false, dryRun = false;
+    bool useBatch = false;
+    bool useMmap = false;
     double baselineMsOverride = 0;
     int repeats = 1;
 
@@ -158,6 +206,8 @@ int main(int argc, char* argv[]) {
         else if (std::strcmp(argv[i], "--pin-threads") == 0) { pinThreads = true; }
         else if (std::strcmp(argv[i], "--seed") == 0) { seed = std::stoul(next()); }
         else if (std::strcmp(argv[i], "--dry-run") == 0) { dryRun = true; }
+        else if (std::strcmp(argv[i], "--batch") == 0) { useBatch = true; }
+        else if (std::strcmp(argv[i], "--mmap") == 0) { useMmap = true; }
         else if (std::strcmp(argv[i], "--baseline-ms") == 0) { baselineMsOverride = std::stod(next()); }
         else if (std::strcmp(argv[i], "--baseline-file") == 0) { baselineFile = next(); }
         else if (std::strcmp(argv[i], "--repeats") == 0) { repeats = std::stoi(next()); }
@@ -175,7 +225,7 @@ int main(int argc, char* argv[]) {
     { std::error_code ec; std::filesystem::create_directories(outputDir, ec);
       if (ec) { std::cerr << "Error: " << ec.message() << "\n"; return 1; } }
 
-    erwt3d::ERWT3DReader reader(inputPath, cacheMB);
+    erwt3d::ERWT3DReader reader(inputPath, cacheMB, useMmap);
     if (ioBackendStr == "sb" || ioBackendStr == "superblock")
         reader.setIOBackend(erwt3d::IOBackend::Superblock);
     if (sbParallelModeStr == "parallel-read")
@@ -301,8 +351,9 @@ int main(int argc, char* argv[]) {
             if (repeats > 1) std::cout << " rep=" << rep << std::flush;
             std::cout << "..." << std::flush;
 
+            erwt3d::HDDReadWindowConfig wcfg{hddReadWindowBytes, hddMaxGapBytes};
             if (!runGroup(reader, spec.axis, spec.axisName, *spec.indices, spec.mode,
-                          header, numThreads, memoryLimitMB, repDir, gr)) {
+                          header, numThreads, memoryLimitMB, repDir, gr, useBatch, wcfg)) {
                 return 1;
             }
 

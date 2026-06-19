@@ -1,6 +1,0 @@
-metric,20G_cold,20G_warm,50G_cold,50G_warm,notes
-T_read_ms,136023,37731,539520,96770,global batch read dominates total time
-T_write_ms,32665,33587,57053,61986,output write is ~constant per dataset
-T_total_ms,168688,71316,596573,158755,includes read + write wall clock
-per_slice_ms,511,216,1808,481,avg per-slice including write
-20G_vs_per_axis_batch,n/a,similar (6.5pct faster),n/a,27pct faster,vs PR #34 per-axis batch (216ms contest vs 231ms per-axis)

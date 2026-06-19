@@ -1,5 +1,0 @@
-dataset,benchmark_count,threads,config,pin_threads,T_total,pin_off_ms,delta,measured,notes
-20G,20+5,8,dynamic+X-panel,off,78.43,,,true,baseline
-20G,20+5,8,dynamic+X-panel,on,62.65,78.43,1.25x,true,pinning helps 20% on reduced counts
-50G,20+5,8,static,off,606.88,,,true,baseline
-50G,20+5,8,static,on,272.99,606.88,2.22x,true,pinning gives 2.2x improvement; thread migration was hurting with large working set

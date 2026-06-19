@@ -1,5 +1,0 @@
-config,dataset,threads,sb_parallel_mode,T_total,speedup_vs_serial,axis_balance_random,notes
-SB serial t1,20G,1,serial,248.87,1.00x,2.50,previous best (issue #10)
-SB parallel-read t8,20G,8,parallel-read,73.06,3.41x,3.84,new best: 3.4x faster
-SB serial t1,50G,1,serial,770.13,1.00x,4.06,previous best (issue #10)
-SB parallel-read t8,50G,8,parallel-read,300.22,2.57x,1.32,new best: 2.6x faster

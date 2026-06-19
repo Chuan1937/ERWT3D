@@ -1,8 +1,0 @@
-rw_mb,gap,strategy,T_total_ms
-16,64K,HDD read-window,9965.63
-16,256K,HDD read-window,3926.69
-16,1M,HDD read-window,3718.84
-16,4M,HDD read-window,3694.98
-32,64K,HDD read-window,3088.62
-32,256K,HDD read-window,2813.02
-32,1M,HDD read-window,3086.70

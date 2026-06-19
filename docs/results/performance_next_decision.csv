@@ -1,5 +1,0 @@
-dataset,current_best,next_experiment,result,decision,final_command,notes
-20G,dynamic+X-panel t8,full 100+10 pinning,62ms pin-on vs 60ms best (same/slightly worse),do not recommend pinning,20G: --sb-schedule dynamic --sb-parallel-mode parallel-read --threads 8 X-panel s4,pinning does not beat current best
-50G,static t8,full 100+10 pinning,392ms pin-on vs 315ms best (worse),do not recommend pinning,50G: --sb-parallel-mode parallel-read --threads 8,reduced-count 2.22x gain was cold-cache artifact; did not generalize
-both,both,syscall profiling,sys/user 12-14x in time -v,likely bottleneck: system/I/O path dominates; pread-per-superblock probable cause,next: preadv batching or io_uring,strace unavailable; time -v system time + FS input count as evidence
-both,native build,-march=native,not tested,deferred,CMake flag ERWT3D_NATIVE_OPT,--

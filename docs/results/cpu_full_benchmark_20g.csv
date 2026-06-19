@@ -1,3 +1,0 @@
-dataset,benchmark_count,threads,memory_limit_mb,panel,io_backend,sb_parallel_mode,T_x_random,T_y_random,T_z_random,T_random_avg,T_x_cont,T_y_cont,T_z_cont,T_cont_avg,T_total,storage_ratio,cache_condition,notes
-20G,100+10,6,8192,x-panel s4,sb,parallel-read,487.58,43.76,41.90,191.08,124.76,44.54,39.39,69.56,130.32,1.344,warm,worse than t8 on full counts
-20G,100+10,8,8192,x-panel s4,sb,parallel-read,141.55,42.52,41.34,75.13,92.32,47.89,40.49,60.23,67.68,1.344,warm,winner; 1.9x faster than t6

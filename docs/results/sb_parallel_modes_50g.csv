@@ -1,4 +1,0 @@
-dataset,backend,threads,sb_parallel_mode,T_x_random,T_y_random,T_z_random,T_random_avg,T_x_cont,T_y_cont,T_z_cont,T_cont_avg,T_total,random_balance,cont_balance,random_count,cont_count,notes
-50G,sb,1,serial,2158.77,940.70,531.76,1210.41,298.95,513.18,177.40,329.84,770.13,4.06,2.89,100,10,previous best serial
-50G,sb,8,parallel-read,1610.20,1436.94,726.62,1257.92,274.54,289.95,81.23,215.24,736.58,2.22,3.57,20,5,reduced counts COLD CACHE; run before full benchmark warmup
-50G,sb,8,parallel-read,498.64,563.37,377.45,479.82,133.83,148.63,79.39,120.61,300.22,1.32,1.87,100,10,full benchmark WARM CACHE; page cache populated by benchmark slices

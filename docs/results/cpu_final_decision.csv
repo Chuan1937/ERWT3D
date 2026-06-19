@@ -1,3 +1,0 @@
-dataset,threads,T_total,bottleneck,recommendation,notes
-20G,6,61,ThreadPool mutex at high threads,threads=4-6,physical cores optimal; HT hurts; auto=hw/2
-50G,8,108,ThreadPool mutex + I/O,threads=4-8,8 marginally better T_total; 4 better for X-axis

@@ -1,119 +1,50 @@
-# ERWT3D Design Document
+# 存储结构设计
 
-## Overview
-
-ERWT3D is a C++ library for efficient read/write access to large regular 3D float32 volumes. It uses a custom single-file format with Morton-ordered physical layout to provide balanced performance for X, Y, and Z slice access.
-
-## Single-Copy Storage Principle
-
-Unlike approaches that store redundant copies for each axis, ERWT3D uses a single-copy storage strategy:
-
-- Data is stored once in Morton order
-- No X/Y/Z redundant copies
-- Storage size remains close to raw size (< 1.5x)
-- First version targets ~1.0x + small header/padding
-
-## Superblock Design
-
-The volume is divided into superblocks:
+## 文件格式
 
 ```
-superblock = 64 x 64 x 64 float32 = 1 MiB
+┌──────────────┐
+│ Header 256B  │  magic, version, nx/ny/nz, block sizes
+├──────────────┤
+│ Data Area    │  Superblocks 按 Z-Y-X 顺序排列
+│              │  每个 Superblock 内 Leaf blocks 按 Morton 序排列
+└──────────────┘
 ```
 
-Rationale:
-- Large enough for efficient I/O operations
-- Small enough for thread scheduling and cache management
-- Aligns well with typical memory page sizes
+## 分块设计
 
-## Leaf Block Design
+| 层级 | 大小 | 说明 |
+|------|------|------|
+| Superblock | 64×64×64 float32 = 1 MiB | I/O 单元 |
+| Leaf block | 4×4×4 float32 = 256 B | 最小访问单元 |
 
-Each superblock is further divided into leaf blocks:
+## Morton 序
 
-```
-leaf block = 4 x 4 x 4 float32 = 256 bytes
-```
-
-Rationale:
-- Provides balanced read amplification for X/Y/Z slice access
-- Small enough for fine-grained access
-- Large enough to amortize overhead
-
-## Morton Physical Layout
-
-Morton ordering (Z-order curve) is used within each superblock to arrange leaf blocks:
+Superblock 内 leaf blocks 使用 Z-order curve 排列：
 
 ```
-leaf_physical_id = morton3D(lb_x, lb_y, lb_z)
+leaf_id = morton3D(lx, ly, lz)
+file_offset = superblock_offset + leaf_id × 256
 ```
 
-Superblocks are arranged in sequential Z-Y-X row-major order to avoid sparse file holes when the superblock grid dimensions are not powers of two.
+**优势**: X/Y/Z 三轴访问均衡，无需冗余副本。
 
-```
-superblock_offset = (sz * gridY + sy) * gridX + sx
-```
+## 地址计算
 
-Benefits:
-- Morton ordering within superblocks provides balanced axis access
-- Sequential superblock layout eliminates sparse holes for non-power-of-two grids
-- Enables formula-based offset calculation
+```cpp
+// Superblock 偏移
+sb_idx = (sz * gridY + sy) * gridX + sx
+sb_offset = data_offset + sb_idx × 1MiB
 
-## Boundary Handling
-
-When dimensions are not divisible by block sizes:
-
-- Boundary blocks are padded with zeros
-- Restored raw output matches original dimensions exactly
-- Padding is acceptable but storage ratio must remain < 1.5x
-
-## Storage Ratio Formula
-
-```
-storage_ratio = file_size / (nx * ny * nz * 4)
+// Leaf 偏移
+leaf_offset = sb_offset + morton3D(lx, ly, lz) × 256B
 ```
 
-Target: < 1.5x for the first version.
+无需索引表，纯公式计算。
 
-## File Format
+## 存储比例
 
-The file consists of:
-
-1. **Header** (256 bytes)
-   - Magic bytes: "ERWT3D\0"
-   - Version: 1
-   - Dimensions: nx, ny, nz
-   - Data type: float32
-   - Block sizes: super_x/y/z, leaf_x/y/z
-   - Data offset
-   - Reserved fields
-
-2. **Data Area**
-   - Superblocks in Morton order
-   - Each superblock contains leaf blocks in Morton order
-
-## Offset Calculation
-
-File offset for a specific element:
-
-```
-superblock_id = morton3D(super_x, super_y, super_z)
-leaf_id = morton3D(leaf_x, leaf_y, leaf_z)
-offset = data_offset + superblock_id * superblock_bytes + leaf_id * leaf_bytes
-```
-
-No explicit index table is needed - offsets are computed by formula.
-
-## Threading Model
-
-- Single-machine, single-process, multi-threaded
-- Thread pool for parallel I/O and processing
-- Configurable memory limit via `--memory-limit-mb`
-
-## Cache Strategy
-
-Optional LRU cache for leaf blocks:
-
-- Key: global leaf block id or file offset
-- Value: 256-byte leaf block
-- Configurable size via `--cache-mb`
-- Respects global memory limit
+| 数据集 | 原始大小 | 文件大小 | 比例 |
+|--------|----------|----------|------|
+| 20G (801×2405×2501) | 18.0 GB | 19.3 GB | 1.075x |
+| 50G (2001×2201×3000) | 49.2 GB | 51.3 GB | 1.044x |

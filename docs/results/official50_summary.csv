@@ -1,3 +1,0 @@
-config,T_x_random,T_y_random,T_z_random,T_random_avg,T_x_cont,T_y_cont,T_z_cont,T_cont_avg,T_total,random_balance,cont_balance,random_count,cont_count,threads,cache_mb,memory_limit_mb,io_backend
-erwt3d_sb_t1,2158.77,940.70,531.76,1210.41,298.95,513.18,177.40,329.84,770.13,4.06,2.89,100,10,1,0,8192,sb
-erwt3d_sb_t8,2631.33,1310.32,767.55,1569.73,720.76,384.38,235.45,446.87,1008.30,3.43,3.06,100,10,8,0,8192,sb

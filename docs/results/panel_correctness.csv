@@ -1,3 +1,0 @@
-dataset,test,panel_axis,panel_stride,max_abs_error,max_rel_error,num_failed,passed,verify_method,notes
-20G,panel_correctness,x,4,0,0,0,true,streaming 100k samples,identical to raw reference
-50g,cross_check,x,4,0,0,0,true,manual slice cmp,panel slice == no-panel slice for all X indices

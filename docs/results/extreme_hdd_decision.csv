@@ -1,4 +1,0 @@
-rank,strategy,status,write_mode,20G_total_sec,50G_total_sec,20G_vs_baseline,50G_vs_baseline,recommendation
-1,Contest packed output,EXTREME_CONTEST_DEFAULT,packed,63.5,141.5,"10.5% faster","10.7% faster","--mode contest --contest-write-mode packed"
-2,Contest per-slice,COMPETITIVE,per-slice,70.9,158.8,baseline,baseline,"--mode contest (default)"
-3,Contest no-write,BOUNDARY,none,37.6,96.4,"HDD lower bound","HDD lower bound","--contest-write-mode none (diagnostic only)"

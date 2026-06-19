@@ -1,3 +1,0 @@
-dataset,benchmark_count,runs,T_total_min,T_total_max,cache_condition,measured,notes
-20G,full,1,67.68,67.68,warm,true,single full run; 2x reduced runs show 161ms cold -> 54ms warm
-50G,full,1,314.94,314.94,warm,true,single full run; reduced-count warm-cache consistent

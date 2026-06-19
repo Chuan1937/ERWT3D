@@ -32,7 +32,7 @@ enum class SBReadMode {
 
 class ERWT3DReader {
 public:
-    ERWT3DReader(const std::string& path, size_t cacheMB = 0);
+    ERWT3DReader(const std::string& path, size_t cacheMB = 0, bool useMmap = false);
     ~ERWT3DReader();
     
     const ERWT3DHeader& getHeader() const { return header_; }
@@ -97,6 +97,9 @@ private:
     int fd_;
     std::unique_ptr<LeafCache> cache_;
     size_t cacheMB_ = 0;
+    bool useMmap_ = false;
+    void* mmapData_ = nullptr;
+    size_t mmapSize_ = 0;
     IOBackend ioBackend_ = IOBackend::PRead;
     SBParallelMode sbParallelMode_ = SBParallelMode::Serial;
     SBSchedule sbSchedule_ = SBSchedule::Static;

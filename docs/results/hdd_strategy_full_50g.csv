@@ -1,3 +1,0 @@
-dataset,dataset_path,storage_device,cache_condition,device_profile,strategy,read_mode,task_order,read_window_bytes,max_gap_bytes,benchmark_count,threads,memory_limit_mb,T_x_random,T_y_random,T_z_random,T_random_avg,T_x_cont,T_y_cont,T_z_cont,T_cont_avg,T_total,storage_ratio,notes
-cup_3d_big,/mnt/d/CUP/cup_3d_big.erwt3d,hdd,warm,hdd-max,SB parallel-read,pread,logical,0,0,100+10,8,8192,4253.75,2468.33,1812.76,2844.95,2781.68,2314.16,2014.01,2369.95,2607.45,1.044,8-thread parallel pread over superblocks
-cup_3d_big,/mnt/d/CUP/cup_3d_big.erwt3d,hdd,warm,hdd-max,HDD read-window 16MB/64K,hdd-read-window,logical,16777216,65536,100+10,8,8192,2687.28,2412.69,1780.93,2293.63,2823.50,2239.90,1968.78,2344.06,2318.85,1.044,HDD read-window 16MB/64K gap wins 50G full

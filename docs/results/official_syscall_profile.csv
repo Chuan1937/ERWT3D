@@ -1,8 +1,0 @@
-dataset,backend,axis,index,estimated_pread_calls,wall_time_ms,superblocks_touched,notes
-small,sb,Z,1250,494,100,494,reads one 1MB superblock per grid cell; ~494 preads per Z-slice
-small,sb,X,400,1520,400,1520,reads superblocks along YZ plane; ~1520 preads per X-slice
-small,sb,Y,1200,520,150,520,reads superblocks along XZ plane; ~520 preads per Y-slice
-small,pred,Z,1250,389000,DNF,19760,per-extent pread ~389k syscalls per X-slice; causes DNF on real data
-big,sb,Z,1500,1120,530,1120,~32x35=1120 superblocks per Z-slice
-big,sb,X,1000,1645,2160,1645,~35x47=1645 superblocks per X-slice
-big,sb,Y,1100,1504,940,1504,~32x47=1504 superblocks per Y-slice

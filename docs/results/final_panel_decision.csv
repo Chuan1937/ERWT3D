@@ -1,3 +1,0 @@
-dataset,decision,config,threads,T_total,storage_ratio,rationale
-20G,recommended,X-panels stride=4,8,65,1.344,X is the slowest axis (155ms); panels reduce X to 124ms; 11% T_total improvement
-50G,recommended,No panels,8,300,1.044,Y is the slowest axis (563ms); X-panels don't help Y; +6% T_total regression with larger file; 1.044x storage is lighter

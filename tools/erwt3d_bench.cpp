@@ -102,6 +102,7 @@ int main(int argc, char* argv[]) {
     bool contestProfile = false;
     bool profileIO = false;
     bool pinThreads = false;
+    bool useMmap = false;
     
     // Parse arguments
     for (int i = 1; i < argc; ++i) {
@@ -160,6 +161,8 @@ int main(int argc, char* argv[]) {
             profileIO = true;
         } else if (std::strcmp(argv[i], "--pin-threads") == 0) {
             pinThreads = true;
+        } else if (std::strcmp(argv[i], "--mmap") == 0) {
+            useMmap = true;
         } else if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
             seed = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
@@ -189,7 +192,7 @@ int main(int argc, char* argv[]) {
     }
     
     // Open reader
-    erwt3d::ERWT3DReader reader(inputPath, cacheMB);
+    erwt3d::ERWT3DReader reader(inputPath, cacheMB, useMmap);
     if (ioBackendStr == "pread") {
         // default
     } else if (ioBackendStr == "sb" || ioBackendStr == "superblock") {

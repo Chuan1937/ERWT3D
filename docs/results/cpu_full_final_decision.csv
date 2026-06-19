@@ -1,3 +1,0 @@
-dataset,benchmark_type,threads_candidate,best_threads,best_T_total,reduced_count_misleading,decision_rationale
-20G,full 100+10,6 vs 8,8,67.68,Yes (t6 faster at 20+5; t8 faster at 100+10),t8 processes more superblocks in parallel with warm page cache; reduced counts underrepresent warm-cache benefit
-50G,full 100+10,4 vs 8,8,314.94,Yes (t4 close at 20+5; t8 clearly better at 100+10),t8 wins all axes; reduced-count advantage for t4 on X-axis vanishes at full scale

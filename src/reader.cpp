@@ -10,32 +10,50 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 
 namespace erwt3d {
 
-ERWT3DReader::ERWT3DReader(const std::string& path, size_t cacheMB) 
-    : path_(path), fd_(-1), cacheMB_(cacheMB) {
+ERWT3DReader::ERWT3DReader(const std::string& path, size_t cacheMB, bool useMmap)
+    : path_(path), fd_(-1), cacheMB_(cacheMB), useMmap_(useMmap) {
     fd_ = open(path.c_str(), O_RDONLY);
     if (fd_ < 0) return;
-    
+
     if (read(fd_, &header_, sizeof(header_)) != sizeof(header_)) {
         close(fd_);
         fd_ = -1;
         return;
     }
-    
+
     if (!validateHeader(header_)) {
         close(fd_);
         fd_ = -1;
         return;
     }
-    
+
     if (cacheMB > 0) {
         cache_ = std::make_unique<LeafCache>(cacheMB * 1024 * 1024);
+    }
+
+    if (useMmap_) {
+        struct stat st;
+        if (fstat(fd_, &st) == 0) {
+            mmapSize_ = st.st_size;
+            mmapData_ = mmap(nullptr, mmapSize_, PROT_READ, MAP_PRIVATE, fd_, 0);
+            if (mmapData_ == MAP_FAILED) {
+                mmapData_ = nullptr;
+                mmapSize_ = 0;
+            } else {
+                madvise(mmapData_, mmapSize_, MADV_RANDOM);
+            }
+        }
     }
 }
 
 ERWT3DReader::~ERWT3DReader() {
+    if (mmapData_ && mmapSize_ > 0) {
+        munmap(mmapData_, mmapSize_);
+    }
     if (fd_ >= 0) {
         close(fd_);
     }
@@ -58,8 +76,14 @@ bool ERWT3DReader::readOneExtent(uint64_t offset, uint64_t size, void* buffer) {
     if (useCache) {
         if (cache_->get(offset, buffer, size)) return true;
     }
-    ssize_t n = pread(fd_, buffer, size, offset);
-    if (n != static_cast<ssize_t>(size)) return false;
+
+    if (mmapData_ && offset + size <= mmapSize_) {
+        memcpy(buffer, static_cast<const uint8_t*>(mmapData_) + offset, size);
+    } else {
+        ssize_t n = pread(fd_, buffer, size, offset);
+        if (n != static_cast<ssize_t>(size)) return false;
+    }
+
     if (useCache) {
         cache_->put(offset, buffer, size);
     }

@@ -8,12 +8,19 @@
 //   - executeSBPlanLeafIndex: 只读取需要的leaf blocks，按偏移排序合并
 //   - executeSBPlanHDDReadWindow: 大连续读窗口 + gap容忍
 //   - executeSBBatchHDD: 多切片批量读取
+//
+// HDD优化技术:
+//   - posix_fadvise: 提示内核访问模式，优化readahead
+//   - readahead: 显式预取顺序数据
+//   - 大读窗口: 减少寻道次数
+//   - gap容忍: 允许小gap合并为大读
 
 #include "erwt3d/sb_hdd.hpp"
 #include "erwt3d/thread_pool.hpp"
 #include <algorithm>
 #include <chrono>
 #include <unistd.h>
+#include <fcntl.h>
 
 namespace erwt3d {
 
@@ -33,6 +40,9 @@ bool executeSBPlanRunBatch(int fd, const SBTaskPlan& plan, const ERWT3DHeader& h
     size_t n = plan.tasks.size();
     if (n == 0) return true;
     if (numThreads <= 1) numThreads = 1;
+
+    // HDD优化: 提示内核顺序访问模式
+    posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
 
     // Build runs: group contiguous superblock reads
     struct Run { uint64_t file_offset; uint64_t bytes; size_t first_task; size_t task_count; };
@@ -134,6 +144,9 @@ bool executeSBPlanLeafIndex(int fd, const SBTaskPlan& plan, const ERWT3DHeader& 
     const uint64_t sbBV = sbBytes(hdr);
     const uint64_t lfBV = lfBytes(hdr);
     size_t memLimit = memoryLimitMB * 1024ULL * 1024ULL;
+
+    // HDD优化: 提示内核顺序访问模式
+    posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
     if (leafMergeBytes < lfBV * 2) leafMergeBytes = lfBV * 16;
     if (leafMergeBytes > memLimit / 2) leafMergeBytes = memLimit / 2;
     if (leafMergeBytes < lfBV * 4) return false; // memory too small
@@ -255,8 +268,12 @@ bool executeSBPlanHDDReadWindow(int fd, const SBTaskPlan& plan, const ERWT3DHead
     if (n == 0) return true;
     if (numThreads <= 1) numThreads = 1;
 
-    const uint64_t rwBytes = cfg.read_window_bytes > 0 ? cfg.read_window_bytes : sbBV * 256;
+    // HDD优化: 使用更大默认读窗口 (512 * sbBV = 512 MiB)
+    const uint64_t rwBytes = cfg.read_window_bytes > 0 ? cfg.read_window_bytes : sbBV * 512;
     const uint64_t gapBytes = cfg.max_gap_bytes;
+
+    // HDD优化: 提示内核顺序访问模式
+    posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
 
     struct Window {
         uint64_t file_offset;
@@ -302,6 +319,15 @@ bool executeSBPlanHDDReadWindow(int fd, const SBTaskPlan& plan, const ERWT3DHead
         std::vector<uint8_t> buf(maxBufPerThread);
         for (size_t wi = startW; wi < endW; ++wi) {
             const auto& win = windows[wi];
+
+            // HDD优化: 对顺序窗口进行readahead预取
+            if (wi + 1 < endW) {
+                const auto& nextWin = windows[wi + 1];
+                if (nextWin.file_offset > win.file_offset) {
+                    readahead(fd, nextWin.file_offset, nextWin.read_bytes);
+                }
+            }
+
             if (win.read_bytes > maxBufPerThread) {
                 uint64_t winOff = win.file_offset;
                 uint64_t remaining = win.read_bytes;
@@ -400,8 +426,13 @@ bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr
     const size_t n = batch.batch_tasks.size();
     if (n == 0) return true;
     if (numThreads <= 1) numThreads = 1;
-    const uint64_t rwB = wcfg.read_window_bytes > 0 ? wcfg.read_window_bytes : sbBV * 256;
+
+    // HDD优化: 使用更大默认读窗口 (512 * sbBV = 512 MiB)
+    const uint64_t rwB = wcfg.read_window_bytes > 0 ? wcfg.read_window_bytes : sbBV * 512;
     const uint64_t gapB = wcfg.max_gap_bytes;
+
+    // HDD优化: 提示内核顺序访问模式
+    posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
 
     struct Win { uint64_t fo, rb; size_t ft, tc; };
     std::vector<Win> wins;
@@ -438,6 +469,15 @@ bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr
         std::vector<uint8_t> buf(mbpt);
         for (size_t wi = sw; wi < ew; ++wi) {
             const auto& win = wins[wi];
+
+            // HDD优化: 对顺序窗口进行readahead预取
+            if (wi + 1 < ew) {
+                const auto& nextWin = wins[wi + 1];
+                if (nextWin.fo > win.fo) {
+                    readahead(fd, nextWin.fo, nextWin.rb);
+                }
+            }
+
             if (win.rb > mbpt) {
                 uint64_t wo = win.fo, rem = win.rb; size_t ti = win.ft;
                 size_t mtpc = mbpt / sbBV; if (mtpc == 0) return false;

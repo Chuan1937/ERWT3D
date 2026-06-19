@@ -1,30 +1,15 @@
 # ERWT3D
 
-Efficient reading and writing of three-dimensional spatial data
+三维空间数据高效读写库
 
-## Overview
+## 特性
 
-ERWT3D is a C++ library and command-line toolset for efficient read/write access to large regular 3D float32 volumes. It uses a custom single-file format with Morton-ordered physical layout to provide balanced performance for X, Y, and Z slice access.
+- **无冗余存储**: Morton 序物理布局，X/Y/Z 三轴访问均衡
+- **多线程 I/O**: 线程池并行 pread
+- **内存可控**: `--memory-limit-mb` 限制内存使用
+- **HDD 优化**: 大读窗口 + gap 容忍 + 批量合并
 
-## Features
-
-- **Single-copy storage**: No redundant copies for different axes
-- **Balanced performance**: Optimized for X, Y, and Z slice access
-- **Morton leaf ordering**: Balanced axis access within superblocks
-- **Multi-threaded I/O**: Parallel pread via thread pool (`--threads`)
-- **Memory-bounded batches**: Respects `--memory-limit-mb` for slice reads
-- **LRU leaf cache**: Reuse leaf blocks across continuous slices (`--cache-mb`)
-- **Streaming restore**: `readFullToFile` writes directly without full allocation
-
-## Building
-
-### Prerequisites
-
-- C++17 compiler
-- CMake 3.16+
-- POSIX-compliant system (Linux, macOS)
-
-### Build Commands
+## 构建
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -32,234 +17,38 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-## Command-Line Tools
+## 工具
 
-### erwt3d_info
+| 工具 | 用途 |
+|------|------|
+| `erwt3d_info` | 显示文件信息 |
+| `erwt3d_convert` | RAW ↔ ERWT3D 转换 |
+| `erwt3d_slice` | 读取切片 |
+| `erwt3d_line` | 读取单行 |
+| `erwt3d_verify` | 正确性验证 |
+| `erwt3d_bench` | 性能测试 |
+| `erwt3d_bench_contest` | 赛题评分测试 |
 
-Display information about an ERWT3D file:
-
-```bash
-./build/tools/erwt3d_info data.erwt3d
-```
-
-### erwt3d_convert
-
-Convert between raw and ERWT3D formats:
-
-```bash
-# Raw to ERWT3D
-./build/tools/erwt3d_convert \
-  --input data.raw \
-  --output data.erwt3d \
-  --nx 1024 --ny 1024 --nz 512 \
-  --threads 8 \
-  --memory-limit-mb 2048
-
-# ERWT3D to raw
-./build/tools/erwt3d_convert \
-  --input data.erwt3d \
-  --output restored.raw \
-  --to-raw \
-  --threads 8 \
-  --memory-limit-mb 2048
-```
-
-### erwt3d_slice
-
-Read arbitrary slices:
+## 快速开始
 
 ```bash
-# Read Z slice
-./build/tools/erwt3d_slice \
-  --input data.erwt3d \
-  --axis z \
-  --index 100 \
-  --output z100.raw
+# 转换
+./build/erwt3d_convert --input data.raw --output data.erwt3d --nx 801 --ny 2405 --nz 2501
 
-# Read X line
-./build/tools/erwt3d_slice \
-  --input data.erwt3d \
-  --line-x \
-  --y 100 --z 200 \
-  --output line_x.raw
+# 测试
+./build/erwt3d_bench_contest --input data.erwt3d --output-dir out --threads 8 --io-backend sb --sb-parallel-mode parallel-read
+
+# 验证
+./build/erwt3d_verify --raw data.raw --erwt3d data.erwt3d --nx 801 --ny 2405 --nz 2501
 ```
 
-### erwt3d_line
+## 文档
 
-Read single lines along any axis (direct leaf access, not full-slice extraction):
+- [存储结构](docs/design.md)
+- [索引原理](docs/index.md)
+- [算法实现](docs/implementation.md)
+- [性能测试](docs/benchmark.md)
 
-```bash
-# X-line: fixed y,z, output length = nx
-./build/erwt3d_line --input data.erwt3d --axis x --fixed1 100 --fixed2 200 --output line.raw
-
-# Y-line: fixed x,z, output length = ny
-./build/erwt3d_line --input data.erwt3d --axis y --fixed1 100 --fixed2 200 --output line.raw
-
-# Z-line: fixed x,y, output length = nz
-./build/erwt3d_line --input data.erwt3d --axis z --fixed1 100 --fixed2 200 --output line.raw
-```
-
-Line reads touch only the specific leaf blocks containing the line (~256B each), not full 2D slices. Typical latency: sub-millisecond for X, ~0.1ms for Y/Z on 20G.
-
-### erwt3d_bench_contest
-
-Competition-standard benchmark (赛题2 评分标准). Measures X/Y/Z random(100) + continuous(10) slice reads, computes composite time and storage score.
-
-```bash
-# Single configuration:
-./build/erwt3d_bench_contest \
-  --input data.erwt3d \
-  --output-dir contest_out \
-  --random-count 100 \
-  --continuous-count 10 \
-  --threads 8 \
-  --io-backend sb \
-  --sb-parallel-mode parallel-read \
-  --sb-task-order file-offset
-
-# Compare against baseline:
-./build/erwt3d_bench_contest \
-  --input data.erwt3d \
-  --output-dir contest_v2 \
-  --baseline-file contest_out/contest_score.csv
-
-# Sweep multiple configs:
-./scripts/run_contest_bench.sh data.erwt3d sweep_results
-```
-
-Outputs:
-- `contest_score.csv` — composite time, storage ratio, per-axis breakdown
-- `contest_summary.csv` — per-axis avg/min/max/median/p95/p99
-- `contest_detail.csv` — per-slice timing
-
-### erwt3d_verify
-
-Verify correctness (supports streaming sampling for large datasets):
-
-```bash
-./build/erwt3d_verify \
-  --raw data.raw \
-  --erwt3d data.erwt3d \
-  --nx 2001 --ny 2201 --nz 3000 \
-  --samples 100000
-```
-
-### erwt3d_bench
-
-Run benchmarks:
-
-```bash
-# Development / high-resource mode (faster iteration):
-./build/erwt3d_bench \
-  --input data.erwt3d \
-  --output-dir dev_bench \
-  --random-count 20 \
-  --continuous-count 5 \
-  --threads 8 \
-  --memory-limit-mb 8192 \
-  --cache-mb 0 \
-  --io-backend sb \
-  --sb-parallel-mode parallel-read \
-  --profile-io \
-  --seed 20260511
-
-# Final competition mode (recommended for submission):
-./build/erwt3d_bench \
-  --input data.erwt3d \
-  --output-dir final_bench \
-  --random-count 100 \
-  --continuous-count 10 \
-  --threads 8 \
-  --memory-limit-mb 8192 \
-  --cache-mb 0 \
-  --io-backend sb \
-  --sb-parallel-mode parallel-read \
-  --seed 20260511
-```
-
-Outputs `bench_result.csv`, `bench_detail.csv`, and `io_profile.csv` (if `--profile-io` enabled).
-
-I/O profiling mode (`--profile-io`) writes per-slice phase timing: plan, read, unpack, total time.
-
-SB parallel modes (`--sb-parallel-mode`):
-- `serial`: Original single-threaded SB (default, stable baseline)
-- `parallel-read`: Per-thread superblock buffers, disjoint output regions, 2.6x–3.4x speedup
-
-## File Format
-
-ERWT3D uses a custom binary format:
-
-- **Header**: 256 bytes with magic, dimensions, block sizes
-- **Data**: Superblocks in Morton order, each containing leaf blocks in Morton order
-
-### Default Block Sizes
-
-- Superblock: 64 × 64 × 64 float32 = 1 MiB
-- Leaf block: 4 × 4 × 4 float32 = 256 bytes
-
-## Storage Layout
-
-Data is organized in two levels:
-
-- **Superblocks**: arranged in Z-Y-X row-major order (sequential)
-- **Leaf blocks**: within each superblock, arranged in Morton order (Z-order curve)
-
-```text
-superblock_offset = (sz * gridY + sy) * gridX + sx
-leaf_offset  = morton3D(lx, ly, lz) * leaf_bytes
-```
-
-This provides:
-- Balanced leaf-level access for all axes via Morton ordering
-- Simple sequential superblock layout avoids sparse holes for non-power-of-two grids
-
-## Performance
-
-### Key Optimizations
-
-1. **Superblock I/O backend**: Reads whole 1 MiB superblocks, reducing syscall count by 100–800x vs per-extent pread
-2. **SB parallel-read mode**: Partition superblocks among threads with per-thread buffers and zero shared mutex; 2.6x–3.4x speedup
-3. **Morton ordering**: Balanced leaf-level access for all axes
-4. **I/O phase profiling** (`--profile-io`): Per-slice plan/read/unpack timing to identify bottlenecks
-
-### Official Benchmark Results (100 random + 10 continuous slices)
-
-| Dataset | Config | Threads | T_total | Storage | Correctness |
-|---------|--------|---------|---------|---------|-------------|
-| **20G** (801x2405x2501) | sb parallel-read + X-panels | 8 | **68ms** | 1.344x | passed |
-| **50G** (2001x2201x3000) | sb parallel-read | 8 | **315ms** | 1.044x | passed |
-
-### Thread Scaling (reduced 20+5, for tuning only — do not use for final decisions)
-
-| Dataset | t=1 | t=2 | t=4 | t=6 | t=8 | t=12 | Best (20+5) | Best (full 100+10) |
-|---------|-----|-----|-----|-----|-----|------|-------------|--------------------|
-| 20G | 427ms | 84ms | 69ms | 61ms | 65ms | 77ms | t=6 | **t=8** |
-| 50G | 970ms | 258ms | 111ms | 196ms | 108ms | 119ms | t=8 | **t=8** |
-
-> Reduced-count runs can mislead: t6 was faster at 20+5 but slower at full 100+10.
-> Final decisions MUST use full benchmark results.
-
-**Final recommendations:**
-- **20G**: X-panels stride=4, sb parallel-read, threads=8 (T_total=68ms)
-- **50G**: No panels, sb parallel-read, threads=8 (T_total=315ms)
-
-**Storage budget**: 1.044x–1.344x, below the 1.5x limit.
-
-## Documentation
-
-- [Design Document](docs/design.md): Overall architecture
-- [Index Documentation](docs/index.md): Computed offset indexing
-- [Implementation Document](docs/implementation.md): Writer/reader pipelines
-- [Benchmark Document](docs/benchmark.md): Performance analysis
-
-## License
+## 许可
 
 BSD 3-Clause License
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request

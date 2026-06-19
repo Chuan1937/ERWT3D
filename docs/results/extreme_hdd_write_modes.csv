@@ -1,7 +1,0 @@
-benchmark_stage,dataset,write_mode,T_read_ms,T_write_ms,T_total_ms,T_total_sec,per_slice_ms,notes
-final,20G_small,per-slice,37559,33384,70943,70.9,215.0,baseline: 330 individual .raw files
-final,20G_small,packed,38367,25112,63479,63.5,192.4,10.5% faster; single contest_output.bin + index
-final,20G_small,none,37588,0,37588,37.6,113.9,HDD LOWER BOUND: read+unpack only; checksum verified
-final,50G_big,per-slice,96770,61986,158755,158.8,481.0,baseline from PR #37
-final,50G_big,packed,96364,45162,141525,141.5,428.9,10.7% faster; single packed file
-final,50G_big,none,96356,0,96356,96.4,292.0,HDD LOWER BOUND: read+unpack only

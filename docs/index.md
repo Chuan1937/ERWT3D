@@ -1,110 +1,42 @@
-# ERWT3D Index Documentation
+# 索引原理
 
-## Computed Offset Indexing
+## 公式索引
 
-ERWT3D uses computed offsets instead of explicit index tables. This approach:
-
-- Reduces file size (no large index overhead)
-- Simplifies implementation
-- Enables fast random access
-
-## Morton ID Calculation
-
-### 3D to 1D Morton Encoding
+ERWT3D 不使用显式索引表，通过公式直接计算偏移：
 
 ```cpp
-uint64_t morton3D(uint32_t x, uint32_t y, uint32_t z);
+offset = data_offset + ((sz * gridY + sy) * gridX + sx) * sb_bytes
+       + morton3D(lx, ly, lz) * leaf_bytes
 ```
 
-The Morton code interleaves the bits of x, y, and z coordinates:
+**优势**: 零索引开销，O(1) 定位。
+
+## Morton 编码
+
+将 3D 坐标编码为 1D，交错 x/y/z 的比特位：
 
 ```
 x: x2 x1 x0
 y: y2 y1 y0
 z: z2 z1 z0
-
 morton: z2 y2 x2 z1 y1 x1 z0 y0 x0
 ```
 
-### Usage in ERWT3D
+## 切片编译
 
-Morton ordering is used for leaf blocks within each superblock:
+切片请求 → 编译为 I/O 任务：
 
-```
-leaf_id = morton3D(leaf_x, leaf_y, leaf_z)
-file_offset = superblock_offset + leaf_id * leaf_bytes
-```
+1. 确定涉及的 superblocks
+2. 确定每个 superblock 内的 leaf blocks
+3. 计算文件偏移
+4. 合并相邻读取（extent merging）
+5. 生成输出拷贝指令
 
-Superblocks are arranged sequentially in Z-Y-X row-major order to ensure dense file packing for non-power-of-two grids.
+## Extent 合并
 
-## Offset Calculation
-
-File offset for accessing a specific leaf block:
-
-```
-superblock_offset = header.data_offset + ((sz * super_grid_y + sy) * super_grid_x + sx) * superblock_bytes
-leaf_offset = superblock_offset + morton3D(lx, ly, lz) * leaf_bytes
-```
-
-No explicit index table is needed.
-
-## Slice Compiler
-
-The slice compiler converts a slice request into:
-
-1. **Touched superblocks**: Which superblocks intersect the slice
-2. **Touched leaf blocks**: Which leaf blocks within each superblock
-3. **File offsets and sizes**: For I/O operations
-4. **Copy plans**: How to extract data from leaf buffers to output
-
-### Example: Z-Slice at index z=100
-
-1. Determine which superblock contains z=100
-2. Determine which leaf block within that superblock
-3. Calculate file offsets for all touched leaf blocks
-4. Generate copy instructions to extract the Z-plane
-
-## Extent Merging
-
-Adjacent file reads are merged to reduce syscall overhead:
+相邻读取合并为单次 pread，减少系统调用：
 
 ```
-Before merging:
-  offset=1000, size=256
-  offset=1256, size=256
-  offset=1512, size=256
-
-After merging:
-  offset=1000, size=768
+合并前: [1000, 256] [1256, 256] [1512, 256]  → 3 次 pread
+合并后: [1000, 768]                             → 1 次 pread
 ```
-
-This optimization:
-- Reduces number of system calls
-- Improves I/O throughput
-- Minimizes overhead for small reads
-
-## Why No Large Explicit Index
-
-Traditional formats often use large index tables to map logical coordinates to physical locations. ERWT3D avoids this by:
-
-1. Using formula-based offset calculation
-2. Leveraging Morton ordering properties
-3. Accepting small padding for boundary blocks
-
-Benefits:
-- Smaller file size
-- Simpler implementation
-- No index maintenance overhead
-
-## Memory-Mapped Access
-
-For read-only access, the file can be memory-mapped:
-
-```cpp
-void* mmap(int fd, size_t length, int prot, int flags, off_t offset);
-```
-
-This enables:
-- Virtual memory management by OS
-- Automatic caching
-- Simplified code for random access

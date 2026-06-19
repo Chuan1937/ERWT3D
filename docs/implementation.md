@@ -1,91 +1,46 @@
-# ERWT3D Implementation Document
+# 算法实现
 
-## Writer Pipeline
+## Writer（写入）
 
-The writer converts raw float32 data to ERWT3D format:
+```
+原始数据 → 逐 superblock 处理 → Morton 序 leaf blocks → 写入文件
+```
 
-1. **Initialize Header**
-   - Set magic bytes, version, dimensions
-   - Configure block sizes (default: 64^3 superblock, 4^3 leaf block)
+关键步骤：
+1. 从原始数据提取 64³ superblock
+2. 边界不足部分补零
+3. 按 Morton 序写入 leaf blocks
 
-2. **Process Superblocks**
-   - Iterate through superblock grid in Z-Y-X order
-   - For each superblock:
-     a. Extract data from raw volume (streaming from file)
-     b. Fill superblock buffer (with padding if needed)
-     c. Write leaf blocks in Morton order
+**HDD 优化**: 使用 mmap 映射输入文件，避免大量 seek。
 
-3. **Leaf Block Writing**
-   - For each leaf block within superblock:
-     a. Calculate Morton ID
-     b. Extract leaf data from superblock buffer
-     c. Write to file at computed offset
+## Reader（读取）
 
-## Reader Pipeline
+```
+切片请求 → Plan → 排序 → 合并读取 → 解包 → 输出
+```
 
-The reader converts ERWT3D format to raw float32:
+关键步骤：
+1. **Plan**: 计算涉及的 superblocks 和 leaf blocks
+2. **排序**: 按文件偏移排序（HDD 必需）
+3. **合并**: 将相邻读取合并为大块
+4. **读取**: 多线程并行 pread
+5. **解包**: 从 superblock 提取切片数据
 
-1. **Open File and Read Header**
-   - Validate magic, version, dimensions
-   - Initialize cache if requested
+## I/O 后端
 
-2. **Slice Reading**
-   - Plan slice access using slice compiler
-   - Prepare precomputed merged-extent mapping (once per slice)
-   - Read extents in memory-bounded batches
-   - Multi-threaded pread via thread pool
-   - Unpack leaf blocks to output buffer
+| 模式 | 说明 | 适用场景 |
+|------|------|----------|
+| PRead | 逐 extent pread | 默认 |
+| SB Serial | 逐 superblock 读取 | 基线 |
+| SB ParallelRead | 多线程并行 | SSD |
+| HDDReadWindow | 大窗口 + gap 容忍 | HDD |
 
-3. **Full Volume Reading**
-   - Process one superblock at a time (streaming)
-   - Unpack leaf blocks to correct positions
-   - readFullToFile writes rows via pwrite without full allocation
-
-## Memory Limit Control
-
-Memory usage is divided into:
-
-1. **I/O Buffers**: For reading extents (batched by memory limit)
-2. **Output Slice Buffer**: For slice data (allocated by caller)
-3. **Cache**: Optional LRU cache for individual leaf blocks (256 bytes each)
-4. **Superblock Buffer**: For streaming restore (1 MiB default)
-
-### Configuration
+## 内存控制
 
 ```bash
 --memory-limit-mb 2048
 ```
 
-The implementation:
-- Checks superblock buffer requirements before allocation
-- Batches merged extents into groups that fit within budget
-- Falls back to single-extent reads if one extent alone exceeds budget
-
-## Cache Strategy
-
-### LRU Cache
-
-Leaf blocks are cached by file offset. Each entry is 256 bytes.
-
-### Cache Integration
-
-- Cache is checked before I/O in readOneExtent()
-- Size validation prevents stale reads from mismatched merged extents
-- Cache respects memory limit
-- `--cache-mb 0` disables, output identical to no-cache
-
-### Multi-threaded I/O
-
-- ThreadPool manages parallel extent reads via pread
-- `--threads 1` uses sequential path
-- `--threads > 1` parallelizes independent extent reads
-- Results bit-identical to single-threaded output
-
-## Performance Optimizations
-
-1. **Extent Merging**: Reduce syscall overhead
-2. **Precomputed Mapping**: O(1) lookup per copy instruction
-3. **Multi-threaded pread**: Parallel extent reads via thread pool
-4. **Memory-bounded batches**: Process large slices without full allocation
-5. **Leaf block cache**: Reduce repeated I/O for continuous slices
-6. **Morton Leaf Ordering**: Balanced axis performance
+- I/O 缓冲区分批处理
+- 可选 LRU 缓存（256B/leaf）
+- 每线程独立缓冲区，无锁竞争
