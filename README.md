@@ -5,26 +5,17 @@
 ## 构建
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
+make build
+make install    # 输出 PATH 配置，加入 ~/.bashrc
 ```
 
 ## 使用
 
 ```bash
-./run_bench_hdd.sh    # HDD 测试
-./run_bench_ssd.sh    # SSD 测试
-./run_convert.sh      # 转换
-./run_verify.sh       # 验证
-```
-
-脚本内容（可编辑调整参数）：
-
-```bash
-#!/bin/bash
-erwt3d begin mytest
-    erwt3d bench_hdd input=data.erwt3d output=/tmp/out
-erwt3d end
+erwt3d bench_hdd  input=data.erwt3d output=/tmp/out
+erwt3d bench_ssd  input=data.erwt3d output=/tmp/out
+erwt3d convert    input=data.raw output=data.erwt3d nx=801 ny=2405 nz=2501
+erwt3d verify     raw=data.raw erwt3d=data.erwt3d nx=801 ny=2405 nz=2501
 ```
 
 ## 参数

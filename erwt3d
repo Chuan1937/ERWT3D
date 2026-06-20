@@ -1,0 +1,145 @@
+#!/bin/bash
+# ERWT3D - GMT 风格命令行工具
+
+BIN="$(cd "$(dirname "$0")" && pwd)/build"
+SELF="$(cd "$(dirname "$0")" && pwd)/erwt3d"
+
+# 解析并执行配置文件
+run_config() {
+    local config="$1"
+    local tmpscript=$(mktemp /tmp/erwt3d_XXXXXX.sh)
+    local bindir="$BIN"
+    
+    # 转换 key = value 为 key=value，去掉注释
+    while IFS= read -r line; do
+        # 跳过注释
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        # 转换 key = value 为 key=value
+        if [[ "$line" =~ ^[[:space:]]*([a-zA-Z_][a-zA-Z0-9_]*)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+            local key="${BASH_REMATCH[1]}"
+            local value="${BASH_REMATCH[2]}"
+            value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            echo "$key=$value"
+        else
+            # 替换 erwt3d 命令为实际路径 (只替换行首的 erwt3d)
+            echo "$line" | sed "s|^erwt3d |$SELF |;s|^    erwt3d |    $SELF |"
+        fi
+    done < "$config" > "$tmpscript"
+    
+    chmod +x "$tmpscript"
+    bash "$tmpscript"
+    rm -f "$tmpscript"
+}
+
+case "$1" in
+    begin)
+        shift
+        SESSION="$1"
+        echo "=== $SESSION ==="
+        ;;
+    end)
+        echo "=== done ==="
+        ;;
+    run)
+        shift
+        run_config "$1"
+        ;;
+    bench_hdd)
+        shift
+        input="" output="" random=100 continuous=10
+        for arg in "$@"; do
+            case "$arg" in
+                input=*)      input="${arg#*=}" ;;
+                output=*)     output="${arg#*=}" ;;
+                random=*)     random="${arg#*=}" ;;
+                continuous=*) continuous="${arg#*=}" ;;
+            esac
+        done
+        $BIN/erwt3d_bench_contest \
+            -i "$input" -o "$output" \
+            --random-count $random \
+            --continuous-count $continuous \
+            --hdd
+        ;;
+    bench_ssd)
+        shift
+        input="" output="" random=100 continuous=10 threads=8 memory=8192
+        for arg in "$@"; do
+            case "$arg" in
+                input=*)      input="${arg#*=}" ;;
+                output=*)     output="${arg#*=}" ;;
+                random=*)     random="${arg#*=}" ;;
+                continuous=*) continuous="${arg#*=}" ;;
+                threads=*)    threads="${arg#*=}" ;;
+                memory=*)     memory="${arg#*=}" ;;
+            esac
+        done
+        $BIN/erwt3d_bench_contest \
+            -i "$input" -o "$output" \
+            --random-count $random \
+            --continuous-count $continuous \
+            -t $threads -m $memory \
+            --io-backend sb \
+            --sb-parallel-mode parallel-read \
+            --sb-task-order file-offset
+        ;;
+    slice)
+        shift
+        input="" output="" axis="" index=0
+        for arg in "$@"; do
+            case "$arg" in
+                input=*)  input="${arg#*=}" ;;
+                output=*) output="${arg#*=}" ;;
+                axis=*)   axis="${arg#*=}" ;;
+                index=*)  index="${arg#*=}" ;;
+            esac
+        done
+        $BIN/erwt3d_slice --input "$input" --axis $axis --index $index --output "$output"
+        ;;
+    convert)
+        shift
+        input="" output="" nx=0 ny=0 nz=0 threads=8 memory=4096
+        for arg in "$@"; do
+            case "$arg" in
+                input=*)   input="${arg#*=}" ;;
+                output=*)  output="${arg#*=}" ;;
+                nx=*)      nx="${arg#*=}" ;;
+                ny=*)      ny="${arg#*=}" ;;
+                nz=*)      nz="${arg#*=}" ;;
+                threads=*) threads="${arg#*=}" ;;
+                memory=*)  memory="${arg#*=}" ;;
+            esac
+        done
+        tmp="/tmp/erwt3d_$$.erwt3d"
+        $BIN/erwt3d_convert -i "$input" -o "$tmp" --nx $nx --ny $ny --nz $nz -t $threads -m $memory
+        cp "$tmp" "$output" && rm -f "$tmp"
+        ;;
+    verify)
+        shift
+        raw="" erwt3d_file="" nx=0 ny=0 nz=0 samples=100000
+        for arg in "$@"; do
+            case "$arg" in
+                raw=*)     raw="${arg#*=}" ;;
+                erwt3d=*)  erwt3d_file="${arg#*=}" ;;
+                nx=*)      nx="${arg#*=}" ;;
+                ny=*)      ny="${arg#*=}" ;;
+                nz=*)      nz="${arg#*=}" ;;
+                samples=*) samples="${arg#*=}" ;;
+            esac
+        done
+        $BIN/erwt3d_verify --raw "$raw" --erwt3d "$erwt3d_file" --nx $nx --ny $ny --nz $nz --samples $samples
+        ;;
+    *)
+        echo "Usage: erwt3d <command> key=value ..."
+        echo ""
+        echo "Commands:"
+        echo "  begin      <name>           开始会话"
+        echo "  end                           结束会话"
+        echo "  run        <config.sh>       运行配置文件"
+        echo "  bench_hdd  input=FILE ...    HDD 测试"
+        echo "  bench_ssd  input=FILE ...    SSD 测试"
+        echo "  slice      input=FILE ...    读取切片"
+        echo "  convert    input=FILE ...    转换"
+        echo "  verify     raw=FILE ...      验证"
+        ;;
+esac

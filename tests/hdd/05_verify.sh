@@ -1,5 +1,5 @@
 #!/bin/bash
-# ERWT3D 验证
+# 正确性验证
 
 raw = /mnt/f/zhoujiawang/CUP/cup_3d_small.dat
 erwt3d_file = /mnt/f/zhoujiawang/CUP/cup_3d_small.erwt3d
