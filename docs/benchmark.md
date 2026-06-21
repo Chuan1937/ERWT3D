@@ -21,17 +21,6 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 - [SSD 测试结果](benchmark_ssd.md)
 - [HDD 测试结果](benchmark_hdd.md)
 
-## SSD vs HDD 对比
-
-| 指标 | SSD | HDD | 差距 |
-|------|-----|-----|------|
-| T_total (20G) | 73ms | 877ms | 12x |
-| T_x_random | 155ms | 927ms | 6x |
-| T_y_random | 45ms | 1404ms | 31x |
-| T_z_random | 40ms | 1263ms | 32x |
-
-**结论**: HDD 比 SSD 慢 12-32 倍，主要瓶颈是随机寻道时间。
-
 ## 推荐命令
 
 ### SSD 环境

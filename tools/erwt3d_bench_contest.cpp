@@ -371,8 +371,8 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
 
-            std::cout << " " << std::fixed << std::setprecision(1) << gr.groupTimeMs << " ms"
-                      << " (avg/slice=" << std::setprecision(3) << gr.groupTimeMs / gr.sliceCount << " ms)\n";
+            std::cout << " " << std::fixed << std::setprecision(4) << gr.groupTimeMs / 1000.0 << "s"
+                      << " (avg=" << std::setprecision(4) << gr.groupTimeMs / gr.sliceCount / 1000.0 << "s)\n";
 
             if (gr.groupTimeMs < bestGroupMs) {
                 bestGroupMs = gr.groupTimeMs;
@@ -478,20 +478,20 @@ int main(int argc, char* argv[]) {
               << "  COMPETITION SCORE (赛题2 评分标准)\n"
               << "============================================================\n\n"
               << "  6 Group Times (wall-clock, read + write):\n"
-              << "    [1] X random:      " << std::setw(8) << std::fixed << std::setprecision(1)
-              << groupTimes[0] << " ms  (" << randomCount << " slices)\n"
-              << "    [2] Y random:      " << std::setw(8) << groupTimes[1] << " ms\n"
-              << "    [3] Z random:      " << std::setw(8) << groupTimes[2] << " ms\n"
-              << "    [4] X continuous:  " << std::setw(8) << groupTimes[3] << " ms  (" << countX << " slices)\n"
-              << "    [5] Y continuous:  " << std::setw(8) << groupTimes[4] << " ms\n"
-              << "    [6] Z continuous:  " << std::setw(8) << groupTimes[5] << " ms\n"
+              << "    [1] X random:      " << std::setw(8) << std::fixed << std::setprecision(4)
+              << groupTimes[0] / 1000.0 << "s  (" << randomCount << " slices)\n"
+              << "    [2] Y random:      " << std::setw(8) << groupTimes[1] / 1000.0 << "s\n"
+              << "    [3] Z random:      " << std::setw(8) << groupTimes[2] / 1000.0 << "s\n"
+              << "    [4] X continuous:  " << std::setw(8) << groupTimes[3] / 1000.0 << "s  (" << countX << " slices)\n"
+              << "    [5] Y continuous:  " << std::setw(8) << groupTimes[4] / 1000.0 << "s\n"
+              << "    [6] Z continuous:  " << std::setw(8) << groupTimes[5] / 1000.0 << "s\n"
               << "    ----------------------------------------\n"
-              << "    Total:             " << std::setw(8) << totalAllGroups << " ms\n"
-              << "    T_composite = total/6 = " << tComposite << " ms\n\n"
+              << "    Total:             " << std::setw(8) << totalAllGroups / 1000.0 << "s\n"
+              << "    T_composite = total/6 = " << tComposite / 1000.0 << "s\n\n"
               << "  Per-axis diagnostics:\n"
-              << "    avg X = (random+cont)/2 = " << avgX << " ms\n"
-              << "    avg Y = " << avgY << " ms\n"
-              << "    avg Z = " << avgZ << " ms\n\n"
+              << "    avg X = (random+cont)/2 = " << avgX / 1000.0 << "s\n"
+              << "    avg Y = " << avgY / 1000.0 << "s\n"
+              << "    avg Z = " << avgZ / 1000.0 << "s\n\n"
               << "  Storage (20pts):\n"
               << "    Ratio:   " << std::setprecision(3) << storageRatio << "x\n"
               << "    Score:   " << storageScore << " / 20\n\n";
@@ -499,14 +499,14 @@ int main(int argc, char* argv[]) {
     if (baselineMs > 0) {
         double perfScore = (baselineMs / tComposite) * 60.0;
         std::cout << "  Performance (60pts):\n"
-                  << "    Baseline:  " << std::setprecision(1) << baselineMs << " ms\n"
-                  << "    Score:     (" << baselineMs << " / " << std::setprecision(3) << tComposite
+                  << "    Baseline:  " << std::setprecision(4) << baselineMs / 1000.0 << "s\n"
+                  << "    Score:     (" << baselineMs / 1000.0 << " / " << std::setprecision(4) << tComposite / 1000.0
                   << ") × 60 = " << std::setprecision(1) << perfScore << " / 60\n\n"
                   << "  Total (excl. docs): " << perfScore + storageScore << " / 80\n\n";
     } else {
         std::cout << "  Performance (60pts):\n"
-                  << "    T_composite = " << std::setprecision(3) << tComposite << " ms\n"
-                  << "    Score = (baseline / " << tComposite << ") × 60\n"
+                  << "    T_composite = " << std::setprecision(4) << tComposite / 1000.0 << "s\n"
+                  << "    Score = (baseline / " << tComposite / 1000.0 << ") × 60\n"
                   << "    (use --baseline-ms or --baseline-file to compute score)\n\n";
     }
 

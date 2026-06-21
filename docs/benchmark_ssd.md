@@ -19,17 +19,17 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 
 ### 20G 数据集 (801×2405×2501)
 
-| 配置 | T_x_rand | T_y_rand | T_z_rand | T_total |
+| 配置 | X random | Y random | Z random | T_total |
 |------|----------|----------|----------|---------|
-| Serial t1 | 373ms | 149ms | 199ms | 249ms |
-| **ParallelRead t8** | **155ms** | **45ms** | **40ms** | **73ms** |
+| Serial t1 | 0.3730s | 0.1490s | 0.1990s | 0.2490s |
+| **ParallelRead t8** | **0.1550s** | **0.0450s** | **0.0400s** | **0.0730s** |
 
 ### 50G 数据集 (2001×2201×3000)
 
-| 配置 | T_x_rand | T_y_rand | T_z_rand | T_total |
+| 配置 | X random | Y random | Z random | T_total |
 |------|----------|----------|----------|---------|
-| Serial t1 | 2159ms | 941ms | 532ms | 770ms |
-| **ParallelRead t8** | **499ms** | **563ms** | **377ms** | **300ms** |
+| Serial t1 | 2.1590s | 0.9410s | 0.5320s | 0.7700s |
+| **ParallelRead t8** | **0.4990s** | **0.5630s** | **0.3770s** | **0.3000s** |
 
 ## 推荐命令
 

@@ -173,8 +173,8 @@ ContestResult benchmarkContest(const BenchConfig& cfg) {
             return result;
         }
 
-        std::cout << " " << std::fixed << std::setprecision(1) << gr.groupTimeMs << " ms"
-                  << " (avg=" << std::setprecision(2) << gr.groupTimeMs / gr.count << " ms)" << std::endl;
+        std::cout << " " << std::fixed << std::setprecision(4) << gr.groupTimeMs / 1000.0 << "s"
+                  << " (avg=" << std::setprecision(4) << gr.groupTimeMs / gr.count / 1000.0 << "s)" << std::endl;
         groupTimes[g] = gr.groupTimeMs;
     }
 
@@ -205,13 +205,13 @@ ContestResult benchmarkContest(const BenchConfig& cfg) {
 
     // 输出汇总
     std::cout << "\n==================== 结果 ====================" << std::endl;
-    std::cout << "  T_x_random:     " << std::fixed << std::setprecision(1) << result.T_x_random_ms << " ms" << std::endl;
-    std::cout << "  T_y_random:     " << result.T_y_random_ms << " ms" << std::endl;
-    std::cout << "  T_z_random:     " << result.T_z_random_ms << " ms" << std::endl;
-    std::cout << "  T_x_continuous: " << result.T_x_continuous_ms << " ms" << std::endl;
-    std::cout << "  T_y_continuous: " << result.T_y_continuous_ms << " ms" << std::endl;
-    std::cout << "  T_z_continuous: " << result.T_z_continuous_ms << " ms" << std::endl;
-    std::cout << "  T_composite:    " << result.T_composite_ms << " ms" << std::endl;
+    std::cout << "  T_x_random:     " << std::fixed << std::setprecision(4) << result.T_x_random_ms / 1000.0 << "s" << std::endl;
+    std::cout << "  T_y_random:     " << result.T_y_random_ms / 1000.0 << "s" << std::endl;
+    std::cout << "  T_z_random:     " << result.T_z_random_ms / 1000.0 << "s" << std::endl;
+    std::cout << "  T_x_continuous: " << result.T_x_continuous_ms / 1000.0 << "s" << std::endl;
+    std::cout << "  T_y_continuous: " << result.T_y_continuous_ms / 1000.0 << "s" << std::endl;
+    std::cout << "  T_z_continuous: " << result.T_z_continuous_ms / 1000.0 << "s" << std::endl;
+    std::cout << "  T_composite:    " << result.T_composite_ms / 1000.0 << "s" << std::endl;
     std::cout << "  Storage:        " << std::setprecision(3) << result.storageRatio << "x (" << result.storageScore << "/20)" << std::endl;
     std::cout << "==============================================" << std::endl;
 

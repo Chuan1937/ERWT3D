@@ -34,8 +34,8 @@ erwt3d verify     raw=data.raw erwt3d=data.erwt3d nx=801 ny=2405 nz=2501
 
 | 环境 | T_total (20G) |
 |------|---------------|
-| SSD | 73ms |
-| HDD | 877ms |
+| SSD | 0.0730s |
+| HDD | 0.8773s |
 
 ## 文档
 

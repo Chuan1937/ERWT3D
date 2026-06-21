@@ -10,7 +10,7 @@ int main() {
         cfg.continuousCount = 5;
 
         auto result = erwt3d::benchmarkContest(cfg);
-        std::cout << "T_composite = " << result.T_composite_ms << " ms" << std::endl;
+        std::cout << "T_composite = " << result.T_composite_ms / 1000.0 << " s" << std::endl;
     }
 
     // ========== SSD 测试 ==========
