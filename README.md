@@ -43,6 +43,8 @@ erwt3d verify     raw=data.raw erwt3d=data.erwt3d nx=801 ny=2405 nz=2501
 - [索引原理](docs/index.md)
 - [算法实现](docs/implementation.md)
 - [性能测试](docs/benchmark.md)
+  - [SSD 测试](docs/benchmark_ssd.md)
+  - [HDD 测试](docs/benchmark_hdd.md)
 
 ## 许可
 
