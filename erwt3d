@@ -110,9 +110,7 @@ case "$1" in
                 memory=*)  memory="${arg#*=}" ;;
             esac
         done
-        tmp="/tmp/erwt3d_$$.erwt3d"
-        $BIN/erwt3d_convert -i "$input" -o "$tmp" --nx $nx --ny $ny --nz $nz -t $threads -m $memory
-        cp "$tmp" "$output" && rm -f "$tmp"
+        $BIN/erwt3d_convert --input "$input" --output "$output" --nx $nx --ny $ny --nz $nz --threads $threads --memory-limit-mb $memory
         ;;
     verify)
         shift
