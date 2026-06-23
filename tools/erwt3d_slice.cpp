@@ -22,8 +22,7 @@ int main(int argc, char* argv[]) {
     uint64_t lineY = 0, lineZ = 0;
     int numThreads = 1;
     size_t memoryLimitMB = 2048;
-    std::string ioBackendStr = "pread";
-    std::string sbParallelModeStr = "serial";
+    std::string ioBackendStr = "sb";
     bool profileIO = false;
     
     // Parse arguments
@@ -51,8 +50,6 @@ int main(int argc, char* argv[]) {
             memoryLimitMB = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--io-backend") == 0 && i + 1 < argc) {
             ioBackendStr = argv[++i];
-        } else if (std::strcmp(argv[i], "--sb-parallel-mode") == 0 && i + 1 < argc) {
-            sbParallelModeStr = argv[++i];
         } else if (std::strcmp(argv[i], "--profile-io") == 0) {
             profileIO = true;
         } else {
@@ -76,12 +73,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    if (sbParallelModeStr == "parallel-read") {
-        reader.setSBParallelMode(erwt3d::SBParallelMode::ParallelRead);
-    } else if (sbParallelModeStr != "serial") {
-        std::cerr << "Error: Unknown --sb-parallel-mode: " << sbParallelModeStr << std::endl;
-        return 1;
-    }
     reader.setProfileIO(profileIO);
     const auto& header = reader.getHeader();
     

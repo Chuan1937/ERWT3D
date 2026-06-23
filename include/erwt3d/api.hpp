@@ -27,17 +27,16 @@ struct BenchConfig {
     std::string outputDir;
     int randomCount = 100;
     int continuousCount = 10;
-    int numThreads = 8;
-    size_t memoryLimitMB = 8192;
+    int numThreads = 1;
+    size_t memoryLimitMB = 4096;
     size_t cacheMB = 0;
     IOBackend ioBackend = IOBackend::Superblock;
-    SBParallelMode parallelMode = SBParallelMode::ParallelRead;
-    SBReadMode readMode = SBReadMode::PRead;
+    SBReadMode readMode = SBReadMode::HDDReadWindow;
     SBTaskOrder taskOrder = SBTaskOrder::FileOffset;
-    uint64_t readWindowBytes = 0;
-    uint64_t maxGapBytes = 0;
-    bool batchPlanner = false;
-    bool hddMode = false;
+    uint64_t readWindowBytes = 33554432;
+    uint64_t maxGapBytes = 1048576;
+    bool batchPlanner = true;
+    bool hddMode = true;
     uint32_t seed = 20260511;
 };
 
@@ -68,20 +67,6 @@ bool verify(const std::string& rawPath, const std::string& erwt3dPath,
 
 // ========== 快捷函数 ==========
 
-// SSD 默认配置
-inline BenchConfig ssdConfig(const std::string& input, const std::string& outputDir) {
-    BenchConfig cfg;
-    cfg.input = input;
-    cfg.outputDir = outputDir;
-    cfg.numThreads = 8;
-    cfg.memoryLimitMB = 8192;
-    cfg.ioBackend = IOBackend::Superblock;
-    cfg.parallelMode = SBParallelMode::ParallelRead;
-    cfg.readMode = SBReadMode::PRead;
-    cfg.taskOrder = SBTaskOrder::FileOffset;
-    return cfg;
-}
-
 // HDD 默认配置
 inline BenchConfig hddConfig(const std::string& input, const std::string& outputDir) {
     BenchConfig cfg;
@@ -90,7 +75,6 @@ inline BenchConfig hddConfig(const std::string& input, const std::string& output
     cfg.numThreads = 1;
     cfg.memoryLimitMB = 4096;
     cfg.ioBackend = IOBackend::Superblock;
-    cfg.parallelMode = SBParallelMode::Serial;
     cfg.readMode = SBReadMode::HDDReadWindow;
     cfg.taskOrder = SBTaskOrder::FileOffset;
     cfg.readWindowBytes = 33554432;

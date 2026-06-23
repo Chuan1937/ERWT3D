@@ -60,16 +60,14 @@ void printUsage(const char* progName) {
     std::cerr << "  --memory-limit-mb N   Memory limit in MB (default: 2048)" << std::endl;
     std::cerr << "  --cache-mb N          Cache size in MB (default: 0)" << std::endl;
     std::cerr << "  --io-backend MODE     I/O backend: pread, sb (default: pread)" << std::endl;
-    std::cerr << "  --sb-parallel-mode M  SB parallel mode: serial, parallel-read (default: serial)" << std::endl;
-    std::cerr << "  --sb-schedule MODE    SB task schedule: static, dynamic (default: static)" << std::endl;
-    std::cerr << "  --sb-read-mode MODE   SB read mode: pread, run-batch, leaf-index, hdd-read-window (default: pread)" << std::endl;
+    std::cerr << "  --sb-read-mode MODE   SB read mode: run-batch, leaf-index, hdd-read-window (default: hdd-read-window)" << std::endl;
     std::cerr << "  --leaf-merge-bytes N   Leaf-index merge extent size (default: 4096)" << std::endl;
-    std::cerr << "  --sb-task-order MODE  SB task order: logical, file-offset (default: logical)" << std::endl;
-    std::cerr << "  --hdd-read-window-bytes N  HDD read window max bytes (0=disabled, default: 0)" << std::endl;
-    std::cerr << "  --hdd-max-gap-bytes N      HDD max gap bytes to merge (0=adjacent only, default: 0)" << std::endl;
-    std::cerr << "  --hdd-batch-planner on|off  Global task sort + merge across all slices (default: off)" << std::endl;
+    std::cerr << "  --sb-task-order MODE  SB task order: logical, file-offset (default: file-offset)" << std::endl;
+    std::cerr << "  --hdd-read-window-bytes N  HDD read window max bytes (0=auto, default: 0)" << std::endl;
+    std::cerr << "  --hdd-max-gap-bytes N      HDD max gap bytes to merge (0=auto, default: 0)" << std::endl;
+    std::cerr << "  --hdd-batch-planner on|off  Global task sort + merge across all slices (default: on)" << std::endl;
     std::cerr << "  --hdd-batch-window-bytes N  Batch read window max bytes (0=auto, default: 0)" << std::endl;
-    std::cerr << "  --hdd-batch-max-gap-bytes N Batch max gap bytes to merge (0=adjacent only, default: 0)" << std::endl;
+    std::cerr << "  --hdd-batch-max-gap-bytes N Batch max gap bytes to merge (0=auto, default: 0)" << std::endl;
     std::cerr << "  --profile-io          Enable per-slice I/O phase profiling (writes io_profile.csv)" << std::endl;
     std::cerr << "  --pin-threads         Pin worker threads to CPU cores (Linux only)" << std::endl;
     std::cerr << "  --seed N              Random seed (default: 20260511)" << std::endl;
@@ -84,15 +82,13 @@ int main(int argc, char* argv[]) {
     size_t memoryLimitMB = 2048;
     size_t cacheMB = 0;
     uint32_t seed = 20260511;
-    std::string ioBackendStr = "pread";
-    std::string sbParallelModeStr = "serial";
-    std::string sbScheduleStr = "static";
-    std::string sbReadModeStr = "pread";
+    std::string ioBackendStr = "sb";
+    std::string sbReadModeStr = "hdd-read-window";
     size_t leafMergeBytes = 16384;
-    std::string sbTaskOrderStr = "logical";
+    std::string sbTaskOrderStr = "file-offset";
     uint64_t hddReadWindowBytes = 0;
     uint64_t hddMaxGapBytes = 0;
-    bool hddBatchPlanner = false;
+    bool hddBatchPlanner = true;
     uint64_t hddBatchWindowBytes = 0;
     uint64_t hddBatchMaxGapBytes = 0;
     std::string benchMode = "normal";
@@ -130,10 +126,6 @@ int main(int argc, char* argv[]) {
             cacheMB = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--io-backend") == 0 && i + 1 < argc) {
             ioBackendStr = argv[++i];
-        } else if (std::strcmp(argv[i], "--sb-parallel-mode") == 0 && i + 1 < argc) {
-            sbParallelModeStr = argv[++i];
-        } else if (std::strcmp(argv[i], "--sb-schedule") == 0 && i + 1 < argc) {
-            sbScheduleStr = argv[++i];
         } else if (std::strcmp(argv[i], "--sb-read-mode") == 0 && i + 1 < argc) {
             sbReadModeStr = argv[++i];
         } else if (std::strcmp(argv[i], "--leaf-merge-bytes") == 0 && i + 1 < argc) {
@@ -169,7 +161,6 @@ int main(int argc, char* argv[]) {
             numThreads = 1;
             memoryLimitMB = 4096;
             ioBackendStr = "sb";
-            sbParallelModeStr = "serial";
             sbReadModeStr = "hdd-read-window";
             sbTaskOrderStr = "file-offset";
             hddReadWindowBytes = 33554432;
@@ -216,21 +207,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    if (sbParallelModeStr == "serial") {
-        reader.setSBParallelMode(erwt3d::SBParallelMode::Serial);
-    } else if (sbParallelModeStr == "parallel-read") {
-        reader.setSBParallelMode(erwt3d::SBParallelMode::ParallelRead);
-    } else {
-        std::cerr << "Error: Unknown --sb-parallel-mode: " << sbParallelModeStr << " (valid: serial, parallel-read)" << std::endl;
-        return 1;
-    }
-    
-    if (sbScheduleStr == "dynamic") {
-        reader.setSBSchedule(erwt3d::SBSchedule::Dynamic);
-    } else if (sbScheduleStr != "static") {
-        std::cerr << "Error: Unknown --sb-schedule: " << sbScheduleStr << " (valid: static, dynamic)" << std::endl;
-        return 1;
-    }
     reader.setPinThreads(pinThreads);
     
     if (sbReadModeStr == "run-batch") {
@@ -244,8 +220,8 @@ int main(int argc, char* argv[]) {
         cfg.read_window_bytes = hddReadWindowBytes;
         cfg.max_gap_bytes = hddMaxGapBytes;
         reader.setHDDReadWindowConfig(cfg);
-    } else if (sbReadModeStr != "pread") {
-        std::cerr << "Error: Unknown --sb-read-mode: " << sbReadModeStr << " (valid: pread, run-batch, leaf-index, hdd-read-window)" << std::endl;
+    } else {
+        std::cerr << "Error: Unknown --sb-read-mode: " << sbReadModeStr << " (valid: run-batch, leaf-index, hdd-read-window)" << std::endl;
         return 1;
     }
     
@@ -268,8 +244,6 @@ int main(int argc, char* argv[]) {
     std::cout << "Cache: " << cacheMB << " MB" << std::endl;
     std::cout << "IO backend: " << ioBackendStr << std::endl;
     if (ioBackendStr == "sb" || ioBackendStr == "superblock") {
-        std::cout << "SB parallel mode: " << sbParallelModeStr << std::endl;
-        std::cout << "SB schedule: " << sbScheduleStr << std::endl;
         std::cout << "SB read mode: " << sbReadModeStr << std::endl;
         std::cout << "SB task order: " << sbTaskOrderStr << std::endl;
         if (sbReadModeStr == "hdd-read-window") {
@@ -357,15 +331,14 @@ int main(int argc, char* argv[]) {
             dl << axisName << "," << mode << "," << i << "," << idx << ","
                << std::fixed << std::setprecision(3) << timeMs << ","
                << (sliceSize * sizeof(float)) << ","
-               << ioBackendStr << "," << numThreads << "," << cacheMB << "," << memoryLimitMB
-               << "," << sbParallelModeStr;
+               << ioBackendStr << "," << numThreads << "," << cacheMB << "," << memoryLimitMB;
             detailLines.push_back(dl.str());
             
             if (profileIO) {
                 const auto& p = reader.lastProfile();
                 std::ostringstream pl;
                 pl << axisName << "," << mode << "," << idx << ","
-                   << ioBackendStr << "," << numThreads << "," << sbParallelModeStr << ","
+                   << ioBackendStr << "," << numThreads << ","
                    << p.superblocks_touched << "," << p.pread_calls << "," << p.bytes_read << ","
                    << p.output_bytes << ","
                    << std::fixed << std::setprecision(3) << p.plan_time_ms << ","
@@ -437,8 +410,7 @@ int main(int argc, char* argv[]) {
             std::ostringstream dl;
             dl << axisName << "," << mode << "," << i << "," << indices[i] << ","
                << std::fixed << std::setprecision(3) << avgMs << "," << outBytes << ","
-               << ioBackendStr << "," << numThreads << "," << cacheMB << "," << memoryLimitMB
-               << "," << sbParallelModeStr;
+               << ioBackendStr << "," << numThreads << "," << cacheMB << "," << memoryLimitMB;
             detailLines.push_back(dl.str());
         }
         BenchmarkResult r; r.method = "erwt3d"; r.ioBackend = ioBackendStr;
@@ -614,7 +586,7 @@ int main(int argc, char* argv[]) {
                 std::ostringstream dl;
                 dl << e.ax << "," << e.md << "," << i << "," << (*e.idxs)[i] << ","
                    << std::fixed << std::setprecision(3) << avgMs << ","
-                   << r.outputBytes << ",sb-contest," << numThreads << "," << cacheMB << "," << memoryLimitMB << "," << sbParallelModeStr;
+                   << r.outputBytes << ",sb-contest," << numThreads << "," << cacheMB << "," << memoryLimitMB;
                 detailLines.push_back(dl.str());
             }
         }
@@ -690,9 +662,9 @@ int main(int argc, char* argv[]) {
     {
         std::ofstream cf(csvPath);
         if (!cf) { std::cerr << "Error: Cannot write " << csvPath << std::endl; return 1; }
-        cf << "method,io_backend,sb_parallel_mode,axis,mode,count,avg_time_ms,min_time_ms,max_time_ms,total_time_ms,output_bytes" << std::endl;
+        cf << "method,io_backend,axis,mode,count,avg_time_ms,min_time_ms,max_time_ms,total_time_ms,output_bytes" << std::endl;
         for (const auto& r : results) {
-            cf << r.method << "," << r.ioBackend << "," << sbParallelModeStr << ","
+            cf << r.method << "," << r.ioBackend << ","
                << r.axis << "," << r.mode << "," << r.count << ","
                << std::fixed << std::setprecision(3) << r.avgTimeMs << ","
                << r.minTimeMs << "," << r.maxTimeMs << "," << r.totalTimeMs << ","
@@ -708,7 +680,7 @@ int main(int argc, char* argv[]) {
     {
         std::ofstream df(detailPath);
         if (!df) { std::cerr << "Error: Cannot write " << detailPath << std::endl; return 1; }
-        df << "axis,mode,iteration,index,time_ms,output_bytes,io_backend,threads,cache_mb,memory_limit_mb,sb_parallel_mode" << std::endl;
+        df << "axis,mode,iteration,index,time_ms,output_bytes,io_backend,threads,cache_mb,memory_limit_mb" << std::endl;
         for (const auto& line : detailLines) df << line << std::endl;
         df.close();
         if (!df.good()) { std::cerr << "Error: Failed to write " << detailPath << std::endl; return 1; }
@@ -719,7 +691,7 @@ int main(int argc, char* argv[]) {
         std::string profilePath = outputDir + "/io_profile.csv";
         std::ofstream pf(profilePath);
         if (!pf) { std::cerr << "Error: Cannot write " << profilePath << std::endl; return 1; }
-        pf << "axis,mode,index,backend,threads,sb_parallel_mode,superblocks_touched,pread_calls,bytes_read,output_bytes,plan_time_ms,read_time_wall_ms,unpack_time_wall_ms,read_time_sum_ms,unpack_time_sum_ms,panel_hit,read_slice_ms,write_output_ms" << std::endl;
+        pf << "axis,mode,index,backend,threads,superblocks_touched,pread_calls,bytes_read,output_bytes,plan_time_ms,read_time_wall_ms,unpack_time_wall_ms,read_time_sum_ms,unpack_time_sum_ms,panel_hit,read_slice_ms,write_output_ms" << std::endl;
         for (const auto& line : profileLines) pf << line << std::endl;
         pf.close();
         std::cout << "IO profile written to " << profilePath << std::endl;

@@ -268,9 +268,8 @@ bool executeSBPlanHDDReadWindow(int fd, const SBTaskPlan& plan, const ERWT3DHead
     if (n == 0) return true;
     if (numThreads <= 1) numThreads = 1;
 
-    // HDD优化: 使用更大默认读窗口 (512 * sbBV = 512 MiB)
-    const uint64_t rwBytes = cfg.read_window_bytes > 0 ? cfg.read_window_bytes : sbBV * 512;
-    const uint64_t gapBytes = cfg.max_gap_bytes;
+    const uint64_t rwBytes = cfg.read_window_bytes > 0 ? cfg.read_window_bytes : 32 * 1024 * 1024;
+    const uint64_t gapBytes = cfg.max_gap_bytes > 0 ? cfg.max_gap_bytes : 1024 * 1024;
 
     // HDD优化: 提示内核顺序访问模式
     posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
@@ -320,11 +319,13 @@ bool executeSBPlanHDDReadWindow(int fd, const SBTaskPlan& plan, const ERWT3DHead
         for (size_t wi = startW; wi < endW; ++wi) {
             const auto& win = windows[wi];
 
-            // HDD优化: 对顺序窗口进行readahead预取
-            if (wi + 1 < endW) {
-                const auto& nextWin = windows[wi + 1];
-                if (nextWin.file_offset > win.file_offset) {
-                    readahead(fd, nextWin.file_offset, nextWin.read_bytes);
+            // HDD优化: 预取后续多个窗口，确保磁头连续运动
+            for (int ahead = 1; ahead <= 3; ++ahead) {
+                if (wi + ahead < endW) {
+                    const auto& futureWin = windows[wi + ahead];
+                    if (futureWin.file_offset > win.file_offset) {
+                        readahead(fd, futureWin.file_offset, futureWin.read_bytes);
+                    }
                 }
             }
 
@@ -427,9 +428,8 @@ bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr
     if (n == 0) return true;
     if (numThreads <= 1) numThreads = 1;
 
-    // HDD优化: 使用更大默认读窗口 (512 * sbBV = 512 MiB)
-    const uint64_t rwB = wcfg.read_window_bytes > 0 ? wcfg.read_window_bytes : sbBV * 512;
-    const uint64_t gapB = wcfg.max_gap_bytes;
+    const uint64_t rwB = wcfg.read_window_bytes > 0 ? wcfg.read_window_bytes : 32 * 1024 * 1024;
+    const uint64_t gapB = wcfg.max_gap_bytes > 0 ? wcfg.max_gap_bytes : 1024 * 1024;
 
     // HDD优化: 提示内核顺序访问模式
     posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
@@ -470,11 +470,13 @@ bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr
         for (size_t wi = sw; wi < ew; ++wi) {
             const auto& win = wins[wi];
 
-            // HDD优化: 对顺序窗口进行readahead预取
-            if (wi + 1 < ew) {
-                const auto& nextWin = wins[wi + 1];
-                if (nextWin.fo > win.fo) {
-                    readahead(fd, nextWin.fo, nextWin.rb);
+            // HDD优化: 预取后续多个窗口
+            for (int ahead = 1; ahead <= 3; ++ahead) {
+                if (wi + ahead < ew) {
+                    const auto& futureWin = wins[wi + ahead];
+                    if (futureWin.fo > win.fo) {
+                        readahead(fd, futureWin.fo, futureWin.rb);
+                    }
                 }
             }
 

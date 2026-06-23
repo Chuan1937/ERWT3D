@@ -9,7 +9,6 @@ int main(int argc, char* argv[]) {
     int numThreads = 1;
     size_t memoryLimitMB = 2048;
     std::string ioBackendStr = "sb";
-    std::string sbParallelModeStr = "serial";
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--input") == 0 && i+1 < argc) inputPath = argv[++i];
@@ -20,13 +19,12 @@ int main(int argc, char* argv[]) {
         else if (std::strcmp(argv[i], "--threads") == 0 && i+1 < argc) numThreads = std::stoi(argv[++i]);
         else if (std::strcmp(argv[i], "--memory-limit-mb") == 0 && i+1 < argc) memoryLimitMB = std::stoul(argv[++i]);
         else if (std::strcmp(argv[i], "--io-backend") == 0 && i+1 < argc) ioBackendStr = argv[++i];
-        else if (std::strcmp(argv[i], "--sb-parallel-mode") == 0 && i+1 < argc) sbParallelModeStr = argv[++i];
         else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             std::cerr << "Usage: " << argv[0] << " --input file.erwt3d --axis x|y|z --fixed1 N --fixed2 N --output line.raw" << std::endl;
             std::cerr << "  --axis x: fixed1=y, fixed2=z; output length = nx" << std::endl;
             std::cerr << "  --axis y: fixed1=x, fixed2=z; output length = ny" << std::endl;
             std::cerr << "  --axis z: fixed1=x, fixed2=y; output length = nz" << std::endl;
-            std::cerr << "  --threads N  --memory-limit-mb N  --io-backend sb|pread  --sb-parallel-mode serial|parallel-read" << std::endl;
+            std::cerr << "  --threads N  --memory-limit-mb N  --io-backend sb|pread" << std::endl;
             return 0;
         } else {
             std::cerr << "Unknown: " << argv[i] << std::endl; return 1;
@@ -43,12 +41,6 @@ int main(int argc, char* argv[]) {
         reader.setIOBackend(erwt3d::IOBackend::Superblock);
     } else if (ioBackendStr != "pread") {
         std::cerr << "Error: unknown --io-backend: " << ioBackendStr << " (valid: pread, sb)" << std::endl;
-        return 1;
-    }
-    if (sbParallelModeStr == "parallel-read") {
-        reader.setSBParallelMode(erwt3d::SBParallelMode::ParallelRead);
-    } else if (sbParallelModeStr != "serial") {
-        std::cerr << "Error: unknown --sb-parallel-mode: " << sbParallelModeStr << " (valid: serial, parallel-read)" << std::endl;
         return 1;
     }
 

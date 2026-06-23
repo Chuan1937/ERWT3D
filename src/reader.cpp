@@ -44,7 +44,7 @@ ERWT3DReader::ERWT3DReader(const std::string& path, size_t cacheMB, bool useMmap
                 mmapData_ = nullptr;
                 mmapSize_ = 0;
             } else {
-                madvise(mmapData_, mmapSize_, MADV_RANDOM);
+                madvise(mmapData_, mmapSize_, MADV_SEQUENTIAL);
             }
         }
     }
@@ -105,107 +105,7 @@ bool ERWT3DReader::readSlice(SliceAxis axis, uint64_t index, float* output,
         case SliceAxis::Y: if (index >= header_.ny) return false; break;
         case SliceAxis::Z: if (index >= header_.nz) return false; break;
     }
-    if (ioBackend_ == IOBackend::Superblock) {
-        return readSliceSB(axis, index, output, numThreads, memoryLimitMB);
-    }
-    return readSlicePRead(axis, index, output, numThreads, memoryLimitMB);
-}
-
-// --- readSlice: extent-based PRead backend ---
-bool ERWT3DReader::readSlicePRead(SliceAxis axis, uint64_t index, float* output,
-                                   int numThreads, size_t memoryLimitMB) {
-    if (fd_ < 0) return false;
-    
-    SliceRequest request;
-    request.axis = axis;
-    request.index = index;
-    
-    SlicePlan plan = planSlice(header_, request);
-    prepareSlicePlan(plan);
-    
-    if (plan.merged_extents.empty()) return true;
-    
-    // Calculate total read size and determine batching
-    uint64_t totalReadSize = 0;
-    for (const auto& ext : plan.merged_extents) {
-        totalReadSize += ext.size;
-    }
-    
-    size_t maxBufferBytes = memoryLimitMB * 1024 * 1024;
-    if (maxBufferBytes == 0) maxBufferBytes = 1024 * 1024; // at least 1 MB
-    
-    // If everything fits, read at once
-    if (totalReadSize <= maxBufferBytes) {
-        std::vector<uint8_t> readBuffer(totalReadSize);
-        
-        if (numThreads <= 1) {
-            if (!readExtents(plan.merged_extents, readBuffer.data())) return false;
-        } else {
-            if (!readExtentsThreaded(plan.merged_extents, readBuffer.data(), numThreads)) return false;
-        }
-        
-        executePreparedSlice(header_, plan, readBuffer.data(),
-                            plan.merged_buffer_offsets, plan.merged_extents,
-                            0, plan.merged_extents.size(), output);
-        return true;
-    }
-    
-    // Batched reading: split merged extents into groups that fit
-    uint64_t batchBytes = 0;
-    size_t batchStart = 0;
-    
-    for (size_t i = 0; i <= plan.merged_extents.size(); ++i) {
-        bool flushBatch = (i == plan.merged_extents.size());
-        if (!flushBatch) {
-            uint64_t nextSize = batchBytes + plan.merged_extents[i].size;
-            if (nextSize <= maxBufferBytes) {
-                batchBytes = nextSize;
-                continue;
-            }
-            if (batchBytes == 0) {
-                // Single extent exceeds limit - still read it
-                batchBytes = plan.merged_extents[i].size;
-                continue;
-            }
-            flushBatch = true;
-        }
-        
-        if (batchStart < i) {
-            // Read batch [batchStart, i)
-            size_t batchEnd = flushBatch ? i : i;
-            uint64_t bufSize = 0;
-            for (size_t j = batchStart; j < batchEnd; ++j) {
-                bufSize += plan.merged_extents[j].size;
-            }
-            std::vector<uint8_t> batchBuffer(bufSize);
-            
-            // Build sub-extent list
-            std::vector<Extent> batchExtents;
-            for (size_t j = batchStart; j < batchEnd; ++j) {
-                batchExtents.push_back(plan.merged_extents[j]);
-            }
-            
-            if (numThreads <= 1) {
-                if (!readExtents(batchExtents, batchBuffer.data())) return false;
-            } else {
-                if (!readExtentsThreaded(batchExtents, batchBuffer.data(), numThreads)) return false;
-            }
-            
-            // Execute only copies whose merged extent is in this batch
-            executePreparedSlice(header_, plan, batchBuffer.data(),
-                                plan.merged_buffer_offsets, plan.merged_extents,
-                                batchStart, batchEnd, output);
-        }
-        
-        // Reset for next batch
-        batchStart = i;
-        batchBytes = 0;
-        if (!flushBatch) {
-            batchBytes = plan.merged_extents[i].size;
-        }
-    }
-    
-    return true;
+    return readSliceSB(axis, index, output, numThreads, memoryLimitMB);
 }
 
 // --- readLineX (legacy wrapper) ---
@@ -698,23 +598,14 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
     size_t maxBytes = memoryLimitMB * 1024ULL * 1024ULL;
     if (sbBytesVal > maxBytes) return false;
     size_t required = sbBytesVal;
-    if (sbParallelMode_ == SBParallelMode::ParallelRead && numThreads > 1) {
-        required *= static_cast<size_t>(numThreads);
-    }
     if (required > maxBytes) return false;
 
     auto planStart = std::chrono::high_resolution_clock::now();
 
     // Try X-panel fast path
     if (axis == SliceAxis::X && hasXPanels(header_)) {
-        bool panelOk;
-        if (sbParallelMode_ == SBParallelMode::ParallelRead && numThreads > 1) {
-            panelOk = tryReadSliceXPanelsParallel(fd_, header_, index, output, numThreads,
-                                                   profileIO_ ? &lastProfile_ : nullptr);
-        } else {
-            panelOk = tryReadSliceXPanels(fd_, header_, index, output,
+        bool panelOk = tryReadSliceXPanels(fd_, header_, index, output,
                                            profileIO_ ? &lastProfile_ : nullptr);
-        }
         if (panelOk) {
             auto planEnd = std::chrono::high_resolution_clock::now();
             double planMs = std::chrono::duration<double, std::milli>(planEnd - planStart).count();
@@ -749,7 +640,6 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
 
     bool ok;
     if (sbReadMode_ == SBReadMode::HDDReadWindow) {
-        // HDD优化: 强制单线程读取，避免多线程并发导致磁头跳动
         ok = executeSBPlanHDDReadWindow(fd_, plan, header_, output, 1,
                                         memoryLimitMB, hddReadWindowCfg_,
                                         profileIO_ ? &lastProfile_ : nullptr,
@@ -763,13 +653,12 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
                                      memoryLimitMB, leafMergeBytes_,
                                      profileIO_ ? &lastProfile_ : nullptr,
                                      pinThreads_);
-    } else if (sbParallelMode_ == SBParallelMode::ParallelRead && numThreads > 1) {
-        ok = executeSBPlanParallelRead(fd_, plan, header_, output, numThreads,
-                                        profileIO_ ? &lastProfile_ : nullptr,
-                                        sbSchedule_, pinThreads_);
     } else {
-        ok = executeSBPlanSerial(fd_, plan, header_, output,
-                                 profileIO_ ? &lastProfile_ : nullptr);
+        // 默认使用 HDDReadWindow 模式
+        ok = executeSBPlanHDDReadWindow(fd_, plan, header_, output, 1,
+                                        memoryLimitMB, hddReadWindowCfg_,
+                                        profileIO_ ? &lastProfile_ : nullptr,
+                                        pinThreads_);
     }
 
     return ok;
@@ -793,7 +682,6 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
         plans.push_back(std::move(p)); outputs.push_back(r.output);
     }
     for (auto& p : plans) pp.push_back(&p);
-    // HDD优化: 批量模式也强制单线程读取
     return executeSBBatchHDD(fd_, buildSBBatchPlan(pp), header_, outputs.data(),
                               1, memoryLimitMB, wcfg, pinThreads_, nullptr);
 }
@@ -842,6 +730,13 @@ bool ERWT3DReader::readExtentsThreaded(const std::vector<Extent>& extents, void*
     }
     
     return true;
+}
+
+void ERWT3DReader::setHDDMode() {
+    ioBackend_ = IOBackend::Superblock;
+    sbReadMode_ = SBReadMode::HDDReadWindow;
+    sbTaskOrder_ = SBTaskOrder::FileOffset;
+    hddReadWindowCfg_ = HDDReadWindowConfig{32 * 1024 * 1024, 1024 * 1024};
 }
 
 } // namespace erwt3d

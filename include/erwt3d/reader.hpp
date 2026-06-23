@@ -4,7 +4,6 @@
 #include "slice.hpp"
 #include "cache.hpp"
 #include "sb_plan.hpp"
-#include "sb_ssd.hpp"
 #include "sb_hdd.hpp"
 #include "sb_panel.hpp"
 #include <cstdint>
@@ -18,13 +17,7 @@ enum class IOBackend {
     Superblock,  // read whole superblocks, extract leaves
 };
 
-enum class SBParallelMode {
-    Serial,       // current stable single-thread SB path (default)
-    ParallelRead, // parallel pread over superblocks, disjoint output regions
-};
-
 enum class SBReadMode {
-    PRead,         // per-superblock pread (SSD default)
     RunBatch,      // batch contiguous superblock runs into single pread
     LeafIndex,     // read only needed leaf blocks, merge into extents
     HDDReadWindow, // HDD-max: large contiguous read windows with configurable gap tolerance
@@ -61,12 +54,6 @@ public:
     void setIOBackend(IOBackend b) { ioBackend_ = b; }
     IOBackend ioBackend() const { return ioBackend_; }
     
-    void setSBParallelMode(SBParallelMode m) { sbParallelMode_ = m; }
-    SBParallelMode sbParallelMode() const { return sbParallelMode_; }
-    
-    void setSBSchedule(SBSchedule s) { sbSchedule_ = s; }
-    SBSchedule sbSchedule() const { return sbSchedule_; }
-    
     void setPinThreads(bool enable) { pinThreads_ = enable; }
     bool pinThreads() const { return pinThreads_; }
     
@@ -89,7 +76,6 @@ public:
                          const HDDReadWindowConfig& wcfg);
 
     // 一键配置
-    void setSSDMode(int numThreads = 8);
     void setHDDMode();
 
     void setProfileIO(bool enable) { profileIO_ = enable; }
@@ -106,12 +92,10 @@ private:
     void* mmapData_ = nullptr;
     size_t mmapSize_ = 0;
     IOBackend ioBackend_ = IOBackend::PRead;
-    SBParallelMode sbParallelMode_ = SBParallelMode::Serial;
-    SBSchedule sbSchedule_ = SBSchedule::Static;
     bool pinThreads_ = false;
-    SBReadMode sbReadMode_ = SBReadMode::PRead;
+    SBReadMode sbReadMode_ = SBReadMode::HDDReadWindow;
     size_t leafMergeBytes_ = 16384;
-    SBTaskOrder sbTaskOrder_ = SBTaskOrder::Logical;
+    SBTaskOrder sbTaskOrder_ = SBTaskOrder::FileOffset;
     HDDReadWindowConfig hddReadWindowCfg_;
     HDDContiguousConfig hddContigCfg_;
     bool profileIO_ = false;
@@ -121,8 +105,6 @@ private:
     bool readExtentsThreaded(const std::vector<Extent>& extents, void* buffer, int numThreads);
     bool readOneExtent(uint64_t offset, uint64_t size, void* buffer);
     
-    bool readSlicePRead(SliceAxis axis, uint64_t index, float* output,
-                        int numThreads, size_t memoryLimitMB);
     bool readSliceSB(SliceAxis axis, uint64_t index, float* output,
                       int numThreads, size_t memoryLimitMB);
 };

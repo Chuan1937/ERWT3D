@@ -137,20 +137,46 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
                 sbOffsets[idx] = sizeof(header) + idx * sbBytes;
             }
 
+    // Panel support
+    bool doPanels = (panelAxis == 0) && panelStride > 0 && panelStride <= superX;
+    uint64_t planeBytes = superY * superZ * sizeof(float);
+    uint64_t panelCount = doPanels ? superX / panelStride : 0;
+    uint64_t sbPanelBytes = doPanels ? panelCount * planeBytes : 0;
+    uint64_t panelIndexBytes = doPanels ? totalSB * sizeof(uint64_t) : 0;
+
+    // Reserve space for panel index after main data
+    uint64_t mainDataEnd = sizeof(header) + totalSB * sbBytes;
+    uint64_t panelIndexOff = doPanels ? mainDataEnd : 0;
+    uint64_t panelDataStart = doPanels ? panelIndexOff + panelIndexBytes : 0;
+
+    std::vector<uint64_t> panelIndex;
+    if (doPanels) {
+        panelIndex.resize(totalSB);
+        // Pre-allocate panel file space: write placeholder index
+        outFile.seekp(panelIndexOff);
+        std::vector<char> placeholder(panelIndexBytes, 0);
+        outFile.write(placeholder.data(), panelIndexBytes);
+    }
+
     // 分批处理：每次处理一批sy值，减少seek次数
     // 同一sy范围内的行是连续的，可以顺序读取
     uint64_t maxBatchSY = std::max(uint64_t(1), uint64_t(memoryLimitMB * 1024ULL * 1024ULL / (sgX * sgZ * sbBytes)));
     maxBatchSY = std::min(maxBatchSY, sgY);
 
     std::cout << "Sequential conversion: batch_sy=" << maxBatchSY << ", sgY=" << sgY << std::endl;
+    if (doPanels) {
+        std::cout << "X-panels: stride=" << panelStride << ", " << panelCount << " planes/sb" << std::endl;
+    }
 
     // 增大读取缓冲区（一次读取多行）
     uint64_t rowsPerBatch = std::min(uint64_t(1024), ny);
     std::vector<float> rowBuf(nx * rowsPerBatch);
+    std::vector<float> planeBuf(doPanels ? superY * superZ : 0);
 
     auto startTime = std::chrono::high_resolution_clock::now();
     uint64_t totalRowsProcessed = 0;
     uint64_t totalRows = nz * ny;
+    uint64_t panelWritePos = panelDataStart;  // current panel write position
 
     for (uint64_t syStart=0; syStart<sgY; syStart+=maxBatchSY) {
         uint64_t syEnd = std::min(syStart + maxBatchSY, sgY);
@@ -223,7 +249,7 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
             }
         }
 
-        // 写入当前批次的superblocks
+        // 写入当前批次的superblocks + panel数据
         for (uint64_t sy=syStart; sy<syEnd; ++sy) {
             uint64_t syIdx = sy - syStart;
             for (uint64_t sz=0; sz<sgZ; ++sz) {
@@ -234,12 +260,43 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
 
                     outFile.seekp(offset);
                     writeLeaves(outFile, header, sbBuffers[sbIdx]);
+
+                    // Write panel data for this superblock
+                    if (doPanels) {
+                        panelIndex[idx] = panelWritePos;
+                        outFile.seekp(panelWritePos);
+                        const auto& sbBuf = sbBuffers[sbIdx];
+                        for (uint32_t lx = 0; lx < superX; lx += panelStride) {
+                            for (uint64_t z = 0; z < superZ; ++z)
+                                for (uint64_t y = 0; y < superY; ++y)
+                                    planeBuf[z * superY + y] = sbBuf[(z * superY + y) * superX + lx];
+                            outFile.write(reinterpret_cast<const char*>(planeBuf.data()), planeBytes);
+                        }
+                        panelWritePos += sbPanelBytes;
+                    }
                 }
             }
         }
     }
 
     std::cout << std::endl;
+
+    // Write panel index and update header
+    if (doPanels) {
+        outFile.seekp(panelIndexOff);
+        outFile.write(reinterpret_cast<const char*>(panelIndex.data()), panelIndexBytes);
+
+        outFile.seekp(0);
+        header.flags |= FLAG_HAS_X_PANELS;
+        header.reserved[0] = panelStride;
+        header.reserved[3] = panelDataStart;
+        header.reserved[4] = panelIndexOff;
+        header.reserved[5] = panelWritePos - panelDataStart;
+        outFile.write(reinterpret_cast<const char*>(&header), sizeof(header));
+
+        std::cout << "Panels written: " << (panelWritePos - panelDataStart) / (1024*1024) << " MB" << std::endl;
+    }
+
     std::cout << "Conversion complete." << std::endl;
     return true;
 }

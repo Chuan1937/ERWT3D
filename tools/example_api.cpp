@@ -13,13 +13,6 @@ int main() {
         std::cout << "T_composite = " << result.T_composite_ms / 1000.0 << " s" << std::endl;
     }
 
-    // ========== SSD 测试 ==========
-    // 等价于: ./build/erwt3d_bench_contest -i data.erwt3d -o out -t 8 -m 8192 --io-backend sb ...
-    // {
-    //     auto cfg = erwt3d::ssdConfig("data.erwt3d", "out_ssd");
-    //     auto result = erwt3d::benchmarkContest(cfg);
-    // }
-
     // ========== 自定义配置 ==========
     // erwt3d::BenchConfig cfg;
     // cfg.input = "data.erwt3d";

@@ -115,7 +115,6 @@ ContestResult benchmarkContest(const BenchConfig& cfg) {
     // 打开 reader
     ERWT3DReader reader(cfg.input, cfg.cacheMB, cfg.hddMode);
     reader.setIOBackend(cfg.ioBackend);
-    reader.setSBParallelMode(cfg.parallelMode);
     reader.setSBReadMode(cfg.readMode);
     reader.setSBTaskOrder(cfg.taskOrder);
 

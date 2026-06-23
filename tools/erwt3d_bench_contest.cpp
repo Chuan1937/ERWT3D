@@ -26,10 +26,9 @@ static void printUsage(const char* prog) {
               << "  --threads N|auto       Thread count (default: 1)\n"
               << "  --memory-limit-mb N    Memory limit (default: 2048)\n"
               << "  --cache-mb N           LRU cache size (default: 0)\n"
-              << "  --io-backend pread|sb  I/O backend (default: pread)\n"
-              << "  --sb-parallel-mode serial|parallel-read (default: serial)\n"
-              << "  --sb-read-mode pread|run-batch|leaf-index|hdd-read-window (default: pread)\n"
-              << "  --sb-task-order logical|file-offset (default: logical)\n"
+              << "  --io-backend pread|sb  I/O backend (default: sb)\n"
+              << "  --sb-read-mode run-batch|leaf-index|hdd-read-window (default: hdd-read-window)\n"
+              << "  --sb-task-order logical|file-offset (default: file-offset)\n"
               << "  --hdd-read-window-bytes N  HDD read window (0=auto, default: 0)\n"
               << "  --hdd-max-gap-bytes N      HDD max gap to merge (default: 0)\n"
               << "  --pin-threads          Pin threads to CPU cores\n"
@@ -168,11 +167,11 @@ int main(int argc, char* argv[]) {
     int numThreads = 1;
     size_t memoryLimitMB = 2048, cacheMB = 0;
     uint32_t seed = 20260511;
-    std::string ioBackendStr = "pread", sbParallelModeStr = "serial";
-    std::string sbReadModeStr = "pread", sbTaskOrderStr = "logical";
+    std::string ioBackendStr = "sb";
+    std::string sbReadModeStr = "hdd-read-window", sbTaskOrderStr = "file-offset";
     uint64_t hddReadWindowBytes = 0, hddMaxGapBytes = 0;
     bool pinThreads = false, dryRun = false;
-    bool useBatch = false;
+    bool useBatch = true;
     bool useMmap = false;
     bool hddMode = false;
     double baselineMsOverride = 0;
@@ -199,7 +198,6 @@ int main(int argc, char* argv[]) {
         else if (std::strcmp(argv[i], "--memory-limit-mb") == 0 || std::strcmp(argv[i], "-m") == 0) { memoryLimitMB = std::stoul(next()); }
         else if (std::strcmp(argv[i], "--cache-mb") == 0) { cacheMB = std::stoul(next()); }
         else if (std::strcmp(argv[i], "--io-backend") == 0) { ioBackendStr = next(); }
-        else if (std::strcmp(argv[i], "--sb-parallel-mode") == 0) { sbParallelModeStr = next(); }
         else if (std::strcmp(argv[i], "--sb-read-mode") == 0) { sbReadModeStr = next(); }
         else if (std::strcmp(argv[i], "--sb-task-order") == 0) { sbTaskOrderStr = next(); }
         else if (std::strcmp(argv[i], "--hdd-read-window-bytes") == 0) { hddReadWindowBytes = std::stoul(next()); }
@@ -215,7 +213,6 @@ int main(int argc, char* argv[]) {
             numThreads = 1;
             memoryLimitMB = 4096;
             ioBackendStr = "sb";
-            sbParallelModeStr = "serial";
             sbReadModeStr = "hdd-read-window";
             sbTaskOrderStr = "file-offset";
             hddReadWindowBytes = 33554432;  // 32MB
@@ -242,10 +239,6 @@ int main(int argc, char* argv[]) {
     erwt3d::ERWT3DReader reader(inputPath, cacheMB, useMmap);
     if (ioBackendStr == "sb" || ioBackendStr == "superblock")
         reader.setIOBackend(erwt3d::IOBackend::Superblock);
-    if (sbParallelModeStr == "parallel-read")
-        reader.setSBParallelMode(erwt3d::SBParallelMode::ParallelRead);
-    else if (sbParallelModeStr == "dynamic")
-        reader.setSBSchedule(erwt3d::SBSchedule::Dynamic);
     if (sbReadModeStr == "run-batch") reader.setSBReadMode(erwt3d::SBReadMode::RunBatch);
     else if (sbReadModeStr == "leaf-index") reader.setSBReadMode(erwt3d::SBReadMode::LeafIndex);
     else if (sbReadModeStr == "hdd-read-window") reader.setSBReadMode(erwt3d::SBReadMode::HDDReadWindow);
@@ -281,7 +274,6 @@ int main(int argc, char* argv[]) {
               << "  MemLimit:  " << memoryLimitMB << " MB\n"
               << "  Cache:     " << cacheMB << " MB\n"
               << "  Backend:   " << ioBackendStr << "\n"
-              << "  SBMode:    " << sbParallelModeStr << "\n"
               << "  ReadMode:  " << sbReadModeStr << "\n"
               << "  TaskOrd:   " << sbTaskOrderStr << "\n"
               << "  Repeats:   " << repeats << "\n"
@@ -453,7 +445,6 @@ int main(int argc, char* argv[]) {
            << "threads," << numThreads << "\n"
            << "memory_limit_mb," << memoryLimitMB << "\n"
            << "io_backend," << ioBackendStr << "\n"
-           << "sb_parallel_mode," << sbParallelModeStr << "\n"
            << "sb_read_mode," << sbReadModeStr << "\n"
            << std::fixed << std::setprecision(3)
            << "T_x_random_ms," << groupTimes[0] << "\n"
