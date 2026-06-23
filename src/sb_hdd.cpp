@@ -268,7 +268,7 @@ bool executeSBPlanHDDReadWindow(int fd, const SBTaskPlan& plan, const ERWT3DHead
     if (n == 0) return true;
     if (numThreads <= 1) numThreads = 1;
 
-    const uint64_t rwBytes = cfg.read_window_bytes > 0 ? cfg.read_window_bytes : 32 * 1024 * 1024;
+    const uint64_t rwBytes = cfg.read_window_bytes > 0 ? cfg.read_window_bytes : 128 * 1024 * 1024;
     const uint64_t gapBytes = cfg.max_gap_bytes > 0 ? cfg.max_gap_bytes : 1024 * 1024;
 
     // HDD优化: 提示内核顺序访问模式
@@ -428,7 +428,7 @@ bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr
     if (n == 0) return true;
     if (numThreads <= 1) numThreads = 1;
 
-    const uint64_t rwB = wcfg.read_window_bytes > 0 ? wcfg.read_window_bytes : 32 * 1024 * 1024;
+    const uint64_t rwB = wcfg.read_window_bytes > 0 ? wcfg.read_window_bytes : 128 * 1024 * 1024;
     const uint64_t gapB = wcfg.max_gap_bytes > 0 ? wcfg.max_gap_bytes : 1024 * 1024;
 
     // HDD优化: 提示内核顺序访问模式

@@ -736,7 +736,7 @@ void ERWT3DReader::setHDDMode() {
     ioBackend_ = IOBackend::Superblock;
     sbReadMode_ = SBReadMode::HDDReadWindow;
     sbTaskOrder_ = SBTaskOrder::FileOffset;
-    hddReadWindowCfg_ = HDDReadWindowConfig{32 * 1024 * 1024, 1024 * 1024};
+    hddReadWindowCfg_ = HDDReadWindowConfig{128 * 1024 * 1024, 1024 * 1024};
 }
 
 } // namespace erwt3d

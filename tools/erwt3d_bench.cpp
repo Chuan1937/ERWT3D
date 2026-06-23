@@ -163,10 +163,10 @@ int main(int argc, char* argv[]) {
             ioBackendStr = "sb";
             sbReadModeStr = "hdd-read-window";
             sbTaskOrderStr = "file-offset";
-            hddReadWindowBytes = 33554432;
+            hddReadWindowBytes = 134217728;
             hddMaxGapBytes = 1048576;
             hddBatchPlanner = true;
-            hddBatchWindowBytes = 33554432;
+            hddBatchWindowBytes = 134217728;
             hddBatchMaxGapBytes = 1048576;
         } else if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
             seed = std::stoul(argv[++i]);

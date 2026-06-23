@@ -77,7 +77,7 @@ inline BenchConfig hddConfig(const std::string& input, const std::string& output
     cfg.ioBackend = IOBackend::Superblock;
     cfg.readMode = SBReadMode::HDDReadWindow;
     cfg.taskOrder = SBTaskOrder::FileOffset;
-    cfg.readWindowBytes = 33554432;
+    cfg.readWindowBytes = 134217728;
     cfg.maxGapBytes = 1048576;
     cfg.batchPlanner = true;
     cfg.hddMode = true;

@@ -124,6 +124,6 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 - X 切片触及 gridY×gridZ 个 superblock（最慢轴）
 - Panel 存储：stride=4 可加速 X 切片 40-80%，存储增加约 27%
 
-## WSL/9p 环境注意
+## 说明
+本处是使用优化HDD，也就是说数据转换，测试都需要在HDD上。
 
-9p 文件系统（WSL→Windows 挂载）每次 pread 调用开销大。X 切片（1520 个 superblock）极慢。使用 X-panel 可缓解。准确的 HDD 基准测试需要在原生机械硬盘上进行。

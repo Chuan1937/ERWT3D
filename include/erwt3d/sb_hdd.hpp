@@ -22,7 +22,7 @@ bool executeSBPlanLeafIndex(int fd, const SBTaskPlan& plan, const ERWT3DHeader& 
 // ========== HDD Read Window ==========
 
 struct HDDReadWindowConfig {
-    uint64_t read_window_bytes = 0;  // 0 = auto (32 MiB)
+    uint64_t read_window_bytes = 0;  // 0 = auto (128 MiB)
     uint64_t max_gap_bytes = 0;      // 0 = auto (1 MiB)
 };
 

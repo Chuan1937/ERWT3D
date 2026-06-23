@@ -215,7 +215,7 @@ int main(int argc, char* argv[]) {
             ioBackendStr = "sb";
             sbReadModeStr = "hdd-read-window";
             sbTaskOrderStr = "file-offset";
-            hddReadWindowBytes = 33554432;  // 32MB
+            hddReadWindowBytes = 134217728;  // 128MB
             hddMaxGapBytes = 1048576;       // 1MB
             useBatch = true;
         }
