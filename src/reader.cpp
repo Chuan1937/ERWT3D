@@ -44,7 +44,7 @@ ERWT3DReader::ERWT3DReader(const std::string& path, size_t cacheMB, bool useMmap
                 mmapData_ = nullptr;
                 mmapSize_ = 0;
             } else {
-                madvise(mmapData_, mmapSize_, MADV_RANDOM);
+                madvise(mmapData_, mmapSize_, MADV_SEQUENTIAL);
             }
         }
     }
@@ -749,7 +749,6 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
 
     bool ok;
     if (sbReadMode_ == SBReadMode::HDDReadWindow) {
-        // HDD优化: 强制单线程读取，避免多线程并发导致磁头跳动
         ok = executeSBPlanHDDReadWindow(fd_, plan, header_, output, 1,
                                         memoryLimitMB, hddReadWindowCfg_,
                                         profileIO_ ? &lastProfile_ : nullptr,
@@ -793,7 +792,6 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
         plans.push_back(std::move(p)); outputs.push_back(r.output);
     }
     for (auto& p : plans) pp.push_back(&p);
-    // HDD优化: 批量模式也强制单线程读取
     return executeSBBatchHDD(fd_, buildSBBatchPlan(pp), header_, outputs.data(),
                               1, memoryLimitMB, wcfg, pinThreads_, nullptr);
 }
@@ -842,6 +840,21 @@ bool ERWT3DReader::readExtentsThreaded(const std::vector<Extent>& extents, void*
     }
     
     return true;
+}
+
+void ERWT3DReader::setSSDMode(int numThreads) {
+    ioBackend_ = IOBackend::Superblock;
+    sbParallelMode_ = SBParallelMode::ParallelRead;
+    sbReadMode_ = SBReadMode::PRead;
+    sbTaskOrder_ = SBTaskOrder::FileOffset;
+}
+
+void ERWT3DReader::setHDDMode() {
+    ioBackend_ = IOBackend::Superblock;
+    sbParallelMode_ = SBParallelMode::Serial;
+    sbReadMode_ = SBReadMode::HDDReadWindow;
+    sbTaskOrder_ = SBTaskOrder::FileOffset;
+    hddReadWindowCfg_ = HDDReadWindowConfig{32 * 1024 * 1024, 1024 * 1024};
 }
 
 } // namespace erwt3d
