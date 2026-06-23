@@ -1,50 +1,34 @@
 # ERWT3D
 
-三维空间数据高效读写库
+三维空间数据高效读写库（HDD 优化）
 
 ## 构建
 
 ```bash
-make build
-make install    # 输出 PATH 配置，加入 ~/.bashrc
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
 ```
 
 ## 使用
 
 ```bash
-erwt3d bench_hdd  input=data.erwt3d output=/tmp/out
-erwt3d bench_ssd  input=data.erwt3d output=/tmp/out
-erwt3d convert    input=data.raw output=data.erwt3d nx=801 ny=2405 nz=2501
-erwt3d verify     raw=data.raw erwt3d=data.erwt3d nx=801 ny=2405 nz=2501
+./build/erwt3d_bench_contest --input data.erwt3d --output-dir out --hdd
+./build/erwt3d_convert --input data.raw --output data.erwt3d --nx 801 --ny 2405 --nz 2501
+./build/erwt3d_verify --raw data.raw --erwt3d data.erwt3d --nx 801 --ny 2405 --nz 2501
 ```
 
-## 参数
+## HDD 性能
 
-| 参数 | 说明 |
-|------|------|
-| `input=` | 输入文件 |
-| `output=` | 输出目录/文件 |
-| `nx=` `ny=` `nz=` | 数据维度 |
-| `random=` | 随机切片数 (默认 100) |
-| `continuous=` | 连续切片数 (默认 10) |
-| `threads=` | 线程数 |
-| `memory=` | 内存限制 (MB) |
-
-## 性能
-
-| 环境 | T_total (20G) |
-|------|---------------|
-| SSD | 0.0730s |
-| HDD | 0.8773s |
+| 数据集 | T_composite |
+|--------|-------------|
+| 20GB (801×2405×2501) | 94.11s |
+| 50GB (2001×2201×3000) | 223.43s |
 
 ## 文档
 
-- [存储结构](docs/design.md)
-- [索引原理](docs/index.md)
-- [算法实现](docs/implementation.md)
+- [存储结构与算法](docs/design.md)
 - [性能测试](docs/benchmark.md)
-  - [SSD 测试](docs/benchmark_ssd.md)
-  - [HDD 测试](docs/benchmark_hdd.md)
+- [赛题说明](docs/competiton_guide.md)
 
 ## 许可
 

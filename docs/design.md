@@ -1,4 +1,4 @@
-# 存储结构设计
+# 存储结构与算法
 
 ## 文件格式
 
@@ -27,20 +27,15 @@ leaf_id = morton3D(lx, ly, lz)
 file_offset = superblock_offset + leaf_id × 256
 ```
 
-**优势**: X/Y/Z 三轴访问均衡，无需冗余副本。
-
 ## 地址计算
 
 ```cpp
-// Superblock 偏移
 sb_idx = (sz * gridY + sy) * gridX + sx
 sb_offset = data_offset + sb_idx × 1MiB
-
-// Leaf 偏移
 leaf_offset = sb_offset + morton3D(lx, ly, lz) × 256B
 ```
 
-无需索引表，纯公式计算。
+无需索引表，纯公式计算，O(1) 定位。
 
 ## 存储比例
 
@@ -48,3 +43,15 @@ leaf_offset = sb_offset + morton3D(lx, ly, lz) × 256B
 |--------|----------|----------|------|
 | 20G (801×2405×2501) | 18.0 GB | 19.3 GB | 1.075x |
 | 50G (2001×2201×3000) | 49.2 GB | 51.3 GB | 1.044x |
+
+## Reader 流程
+
+```
+切片请求 → Plan → 排序 → 合并读取 → 解包 → 输出
+```
+
+1. **Plan**: 计算涉及的 superblocks 和 leaf blocks
+2. **排序**: 按文件偏移排序
+3. **合并**: 相邻读取合并为大块（128MB 窗口 + 1MB gap）
+4. **读取**: 单线程顺序 pread
+5. **解包**: 从 superblock 提取切片数据
