@@ -1,9 +1,10 @@
 #!/bin/bash
 # 正确性验证
+set -e
 
-raw = /mnt/f/zhoujiawang/CUP/cup_3d_small.dat
-erwt3d_file = /mnt/f/zhoujiawang/CUP/cup_3d_small.erwt3d
+RAW=/mnt/d/CUP/cup_3d_small.dat
+ERWT3D=/mnt/d/CUP/cup_3d_small.erwt3d
 
-erwt3d begin verify
-    erwt3d verify raw=$raw erwt3d=$erwt3d_file nx=801 ny=2405 nz=2501
-erwt3d end
+./build/erwt3d_verify --raw "$RAW" --erwt3d "$ERWT3D" --nx 801 --ny 2405 --nz 2501 --samples 100000
+
+echo "Verify done"

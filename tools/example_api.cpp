@@ -5,7 +5,7 @@ int main() {
     // ========== HDD 测试 ==========
     // 等价于: ./build/erwt3d_bench_contest -i data.erwt3d -o out --hdd
     {
-        auto cfg = erwt3d::hddConfig("/mnt/f/zhoujiawang/CUP/cup_3d_small.erwt3d", "/tmp/out_hdd");
+        auto cfg = erwt3d::hddConfig("/mnt/d/CUP/cup_3d_small.erwt3d", "/mnt/d/CUP/out_hdd");
         cfg.randomCount = 10;
         cfg.continuousCount = 5;
 

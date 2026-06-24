@@ -84,9 +84,22 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
     auto groupStart = std::chrono::high_resolution_clock::now();
 
     if (useBatch) {
-        // Batch mode: read slices in batches of batchSize, then write
-        const size_t batchSize = 20;  // Process 20 slices at a time
+        // Batch mode: globally sort all superblocks across slices, merge read windows
+        // Dynamic batch size: fit as many slices as memory allows (prefer all-in-one)
         size_t totalSlices = indices.size();
+        // Read buffer per thread = min(memoryLimitMB/nThreads, max(window, 4*SB))
+        uint64_t sbBytes = static_cast<uint64_t>(header.super_x) * header.super_y * header.super_z * sizeof(float);
+        uint64_t readWindow = wcfg.read_window_bytes > 0 ? wcfg.read_window_bytes : 128ULL * 1024 * 1024;
+        size_t readBufPerThread = static_cast<size_t>(
+            std::min<uint64_t>(memoryLimitMB * 1024ULL * 1024ULL / std::max(numThreads, 1),
+                               std::max(readWindow, sbBytes * 4)));
+        size_t totalReadBufMB = readBufPerThread * std::max(numThreads, 1) / (1024ULL * 1024ULL);
+        size_t outputBudgetMB = (memoryLimitMB > totalReadBufMB + 64)
+            ? memoryLimitMB - totalReadBufMB - 64
+            : memoryLimitMB / 2;
+        size_t maxBatch = (outputBudgetMB * 1024ULL * 1024ULL) / (outBytes + 1);
+        if (maxBatch < 1) maxBatch = 1;
+        size_t batchSize = std::min(totalSlices, maxBatch);
 
         for (size_t batchStart = 0; batchStart < totalSlices; batchStart += batchSize) {
             size_t batchEnd = std::min(batchStart + batchSize, totalSlices);

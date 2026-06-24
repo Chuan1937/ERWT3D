@@ -1,9 +1,12 @@
 #!/bin/bash
 # 完整 HDD 测试 (100 + 10)
+set -e
 
-input = /mnt/f/zhoujiawang/CUP/cup_3d_small.erwt3d
-output_dir = /tmp/test_hdd
+INPUT=/mnt/d/CUP/cup_3d_small.erwt3d
+OUT=/mnt/d/CUP/test_hdd/full_hdd
+mkdir -p "$OUT"
 
-erwt3d begin full_hdd
-    erwt3d bench_hdd input=$input output=$output_dir/full random=100 continuous=10
-erwt3d end
+./build/erwt3d_bench_contest --input "$INPUT" --output-dir "$OUT" \
+    --random-count 100 --continuous-count 10 --hdd
+
+echo "Done: $OUT"

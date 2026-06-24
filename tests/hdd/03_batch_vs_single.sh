@@ -1,9 +1,12 @@
 #!/bin/bash
 # Batch vs 逐切片对比
+set -e
 
-input = /mnt/f/zhoujiawang/CUP/cup_3d_small.erwt3d
-output_dir = /tmp/test_hdd
+INPUT=/mnt/d/CUP/cup_3d_small.erwt3d
+OUT=/mnt/d/CUP/test_hdd/batch_vs_single
+mkdir -p "$OUT"
 
-erwt3d begin batch_vs_single
-    erwt3d bench_hdd input=$input output=$output_dir/single random=10 continuous=5
-erwt3d end
+./build/erwt3d_bench_contest --input "$INPUT" --output-dir "$OUT" \
+    --random-count 10 --continuous-count 5 --hdd
+
+echo "Done: $OUT"

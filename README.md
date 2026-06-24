@@ -21,14 +21,15 @@ cmake --build build -j
 
 | 数据集 | T_composite |
 |--------|-------------|
-| 20GB (801×2405×2501) | 94.11s |
-| 50GB (2001×2201×3000) | 223.43s |
+| 20GB (801×2405×2501) | 34.42s |
+| 50GB (2001×2201×3000) | 87.67s |
 
 ## 文档
 
 - [存储结构与算法](docs/design.md)
 - [性能测试](docs/benchmark.md)
 - [赛题说明](docs/competiton_guide.md)
+- [变更日志](CHANGELOG.md)
 
 ## 许可
 
