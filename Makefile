@@ -1,6 +1,6 @@
 BUILD = build
 
-.PHONY: all build test test-hdd test-ssd clean
+.PHONY: all build test test-hdd clean
 
 all: build
 
@@ -15,15 +15,7 @@ test-hdd:
 	@for f in tests/hdd/*.sh; do \
 		echo ""; \
 		echo "--- $$f ---"; \
-		./erwt3d run $$f; \
-	done
-
-test-ssd:
-	@echo "=== SSD 测试 ==="
-	@for f in tests/ssd/*.sh; do \
-		echo ""; \
-		echo "--- $$f ---"; \
-		./erwt3d run $$f; \
+		bash $$f; \
 	done
 
 clean:

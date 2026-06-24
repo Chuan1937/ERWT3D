@@ -67,29 +67,19 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 
 - 单线程顺序读取（避免磁头抖动）
 - 文件偏移排序（`--sb-task-order file-offset`）
-- 大读窗口 + gap 容忍（`--hdd-read-window-bytes 33554432 --hdd-max-gap-bytes 1048576`）
-- 跨切片批量规划（`--hdd-batch-planner on`）
+- 大读窗口 + gap 容忍（`--hdd-read-window-bytes 134217728 --hdd-max-gap-bytes 1048576`）
+- 跨切片批量规划（`--hdd` 自动启用 dynamic batch size + 全局排序）
 - posix_fadvise(SEQUENTIAL) + readahead() 内核提示
 - X-panel 预存面板（`--panel-axis x --panel-stride 4`）
 
 ## 常用基准测试命令
 
 ```bash
-# HDD 基准（比赛模式）
+# HDD 基准（比赛模式，默认 --hdd：单线程 / 128MB 窗口 / 1MB gap / file-offset）
 ./build/erwt3d_bench_contest \
   --input data.erwt3d --output-dir bench_out \
   --random-count 100 --continuous-count 10 \
-  --threads 1 --io-backend sb --sb-parallel-mode serial \
-  --sb-read-mode hdd-read-window --sb-task-order file-offset \
-  --hdd-read-window-bytes 33554432 --hdd-max-gap-bytes 1048576 \
-  --memory-limit-mb 8192
-
-# SSD 基准
-./build/erwt3d_bench_contest \
-  --input data.erwt3d --output-dir bench_out \
-  --random-count 100 --continuous-count 10 \
-  --threads 8 --io-backend sb --sb-parallel-mode parallel-read \
-  --sb-task-order file-offset --memory-limit-mb 8192
+  --hdd
 
 # 转换并启用 X-panel
 ./build/erwt3d_convert \
@@ -102,8 +92,8 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 ./build/erwt3d_verify --raw data.raw --erwt3d data.erwt3d \
   --nx 801 --ny 2405 --nz 2501 --samples 100000
 
-# HDD 多配置扫描
-./scripts/bench_hdd.sh data.erwt3d sweep_results
+# HDD 多配置扫描（不同 memory-limit 扫描两个数据集）
+./scripts/bench_mem_sweep.sh
 ```
 
 ## 代码风格
