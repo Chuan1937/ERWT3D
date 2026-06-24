@@ -18,12 +18,9 @@ run_one() {
     echo "=========================================="
     echo "  [$LABEL] $ds -> $outdir"
     echo "=========================================="
-    local nx=$(echo $DIM | awk '{print $1}')
-    local ny=$(echo $DIM | awk '{print $2}')
-    local nz=$(echo $DIM | awk '{print $3}')
-    local ix=$((nx / 2))
-    local iy=$((ny / 2))
-    local iz=$((nz / 2))
+    local ix=$((NX / 2))
+    local iy=$((NY / 2))
+    local iz=$((NZ / 2))
 
     for spec in "X $ix" "Y $iy" "Z $iz"; do
         local axis=$(echo "$spec" | awk '{print $1}')

@@ -21,15 +21,11 @@ run_one() {
     echo "    output:  $out"
     echo "=========================================="
     ./build/erwt3d_convert --input "$RAW" --output "$out" \
-        --nx $(echo $DIM | awk '{print $1}') \
-        --ny $(echo $DIM | awk '{print $2}') \
-        --nz $(echo $DIM | awk '{print $3}') \
+        --nx $NX --ny $NY --nz $NZ \
         --threads 8 --memory-limit-mb 4096
     echo "Verifying..."
     ./build/erwt3d_verify --raw "$RAW" --erwt3d "$out" \
-        --nx $(echo $DIM | awk '{print $1}') \
-        --ny $(echo $DIM | awk '{print $2}') \
-        --nz $(echo $DIM | awk '{print $3}') \
+        --nx $NX --ny $NY --nz $NZ \
         --samples 100000
 }
 

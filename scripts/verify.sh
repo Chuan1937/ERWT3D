@@ -18,9 +18,7 @@ run_one() {
     echo "    erwt3d:  $ERWT"
     echo "=========================================="
     ./build/erwt3d_verify --raw "$RAW" --erwt3d "$ERWT" \
-        --nx $(echo $DIM | awk '{print $1}') \
-        --ny $(echo $DIM | awk '{print $2}') \
-        --nz $(echo $DIM | awk '{print $3}') \
+        --nx $NX --ny $NY --nz $NZ \
         --samples 100000
 }
 
