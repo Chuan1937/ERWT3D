@@ -11,11 +11,39 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 
 D盘机械硬盘，WSL 9p 挂载。配置：`--hdd`（128MB 读窗口，1MB gap，单线程）
 
-## 内存限制对比
+## 最新结果（X-plane 优化）
 
 ### 20GB（801×2405×2501）
 
-存储比 1.075x → 20/20 分
+| 测试项 | 无 X-plane | 有 X-plane | 提速 |
+|--------|-----------|------------|------|
+| X random (100片) | 74s | 25s | 2.9x |
+| Y random (100片) | 63s | 62s | — |
+| Z random (100片) | 58s | 58s | — |
+| X continuous (10片) | 6s | 1.6s | 3.8x |
+| Y continuous (10片) | 1.8s | 1.9s | — |
+| Z continuous (10片) | 1.7s | 2.0s | — |
+| **T_composite** | **31.95s** | **25.18s** | **21.2%** |
+
+存储比：2.075x → 15/20 分
+
+### 50GB（2001×2201×3000）
+
+| 测试项 | 无 X-plane | 有 X-plane | 提速 |
+|--------|-----------|------------|------|
+| X random (100片) | 167s | 29s | 5.7x |
+| Y random (100片) | 160s | 185s | -15% |
+| Z random (100片) | 151s | 157s | -4% |
+| X continuous (10片) | 6s | 1.7s | 3.5x |
+| Y continuous (10片) | 5s | 15s | -3x |
+| Z continuous (10片) | 4s | 4s | — |
+| **T_composite** | **82.37s** | **65.30s** | **20.7%** |
+
+存储比：~1.94x → 16/20 分
+
+## 内存限制对比（无 X-plane，基线）
+
+### 20GB
 
 | MemLimit | X random | Y random | Z random | X cont | Y cont | Z cont | T_composite |
 |----------|----------|----------|----------|--------|--------|--------|-------------|
@@ -26,9 +54,7 @@ D盘机械硬盘，WSL 9p 挂载。配置：`--hdd`（128MB 读窗口，1MB gap�
 | 32 GB | 75.61s | 62.29s | 58.39s | 6.71s | 1.99s | 1.97s | 34.50s |
 | 64 GB | 73.74s | 64.40s | 57.83s | 6.78s | 2.10s | 2.08s | 34.49s |
 
-### 50GB（2001×2201×3000）
-
-存储比 1.044x → 20/20 分
+### 50GB
 
 | MemLimit | X random | Y random | Z random | X cont | Y cont | Z cont | T_composite |
 |----------|----------|----------|----------|--------|--------|--------|-------------|
@@ -39,16 +65,15 @@ D盘机械硬盘，WSL 9p 挂载。配置：`--hdd`（128MB 读窗口，1MB gap�
 | 32 GB | 178.71s | 170.29s | 159.14s | 7.43s | 5.67s | 4.32s | 87.59s |
 | 64 GB | 182.75s | 176.81s | 158.31s | 7.30s | 5.73s | 4.32s | 89.21s |
 
-### 结论
-
-- **4GB 是拐点**：2GB 时 batch size 受限，无法一次装入全部 100 个切片，X random 显著变慢。≥4GB 后 all-in-one batch，性能稳定。
-- **4GB 以上无明显收益**：读缓冲区仅 ~128MB，输出缓冲区才是主要开销。≥4GB 已足够全部 100 片一次读入。
-- **推荐**：`--memory-limit-mb 4096` 即可，无需更大。
-
 ## 推荐命令
 
 ```bash
-./build/erwt3d_bench_contest --input data.erwt3d --output-dir out --hdd
-```
+# 转换（带 X-plane）
+./build/erwt3d_convert --input data.raw --output data.erwt3d \
+    --nx 801 --ny 2405 --nz 2501 --threads 8 --memory-limit-mb 4096
+./build/erwt3d_precompute_x --raw data.raw --erwt3d data.erwt3d \
+    --nx 801 --ny 2405 --nz 2501
 
-默认 `--hdd` 已设置 memory-limit-mb=4096，足够覆盖两个数据集。
+# 测试
+./build/erwt3d_bench_contest --input data_xp.erwt3d --output-dir out --hdd
+```

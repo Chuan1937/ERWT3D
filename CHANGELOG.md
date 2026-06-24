@@ -2,6 +2,24 @@
 
 本文件记录 ERWT3D 的重要变更。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.3.0] - 2026-06-25
+
+### Added
+
+- **X-plane 连续存储**：新增 `erwt3d_precompute_x` 工具，从 RAW 文件生成所有 X 切片的连续平面数据，追加到 ERWT3D 文件末尾。读取 X 切片时只需 1 次 pread（~23MB），替代原来 1520 次 1MB pread。
+- `readSlicesBatch` 中 X-plane 切片走快速路径，Y/Z 切片走正常 batch 路径，互不影响。
+
+### Performance
+
+D盘 HDD 实测（WSL 9p 挂载，温缓存）：
+
+| 数据集 | 无 X-plane | 有 X-plane | X random 提速 |
+|--------|-----------|------------|--------------|
+| 20GB | 31.95s | **25.18s** | 74s→25s (2.9x) |
+| 50GB | 82.37s | **65.30s** | 167s→29s (5.7x) |
+
+存储比：20GB 文件 2.075x (15/20pts)，50GB 文件 ~1.94x (16/20pts)。
+
 ## [0.2.0] - 2026-06-24
 
 ### Changed
