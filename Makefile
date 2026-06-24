@@ -1,6 +1,6 @@
 BUILD = build
 
-.PHONY: all build test test-hdd clean
+.PHONY: all build test bench verify clean
 
 all: build
 
@@ -8,15 +8,13 @@ build:
 	cmake -S . -B $(BUILD) -DCMAKE_BUILD_TYPE=Release
 	cmake --build $(BUILD) -j
 
-test: test-hdd
+test: verify
 
-test-hdd:
-	@echo "=== HDD 测试 ==="
-	@for f in tests/hdd/*.sh; do \
-		echo ""; \
-		echo "--- $$f ---"; \
-		bash $$f; \
-	done
+verify:
+	bash scripts/verify.sh
+
+bench:
+	bash scripts/benchmark.sh
 
 clean:
 	rm -rf $(BUILD)
