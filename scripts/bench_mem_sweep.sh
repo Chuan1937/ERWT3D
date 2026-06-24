@@ -1,13 +1,14 @@
 #!/bin/bash
+# 内存限制扫描（2/4/8/16/32/64 GB × 20GB/50GB）
 set -e
 
-SMALL="/mnt/d/CUP/cup_3d_small.erwt3d"
-BIG="/mnt/d/CUP/cup_3d_big.erwt3d"
-OUTDIR="/mnt/d/CUP/bench_mem_sweep"
-BIN="./build/erwt3d_bench_contest"
-RESULT="$OUTDIR/results.csv"
+SMALL=/mnt/d/CUP/cup_3d_small.erwt3d
+BIG=/mnt/d/CUP/cup_3d_big.erwt3d
+OUT=/mnt/d/CUP/test_hdd/mem_sweep
+BIN=./build/erwt3d_bench_contest
+RESULT="$OUT/results.csv"
+mkdir -p "$OUT"
 
-mkdir -p "$OUTDIR"
 echo "dataset,mem_mb,x_random,y_random,z_random,x_cont,y_cont,z_cont,T_composite" > "$RESULT"
 
 TOTAL=12
@@ -16,19 +17,18 @@ DONE=0
 run_one() {
     local ds="$1" label="$2" mem="$3"
     DONE=$((DONE + 1))
-    local od="$OUTDIR/${label}_${mem}gb"
+    local od="$OUT/${label}_${mem}gb"
     mkdir -p "$od"
-    echo "" >&2
-    echo "========================================" >&2
-    echo "  [$DONE/$TOTAL] $label  memory=${mem}GB" >&2
-    echo "========================================" >&2
+    echo ""
+    echo "========================================"
+    echo "  [$DONE/$TOTAL] $label  memory=${mem}GB"
+    echo "========================================"
     local out
     out=$("$BIN" --input "$ds" --output-dir "$od" \
         --random-count 100 --continuous-count 10 \
         --hdd --memory-limit-mb "$((mem * 1024))" --seed 20260511 2>&1)
-    # Print only group lines for progress
-    echo "$out" | grep -E '^\s*\[[1-6]/6\]' >&2
-    echo "$out" | grep 'T_composite = total' >&2
+    echo "$out" | grep -E '^\s*\[[1-6]/6\]'
+    echo "$out" | grep 'T_composite = total'
     local csv="$od/contest_summary.csv"
     if [ -f "$csv" ]; then
         local xr=$(sed -n '2p' "$csv" | cut -d',' -f5)
@@ -43,20 +43,9 @@ run_one() {
     rm -rf "$od"
 }
 
-run_one "$SMALL" "20GB" 2
-run_one "$SMALL" "20GB" 4
-run_one "$SMALL" "20GB" 8
-run_one "$SMALL" "20GB" 16
-run_one "$SMALL" "20GB" 32
-run_one "$SMALL" "20GB" 64
+for mem in 2 4 8 16 32 64; do run_one "$SMALL" "20GB" "$mem"; done
+for mem in 2 4 8 16 32 64; do run_one "$BIG"   "50GB" "$mem"; done
 
-run_one "$BIG" "50GB" 2
-run_one "$BIG" "50GB" 4
-run_one "$BIG" "50GB" 8
-run_one "$BIG" "50GB" 16
-run_one "$BIG" "50GB" 32
-run_one "$BIG" "50GB" 64
-
-echo "" >&2
-echo "=== ALL DONE ===" >&2
+echo ""
+echo "=== RESULTS ==="
 column -t -s',' "$RESULT"
