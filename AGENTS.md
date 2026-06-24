@@ -16,11 +16,6 @@ cmake --build build -j
 # 开启 CPU 原生优化
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DERWT3D_NATIVE_OPT=ON
 cmake --build build -j
-
-# 运行单元测试
-./build/test_roundtrip
-./build/test_morton
-./build/test_slice
 ```
 
 ## 核心二进制

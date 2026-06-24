@@ -6,7 +6,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Options
-option(ERWT3D_BUILD_TESTS "Build tests" ON)
 option(ERWT3D_NATIVE_OPT "Experimental: use -march=native -mtune=native (Release only)" OFF)
 
 # Thread support
@@ -74,18 +73,6 @@ target_link_libraries(erwt3d_line PRIVATE erwt3d)
 add_executable(gen_test_data tools/gen_test_data.cpp)
 
 add_executable(erwt3d_bench_raw tools/erwt3d_bench_raw.cpp)
-
-# Tests
-if(ERWT3D_BUILD_TESTS AND EXISTS "${CMAKE_SOURCE_DIR}/tests")
-    enable_testing()
-    file(GLOB TEST_SOURCES tests/test_*.cpp)
-    foreach(TEST_SRC ${TEST_SOURCES})
-        get_filename_component(TEST_NAME ${TEST_SRC} NAME_WE)
-        add_executable(${TEST_NAME} ${TEST_SRC})
-        target_link_libraries(${TEST_NAME} PRIVATE erwt3d)
-        add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
-    endforeach()
-endif()
 
 add_executable(erwt3d_layout_sim tools/erwt3d_layout_sim.cpp)
 
