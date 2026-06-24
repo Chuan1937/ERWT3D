@@ -320,7 +320,7 @@ bool executeSBPlanHDDReadWindow(int fd, const SBTaskPlan& plan, const ERWT3DHead
             const auto& win = windows[wi];
 
             // HDD优化: 预取后续多个窗口，确保磁头连续运动
-            for (int ahead = 1; ahead <= 3; ++ahead) {
+            for (int ahead = 1; ahead <= 10; ++ahead) {
                 if (wi + ahead < endW) {
                     const auto& futureWin = windows[wi + ahead];
                     if (futureWin.file_offset > win.file_offset) {
@@ -471,7 +471,7 @@ bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr
             const auto& win = wins[wi];
 
             // HDD优化: 预取后续多个窗口
-            for (int ahead = 1; ahead <= 3; ++ahead) {
+            for (int ahead = 1; ahead <= 10; ++ahead) {
                 if (wi + ahead < ew) {
                     const auto& futureWin = wins[wi + ahead];
                     if (futureWin.fo > win.fo) {
