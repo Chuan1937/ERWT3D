@@ -14,6 +14,7 @@ constexpr uint32_t DTYPE_FLOAT32 = 1;
 constexpr uint64_t FLAG_HAS_X_PANELS = 1ULL << 0;
 constexpr uint64_t FLAG_HAS_Y_PANELS = 1ULL << 1;
 constexpr uint64_t FLAG_HAS_Z_PANELS = 1ULL << 2;
+constexpr uint64_t FLAG_HAS_X_PLANES = 1ULL << 3;
 
 // Default block sizes
 constexpr uint32_t DEFAULT_SUPER_X = 64;
@@ -122,6 +123,9 @@ inline bool hasXPanels(const ERWT3DHeader& h) { return (h.flags & FLAG_HAS_X_PAN
 inline bool hasYPanels(const ERWT3DHeader& h) { return (h.flags & FLAG_HAS_Y_PANELS) != 0; }
 inline bool hasZPanels(const ERWT3DHeader& h) { return (h.flags & FLAG_HAS_Z_PANELS) != 0; }
 inline bool hasAnyPanels(const ERWT3DHeader& h) { return (h.flags & (FLAG_HAS_X_PANELS|FLAG_HAS_Y_PANELS|FLAG_HAS_Z_PANELS)) != 0; }
+inline bool hasXPlanes(const ERWT3DHeader& h) { return (h.flags & FLAG_HAS_X_PLANES) != 0; }
+inline uint64_t getXPlaneOffset(const ERWT3DHeader& h) { return h.reserved[16]; }
+inline uint64_t getXPlaneCount(const ERWT3DHeader& h) { return h.reserved[17]; }
 
 inline uint32_t getPanelStrideX(const ERWT3DHeader& h) { return static_cast<uint32_t>(h.reserved[0]); }
 inline uint32_t getPanelStrideY(const ERWT3DHeader& h) { return static_cast<uint32_t>(h.reserved[1]); }

@@ -602,6 +602,28 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
 
     auto planStart = std::chrono::high_resolution_clock::now();
 
+    // Try X-plane fast path (single pread for entire X slice)
+    if (axis == SliceAxis::X && hasXPlanes(header_)) {
+        uint64_t planeOffset = getXPlaneOffset(header_);
+        uint64_t planeCount = getXPlaneCount(header_);
+        if (index < planeCount) {
+            uint64_t planeBytes = header_.ny * header_.nz * sizeof(float);
+            uint64_t off = planeOffset + index * planeBytes;
+            ssize_t n = pread(fd_, output, planeBytes, off);
+            if (n == static_cast<ssize_t>(planeBytes)) {
+                if (profileIO_) {
+                    lastProfile_ = IOProfile{};
+                    lastProfile_.panel_hit = true;
+                    lastProfile_.pread_calls = 1;
+                    lastProfile_.bytes_read = planeBytes;
+                    lastProfile_.output_bytes = planeBytes;
+                }
+                return true;
+            }
+        }
+        // Fall through to SB if plane miss
+    }
+
     // Try X-panel fast path
     if (axis == SliceAxis::X && hasXPanels(header_)) {
         bool panelOk = tryReadSliceXPanels(fd_, header_, index, output,
@@ -668,10 +690,27 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
                                     int numThreads, size_t memoryLimitMB,
                                     const HDDReadWindowConfig& wcfg) {
     if (fd_ < 0 || requests.empty()) return false;
-    std::vector<SBTaskPlan> plans; plans.reserve(requests.size());
-    std::vector<float*> outputs; outputs.reserve(requests.size());
-    std::vector<const SBTaskPlan*> pp; pp.reserve(requests.size());
-    for (const auto& r : requests) {
+
+    // Split: X-plane slices read via fast path, rest via batch
+    std::vector<SBTaskPlan> plans;
+    std::vector<float*> outputs;
+    std::vector<const SBTaskPlan*> pp;
+    std::vector<size_t> batchIdx; // indices into requests for batch path
+
+    for (size_t i = 0; i < requests.size(); ++i) {
+        const auto& r = requests[i];
+        // Try X-plane fast path first
+        if (r.axis == SliceAxis::X && hasXPlanes(header_)) {
+            uint64_t planeOffset = getXPlaneOffset(header_);
+            uint64_t planeCount = getXPlaneCount(header_);
+            if (r.index < planeCount) {
+                uint64_t planeBytes = header_.ny * header_.nz * sizeof(float);
+                uint64_t off = planeOffset + r.index * planeBytes;
+                ssize_t n = pread(fd_, r.output, planeBytes, off);
+                if (n == static_cast<ssize_t>(planeBytes)) continue;
+            }
+        }
+        // Fall through to batch path
         SBTaskPlan p;
         switch (r.axis) {
             case SliceAxis::Z: p = buildSBPlanZ(header_, r.index); break;
@@ -679,8 +718,12 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
             case SliceAxis::X: p = buildSBPlanX(header_, r.index); break;
         }
         if (sbTaskOrder_ == SBTaskOrder::FileOffset) sortTasksByFileOffset(p);
-        plans.push_back(std::move(p)); outputs.push_back(r.output);
+        plans.push_back(std::move(p));
+        outputs.push_back(r.output);
+        batchIdx.push_back(i);
     }
+
+    if (plans.empty()) return true;
     for (auto& p : plans) pp.push_back(&p);
     return executeSBBatchHDD(fd_, buildSBBatchPlan(pp), header_, outputs.data(),
                               1, memoryLimitMB, wcfg, pinThreads_, nullptr);
