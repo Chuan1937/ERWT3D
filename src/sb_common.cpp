@@ -27,6 +27,12 @@ SBTaskPlan buildSBPlanZ(const ERWT3DHeader& hdr, uint64_t z) {
     const uint64_t lpx = leafsPerX(hdr), lpy = leafsPerY(hdr);
     uint64_t superZ = z / sz, leafZ = (z % sz) / lz, inLeafZ = (z % sz) % lz;
 
+    const uint64_t maxTasks = sgY * sgX;
+    const uint64_t maxLeaves = maxTasks * lpy * lpx;
+    plan.tasks.reserve(maxTasks);
+    plan.leaf_data.reserve(maxLeaves * 4);
+    plan.leaf_out.reserve(maxLeaves * 4);
+
     for (uint64_t syi = 0; syi < sgY; ++syi) {
         for (uint64_t sxi = 0; sxi < sgX; ++sxi) {
             uint64_t sbIdx = (superZ * sgY + syi) * sgX + sxi;
@@ -82,6 +88,12 @@ SBTaskPlan buildSBPlanY(const ERWT3DHeader& hdr, uint64_t y) {
     const uint64_t lpx = leafsPerX(hdr), lpz = leafsPerZ(hdr);
     uint64_t superY = y / sy, leafY = (y % sy) / ly, inLeafY = (y % sy) % ly;
 
+    const uint64_t maxTasks = sgZ * sgX;
+    const uint64_t maxLeaves = maxTasks * lpz * lpx;
+    plan.tasks.reserve(maxTasks);
+    plan.leaf_data.reserve(maxLeaves * 4);
+    plan.leaf_out.reserve(maxLeaves * 4);
+
     for (uint64_t szi = 0; szi < sgZ; ++szi) {
         for (uint64_t sxi = 0; sxi < sgX; ++sxi) {
             uint64_t sbIdx = (szi * sgY + superY) * sgX + sxi;
@@ -136,6 +148,12 @@ SBTaskPlan buildSBPlanX(const ERWT3DHeader& hdr, uint64_t x) {
     const uint64_t sgX = getSuperGridX(hdr), sgY = getSuperGridY(hdr), sgZ = getSuperGridZ(hdr);
     const uint64_t lpy = leafsPerY(hdr), lpz = leafsPerZ(hdr);
     uint64_t superX = x / sx, leafX = (x % sx) / lx, inLeafX = (x % sx) % lx;
+
+    const uint64_t maxTasks = sgZ * sgY;
+    const uint64_t maxLeaves = maxTasks * lpz * lpy;
+    plan.tasks.reserve(maxTasks);
+    plan.leaf_data.reserve(maxLeaves * 4);
+    plan.leaf_out.reserve(maxLeaves * 4);
 
     for (uint64_t szi = 0; szi < sgZ; ++szi) {
         for (uint64_t syi = 0; syi < sgY; ++syi) {
@@ -212,26 +230,20 @@ void unpackLeaves(const ERWT3DHeader& hdr, const SBTaskPlan& plan,
             for (uint32_t outer = 0; outer < v_outer; ++outer) {
                 const float* __restrict__ src = leaf + (srcBase + outer) * lx;
                 float* __restrict__ dst = output + out_base + outer * out_stride;
-                for (uint32_t inner = 0; inner < v_inner; ++inner)
-                    dst[inner] = src[inner];
+                std::memcpy(dst, src, v_inner * sizeof(float));
             }
         } else if (plan.axis == 1) {
             for (uint32_t outer = 0; outer < v_outer; ++outer) {
                 const float* __restrict__ src = leaf + (outer * ly + param) * lx;
                 float* __restrict__ dst = output + out_base + outer * out_stride;
-                for (uint32_t inner = 0; inner < v_inner; ++inner)
-                    dst[inner] = src[inner];
+                std::memcpy(dst, src, v_inner * sizeof(float));
             }
         } else {
-            // X-slice: param=inLeafX, outer=z, inner=y
-            // Gather from stride-lx pattern: load 4 contiguous X values per row
             for (uint32_t outer = 0; outer < v_outer; ++outer) {
                 const float* __restrict__ src = leaf + (outer * ly) * lx + param;
                 float* __restrict__ dst = output + out_base + outer * out_stride;
-                for (uint32_t inner = 0; inner < v_inner; ++inner) {
-                    const float* row = src + inner * lx;
-                    dst[inner] = row[0];
-                }
+                for (uint32_t inner = 0; inner < v_inner; ++inner)
+                    dst[inner] = src[inner * lx];
             }
         }
     }

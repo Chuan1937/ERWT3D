@@ -141,15 +141,15 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
         }
     } else {
         // Sequential mode: read and write one slice at a time
+        // Pre-allocate output buffer
+        std::vector<float> output(sliceSize);
+        
         for (size_t i = 0; i < indices.size(); ++i) {
-            std::vector<float> output(sliceSize);
-
             auto t0 = std::chrono::high_resolution_clock::now();
             if (!reader.readSlice(axis, indices[i], output.data(), numThreads, memoryLimitMB)) {
                 std::cerr << "\nError: readSlice failed for " << axisName << "[" << indices[i] << "]\n";
                 return false;
             }
-            auto t1 = std::chrono::high_resolution_clock::now();
 
             // Write to standard raw format
             std::string outPath = outputDir + "/" + axisName + "_" + mode + "_" + std::to_string(i) + ".raw";
@@ -230,8 +230,8 @@ int main(int argc, char* argv[]) {
             ioBackendStr = "sb";
             sbReadModeStr = "hdd-read-window";
             sbTaskOrderStr = "file-offset";
-            hddReadWindowBytes = 134217728;  // 128MB
-            hddMaxGapBytes = 1048576;       // 1MB
+            hddReadWindowBytes = 67108864;  // 64MB
+            hddMaxGapBytes = 524288;        // 512KB
             useBatch = true;
         }
         else if (std::strcmp(argv[i], "--baseline-ms") == 0) { baselineMsOverride = std::stod(next()); }

@@ -68,12 +68,10 @@ std::vector<Window> buildWindows(const uint64_t* offsets, size_t n,
 
 inline void prefetchWindows(int fd, const std::vector<Window>& wins,
                              size_t curIdx, size_t endIdx, int count) {
-    for (int ahead = 1; ahead <= count; ++ahead) {
-        if (curIdx + ahead < endIdx) {
-            const auto& fw = wins[curIdx + ahead];
-            if (fw.file_offset > wins[curIdx].file_offset)
-                readahead(fd, fw.file_offset, fw.read_bytes);
-        }
+    for (int ahead = 1; ahead <= count && curIdx + ahead < endIdx; ++ahead) {
+        const auto& fw = wins[curIdx + ahead];
+        if (fw.file_offset > wins[curIdx].file_offset)
+            readahead(fd, fw.file_offset, fw.read_bytes);
     }
 }
 
@@ -341,7 +339,7 @@ bool executeSBPlanHDDReadWindow(int fd, const SBTaskPlan& plan, const ERWT3DHead
         for (size_t wi = startW; wi < endW; ++wi) {
             const auto& win = windows[wi];
 
-            prefetchWindows(fd, windows, wi, endW, 10);
+            prefetchWindows(fd, windows, wi, endW, 20);
 
             if (win.read_bytes > maxBufPerThread) {
                 uint64_t winOff = win.file_offset;
@@ -475,7 +473,7 @@ bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr
         for (size_t wi = sw; wi < ew; ++wi) {
             const auto& win = wins[wi];
 
-            prefetchWindows(fd, wins, wi, ew, 10);
+            prefetchWindows(fd, wins, wi, ew, 20);
 
             if (win.read_bytes > mbpt) {
                 uint64_t wo = win.file_offset, rem = win.read_bytes; size_t ti = win.first_task;
