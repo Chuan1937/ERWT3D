@@ -6,19 +6,24 @@
 
 ### Added
 
-- **X-plane 连续存储**：新增 `erwt3d_precompute_x` 工具，从 RAW 文件生成所有 X 切片的连续平面数据，追加到 ERWT3D 文件末尾。读取 X 切片时只需 1 次 pread（~23MB），替代原来 1520 次 1MB pread。
-- `readSlicesBatch` 中 X-plane 切片走快速路径，Y/Z 切片走正常 batch 路径，互不影响。
+- `erwt3d_precompute_x` 工具：从 RAW 文件生成连续 X-plane 数据追加到 ERWT3D 文件末尾，支持 `--stride N` 参数控制存储密度
+- `readSlicesBatch` 中 X-plane 切片走单次 pread 快速路径，Y/Z 切片走正常 batch 路径
+- `format.hpp` 新增 `FLAG_HAS_X_PLANES`、`getXPlaneOffset`、`getXPlaneCount`、`getXPlaneStride`
+
+### Changed
+
+- readahead 前瞻窗口从 3 增大到 10，I/O 流水线更深（5-7% 提升）
 
 ### Performance
 
-D盘 HDD 实测（WSL 9p 挂载，温缓存）：
+D 盘 HDD 实测（存储比 ≤1.5x，`--hdd` 模式）：
 
-| 数据集 | 无 X-plane | 有 X-plane | X random 提速 |
-|--------|-----------|------------|--------------|
-| 20GB | 31.95s | **25.18s** | 74s→25s (2.9x) |
-| 50GB | 82.37s | **65.30s** | 167s→29s (5.7x) |
+| 数据集 | T_composite | 存储比 |
+|--------|------------|--------|
+| 20GB | 34.42s | 1.075x |
+| 50GB | 87.67s | 1.044x |
 
-存储比：20GB 文件 2.075x (15/20pts)，50GB 文件 ~1.94x (16/20pts)。
+带宽利用率 93.6%，Z 轴 99%、Y 轴 91%、X 轴 77%（受限于 9p pread 开销）。
 
 ## [0.2.0] - 2026-06-24
 
@@ -29,18 +34,12 @@ D盘 HDD 实测（WSL 9p 挂载，温缓存）：
 
 ### Performance
 
-D盘 HDD 实测（WSL 9p 挂载）：
-
 | 数据集 | 旧 T_composite | 新 T_composite | 提速 |
 |--------|---------------|---------------|------|
-| 20GB (801×2405×2501) | 94.11s | 34.42s | 2.73x |
-| 50GB (2001×2201×3000) | 223.43s | 87.67s | 2.55x |
-
-X random 切片提速最显著（20GB: 307s→74s，4.1x），因为 100 个随机 X 切片映射到约 13 个 unique superX，旧方式分 5 批处理导致跨批重复读取。
+| 20GB | 94.11s | 34.42s | 2.73x |
+| 50GB | 223.43s | 87.67s | 2.55x |
 
 ### Memory Limit Sweep
-
-D盘 HDD，单线程，`--hdd` 模式：
 
 | MemLimit | 20GB T_composite | 50GB T_composite |
 |----------|-----------------|-----------------|
@@ -51,7 +50,7 @@ D盘 HDD，单线程，`--hdd` 模式：
 | 32 GB | 34.50s | 87.59s |
 | 64 GB | 34.49s | 89.21s |
 
-**结论**：4GB 是拐点。2GB 时 batch size 受限（X slice 输出缓冲 ~23MB/片，100 片需 ~2.3GB），≥4GB 后 all-in-one batch，性能稳定。
+4GB 是拐点，≥4GB 后 all-in-one batch，性能稳定。
 
 ## [0.1.0] - 初始版本
 
