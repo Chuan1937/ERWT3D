@@ -49,6 +49,8 @@ void LeafCache::put(uint64_t key, const void* data, size_t size) {
         index_.erase(last.key);
         lruList_.pop_back();
     }
+
+    if (currentSize_ + size > maxSize_) return;
     
     // Add new entry
     CacheEntry entry;

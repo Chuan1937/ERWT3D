@@ -107,6 +107,12 @@ private:
     
     bool readSliceSB(SliceAxis axis, uint64_t index, float* output,
                       int numThreads, size_t memoryLimitMB);
+
+    bool readLineBatched(const std::vector<Extent>& extents,
+                         const std::vector<uint64_t>& extentBases,
+                         uint64_t srcOff, uint64_t srcStride,
+                         uint64_t dimLen, uint64_t elemStride,
+                         float* output, int numThreads, size_t memoryLimitMB);
 };
 
 } // namespace erwt3d

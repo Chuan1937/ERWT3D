@@ -187,7 +187,8 @@ SBTaskPlan buildSBPlanX(const ERWT3DHeader& hdr, uint64_t x) {
 // ============================================================================
 
 void unpackLeaves(const ERWT3DHeader& hdr, const SBTaskPlan& plan,
-                  const SBTask& task, const uint8_t* sbBuf, float* output) {
+                  const SBTask& task, const uint8_t* __restrict__ sbBuf,
+                  float* __restrict__ output) {
     const uint64_t lx = hdr.leaf_x, ly = hdr.leaf_y;
     const uint64_t lfBV = lfBytes(hdr);
 
@@ -204,29 +205,33 @@ void unpackLeaves(const ERWT3DHeader& hdr, const SBTaskPlan& plan,
         uint32_t v_inner    = plan.leaf_out[loOff + 2];
         uint32_t v_outer    = plan.leaf_out[loOff + 3];
 
-        const float* leaf = reinterpret_cast<const float*>(sbBuf + morton * lfBV);
+        const float* __restrict__ leaf = reinterpret_cast<const float*>(sbBuf + morton * lfBV);
 
         if (plan.axis == 2) {
-            // Z-slice: param=inLeafZ, outer=y, inner=x
             uint64_t srcBase = param * ly;
             for (uint32_t outer = 0; outer < v_outer; ++outer) {
-                const float* src = leaf + (srcBase + outer) * lx;
+                const float* __restrict__ src = leaf + (srcBase + outer) * lx;
+                float* __restrict__ dst = output + out_base + outer * out_stride;
                 for (uint32_t inner = 0; inner < v_inner; ++inner)
-                    output[out_base + outer * out_stride + inner] = src[inner];
+                    dst[inner] = src[inner];
             }
         } else if (plan.axis == 1) {
-            // Y-slice: param=inLeafY, outer=z, inner=x
             for (uint32_t outer = 0; outer < v_outer; ++outer) {
-                const float* src = leaf + (outer * ly + param) * lx;
+                const float* __restrict__ src = leaf + (outer * ly + param) * lx;
+                float* __restrict__ dst = output + out_base + outer * out_stride;
                 for (uint32_t inner = 0; inner < v_inner; ++inner)
-                    output[out_base + outer * out_stride + inner] = src[inner];
+                    dst[inner] = src[inner];
             }
         } else {
             // X-slice: param=inLeafX, outer=z, inner=y
+            // Gather from stride-lx pattern: load 4 contiguous X values per row
             for (uint32_t outer = 0; outer < v_outer; ++outer) {
-                const float* src = leaf + (outer * ly) * lx + param;
-                for (uint32_t inner = 0; inner < v_inner; ++inner)
-                    output[out_base + outer * out_stride + inner] = src[inner * lx];
+                const float* __restrict__ src = leaf + (outer * ly) * lx + param;
+                float* __restrict__ dst = output + out_base + outer * out_stride;
+                for (uint32_t inner = 0; inner < v_inner; ++inner) {
+                    const float* row = src + inner * lx;
+                    dst[inner] = row[0];
+                }
             }
         }
     }

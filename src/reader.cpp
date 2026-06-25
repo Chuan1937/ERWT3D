@@ -213,7 +213,7 @@ bool ERWT3DReader::readLineX(uint64_t y, uint64_t z, float* output,
             flush = true;
         }
         if (batchStart < i) {
-            size_t batchEnd = flush ? i : i;
+            size_t batchEnd = i;
             uint64_t bufSz = 0;
             for (size_t j = batchStart; j < batchEnd; ++j) bufSz += mergedExtents[j].size;
             std::vector<uint8_t> buf(bufSz);
@@ -290,60 +290,7 @@ bool ERWT3DReader::readLineY(uint64_t x, uint64_t z, float* output,
         }
     }
     if (extents.empty()) return true;
-
-    auto merged = mergeExtents(extents);
-    size_t maxBuf = memoryLimitMB * 1024 * 1024;
-    if (maxBuf == 0) maxBuf = 1024 * 1024;
-    uint64_t srcOff = inLeafZ * ly * lx + inLeafX; // (inLeafZ * ly + 0) * lx + inLeafX
-    size_t totalSize = 0; for (auto& e : merged) totalSize += e.size;
-
-    if (totalSize <= maxBuf) {
-        std::vector<uint8_t> buf(totalSize);
-        if (numThreads <= 1) { if (!readExtents(merged, buf.data())) return false; }
-        else { if (!readExtentsThreaded(merged, buf.data(), numThreads)) return false; }
-        for (size_t i = 0; i < extents.size(); ++i) {
-            uint64_t bo = 0; for (size_t j = 0; j < merged.size(); ++j) {
-                if (extents[i].offset >= merged[j].offset && extents[i].offset < merged[j].end()) {
-                    const float* ld = reinterpret_cast<const float*>(buf.data() + bo + (extents[i].offset - merged[j].offset));
-                    uint64_t by = extentBaseY[i], vly = std::min(ly, ny - by);
-                    for (uint64_t dy = 0; dy < vly; ++dy)
-                        output[by + dy] = ld[dy * lx + srcOff];
-                    break;
-                }
-                bo += merged[j].size;
-            }
-        }
-        return true;
-    }
-
-    // Batched
-    uint64_t batchSz = 0; size_t bs = 0;
-    for (size_t i = 0; i <= merged.size(); ++i) {
-        bool flush = (i == merged.size());
-        if (!flush) { uint64_t nxt = batchSz + merged[i].size; if (nxt <= maxBuf) { batchSz = nxt; continue; } if (batchSz == 0) { batchSz = merged[i].size; continue; } flush = true; }
-        if (bs < i) {
-            size_t be = flush ? i : i; uint64_t bsz = 0;
-            for (size_t j = bs; j < be; ++j) bsz += merged[j].size;
-            std::vector<uint8_t> buf2(bsz);
-            std::vector<Extent> bext(merged.begin() + bs, merged.begin() + be);
-            uint64_t bo2 = 0;
-            for (const auto& e : bext) { if (!readOneExtent(e.offset, e.size, buf2.data() + bo2)) return false; bo2 += e.size; }
-            bo2 = 0;
-            for (size_t j = bs; j < be; ++j) {
-                for (size_t k = 0; k < extents.size(); ++k) {
-                    if (extents[k].offset >= merged[j].offset && extents[k].offset < merged[j].end()) {
-                        const float* ld = reinterpret_cast<const float*>(buf2.data() + bo2 + (extents[k].offset - merged[j].offset));
-                        uint64_t by = extentBaseY[k], vly = std::min(ly, ny - by);
-                        for (uint64_t dy = 0; dy < vly; ++dy)
-                            output[by + dy] = ld[dy * lx + srcOff];
-                    }
-                }
-                bo2 += merged[j].size;
-            }
-        }
-        bs = i; batchSz = 0; if (!flush) batchSz = merged[i].size;
-    }
-    return true;
+    return readLineBatched(extents, extentBaseY, inLeafZ * ly * lx + inLeafX, lx, ny, ly, output, numThreads, memoryLimitMB);
 }
 
 // --- readLineZ: fixed x,y, varying z ---
@@ -381,60 +328,7 @@ bool ERWT3DReader::readLineZ(uint64_t x, uint64_t y, float* output,
         }
     }
     if (extents.empty()) return true;
-
-    auto merged = mergeExtents(extents);
-    size_t maxBuf = memoryLimitMB * 1024 * 1024;
-    if (maxBuf == 0) maxBuf = 1024 * 1024;
-    uint64_t srcOff = (inLeafY * lx + inLeafX); // (0 * ly + inLeafY) * lx + inLeafX for z=0
-    size_t totalSize = 0; for (auto& e : merged) totalSize += e.size;
-
-    if (totalSize <= maxBuf) {
-        std::vector<uint8_t> buf(totalSize);
-        if (numThreads <= 1) { if (!readExtents(merged, buf.data())) return false; }
-        else { if (!readExtentsThreaded(merged, buf.data(), numThreads)) return false; }
-        for (size_t i = 0; i < extents.size(); ++i) {
-            uint64_t bo = 0; for (size_t j = 0; j < merged.size(); ++j) {
-                if (extents[i].offset >= merged[j].offset && extents[i].offset < merged[j].end()) {
-                    const float* ld = reinterpret_cast<const float*>(buf.data() + bo + (extents[i].offset - merged[j].offset));
-                    uint64_t bz = extentBaseZ[i], vlz = std::min(lz, nz - bz);
-                    for (uint64_t dz = 0; dz < vlz; ++dz)
-                        output[bz + dz] = ld[dz * ly * lx + srcOff];
-                    break;
-                }
-                bo += merged[j].size;
-            }
-        }
-        return true;
-    }
-
-    // Batched
-    uint64_t batchSz = 0; size_t bs = 0;
-    for (size_t i = 0; i <= merged.size(); ++i) {
-        bool flush = (i == merged.size());
-        if (!flush) { uint64_t nxt = batchSz + merged[i].size; if (nxt <= maxBuf) { batchSz = nxt; continue; } if (batchSz == 0) { batchSz = merged[i].size; continue; } flush = true; }
-        if (bs < i) {
-            size_t be = flush ? i : i; uint64_t bsz = 0;
-            for (size_t j = bs; j < be; ++j) bsz += merged[j].size;
-            std::vector<uint8_t> buf2(bsz);
-            std::vector<Extent> bext(merged.begin() + bs, merged.begin() + be);
-            uint64_t bo2 = 0;
-            for (const auto& e : bext) { if (!readOneExtent(e.offset, e.size, buf2.data() + bo2)) return false; bo2 += e.size; }
-            bo2 = 0;
-            for (size_t j = bs; j < be; ++j) {
-                for (size_t k = 0; k < extents.size(); ++k) {
-                    if (extents[k].offset >= merged[j].offset && extents[k].offset < merged[j].end()) {
-                        const float* ld = reinterpret_cast<const float*>(buf2.data() + bo2 + (extents[k].offset - merged[j].offset));
-                        uint64_t bz = extentBaseZ[k], vlz = std::min(lz, nz - bz);
-                        for (uint64_t dz = 0; dz < vlz; ++dz)
-                            output[bz + dz] = ld[dz * ly * lx + srcOff];
-                    }
-                }
-                bo2 += merged[j].size;
-            }
-        }
-        bs = i; batchSz = 0; if (!flush) batchSz = merged[i].size;
-    }
-    return true;
+    return readLineBatched(extents, extentBaseZ, inLeafY * lx + inLeafX, ly * lx, nz, lz, output, numThreads, memoryLimitMB);
 }
 
 // --- readFull (for tests/small volumes) ---
@@ -511,7 +405,7 @@ bool ERWT3DReader::readFull(float* output, int numThreads, size_t memoryLimitMB)
     return true;
 }
 
-// --- readFullToFile (streaming) ---
+// --- readFullToFile (streaming, mmap output) ---
 bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads, size_t memoryLimitMB) {
     if (fd_ < 0) return false;
     
@@ -539,6 +433,45 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
     uint64_t rawSize = nx * ny * nz * sizeof(float);
     if (ftruncate(outFd, rawSize) != 0) { close(outFd); return false; }
     
+    // mmap output file for scatter writes without pwrite overhead
+    float* outMap = static_cast<float*>(mmap(nullptr, rawSize, PROT_WRITE, MAP_SHARED, outFd, 0));
+    if (outMap == MAP_FAILED) {
+        // Fallback to pwrite if mmap fails
+        std::vector<uint8_t> superBuffer(superBytes);
+        for (uint64_t szi = 0; szi < getSuperGridZ(header_); ++szi) {
+            for (uint64_t syi = 0; syi < getSuperGridY(header_); ++syi) {
+                for (uint64_t sxi = 0; sxi < getSuperGridX(header_); ++sxi) {
+                    uint64_t superIdx = (szi * getSuperGridY(header_) + syi) * getSuperGridX(header_) + sxi;
+                    ssize_t rd = pread(fd_, superBuffer.data(), superBytes, header_.data_offset + superIdx * superBytes);
+                    if (rd != static_cast<ssize_t>(superBytes)) { close(outFd); return false; }
+                    uint64_t startX = sxi * sx, startY = syi * sy, startZ = szi * sz;
+                    for (uint64_t lzi = 0; lzi < leafsPerSuperZ; ++lzi) {
+                        for (uint64_t lyi = 0; lyi < leafsPerSuperY; ++lyi) {
+                            for (uint64_t lxi = 0; lxi < leafsPerSuperX; ++lxi) {
+                                uint64_t leafMorton = morton3D(lxi, lyi, lzi);
+                                const float* ld = reinterpret_cast<const float*>(superBuffer.data() + leafMorton * leafBytes);
+                                uint64_t bx = startX + lxi * lx, by = startY + lyi * ly, bz = startZ + lzi * lz;
+                                uint64_t vx = std::min(lx, nx - bx);
+                                for (uint64_t z = 0; z < lz; ++z) {
+                                    uint64_t gz = bz + z; if (gz >= nz) break;
+                                    for (uint64_t y = 0; y < ly; ++y) {
+                                        uint64_t gy = by + y; if (gy >= ny) break;
+                                        uint64_t off = ((gz * ny + gy) * nx + bx) * sizeof(float);
+                                        pwrite(outFd, ld + (z * ly + y) * lx, vx * sizeof(float), off);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        close(outFd);
+        return true;
+    }
+    
+    madvise(outMap, rawSize, MADV_SEQUENTIAL);
+    
     std::vector<uint8_t> superBuffer(superBytes);
     
     for (uint64_t szi = 0; szi < getSuperGridZ(header_); ++szi) {
@@ -548,7 +481,9 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
                 uint64_t superOffset = header_.data_offset + superIdx * superBytes;
                 
                 ssize_t bytesRead = pread(fd_, superBuffer.data(), superBytes, superOffset);
-                if (bytesRead != static_cast<ssize_t>(superBytes)) { close(outFd); return false; }
+                if (bytesRead != static_cast<ssize_t>(superBytes)) {
+                    munmap(outMap, rawSize); close(outFd); return false;
+                }
                 
                 uint64_t startX = sxi * sx, startY = syi * sy, startZ = szi * sz;
                 
@@ -556,27 +491,21 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
                     for (uint64_t lyi = 0; lyi < leafsPerSuperY; ++lyi) {
                         for (uint64_t lxi = 0; lxi < leafsPerSuperX; ++lxi) {
                             uint64_t leafMorton = morton3D(lxi, lyi, lzi);
-                            if (lxi >= leafsPerSuperX || lyi >= leafsPerSuperY || lzi >= leafsPerSuperZ) continue;
                             const float* leafData = reinterpret_cast<const float*>(
                                 superBuffer.data() + leafMorton * leafBytes);
                             
                             uint64_t baseX = startX + lxi * lx;
                             uint64_t baseY = startY + lyi * ly;
                             uint64_t baseZ = startZ + lzi * lz;
+                            uint64_t validLx = std::min(lx, nx - baseX);
                             
                             for (uint64_t z = 0; z < lz; ++z) {
                                 uint64_t globalZ = baseZ + z; if (globalZ >= nz) break;
                                 for (uint64_t y = 0; y < ly; ++y) {
                                     uint64_t globalY = baseY + y; if (globalY >= ny) break;
-                                    uint64_t globalX = baseX; if (globalX >= nx) break;
-                                    uint64_t validLx = std::min(lx, nx - globalX);
-                                    uint64_t srcIdx = (z * ly + y) * lx;
-                                    uint64_t fileOffset = ((globalZ * ny + globalY) * nx + globalX) * sizeof(float);
-                                    
-                                    ssize_t written = pwrite(outFd, leafData + srcIdx, validLx * sizeof(float), fileOffset);
-                                    if (written != static_cast<ssize_t>(validLx * sizeof(float))) {
-                                        close(outFd); return false;
-                                    }
+                                    float* dst = outMap + (globalZ * ny + globalY) * nx + baseX;
+                                    const float* src = leafData + (z * ly + y) * lx;
+                                    std::memcpy(dst, src, validLx * sizeof(float));
                                 }
                             }
                         }
@@ -586,6 +515,8 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
         }
     }
     
+    msync(outMap, rawSize, MS_ASYNC);
+    munmap(outMap, rawSize);
     if (close(outFd) != 0) return false;
     return true;
 }
@@ -611,14 +542,23 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
             if (planeIdx < planeCount) {
                 uint64_t planeBytes = header_.ny * header_.nz * sizeof(float);
                 uint64_t off = getXPlaneOffset(header_) + planeIdx * planeBytes;
+                posix_fadvise(fd_, off, planeBytes, POSIX_FADV_WILLNEED);
+                auto readStart = std::chrono::high_resolution_clock::now();
                 ssize_t n = pread(fd_, output, planeBytes, off);
+                auto readEnd = std::chrono::high_resolution_clock::now();
                 if (n == static_cast<ssize_t>(planeBytes)) {
+                    auto planEnd = std::chrono::high_resolution_clock::now();
+                    double planMs = std::chrono::duration<double, std::milli>(planEnd - planStart).count();
+                    double readMs = std::chrono::duration<double, std::milli>(readEnd - readStart).count();
                     if (profileIO_) {
                         lastProfile_ = IOProfile{};
                         lastProfile_.panel_hit = true;
                         lastProfile_.pread_calls = 1;
                         lastProfile_.bytes_read = planeBytes;
                         lastProfile_.output_bytes = planeBytes;
+                        lastProfile_.superblocks_touched = 1;
+                        lastProfile_.plan_time_ms = planMs - readMs;
+                        lastProfile_.read_time_ms = readMs;
                     }
                     return true;
                 }
@@ -629,12 +569,17 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
 
     // Try X-panel fast path
     if (axis == SliceAxis::X && hasXPanels(header_)) {
+        posix_fadvise(fd_, 0, 0, POSIX_FADV_SEQUENTIAL);
+        auto readStart = std::chrono::high_resolution_clock::now();
         bool panelOk = tryReadSliceXPanels(fd_, header_, index, output,
                                            profileIO_ ? &lastProfile_ : nullptr);
+        auto readEnd = std::chrono::high_resolution_clock::now();
         if (panelOk) {
             auto planEnd = std::chrono::high_resolution_clock::now();
             double planMs = std::chrono::duration<double, std::milli>(planEnd - planStart).count();
-            lastProfile_.plan_time_ms = planMs;
+            double readMs = std::chrono::duration<double, std::milli>(readEnd - readStart).count();
+            lastProfile_.plan_time_ms = planMs - readMs;
+            lastProfile_.read_time_ms = readMs;
             return true;
         }
         // Fall through to SB if panel miss
@@ -716,6 +661,11 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
                 }
             }
         }
+        // Try X-panel fast path
+        if (r.axis == SliceAxis::X && hasXPanels(header_)) {
+            if (tryReadSliceXPanels(fd_, header_, r.index, r.output, nullptr))
+                continue;
+        }
         // Fall through to batch path
         SBTaskPlan p;
         switch (r.axis) {
@@ -778,6 +728,64 @@ bool ERWT3DReader::readExtentsThreaded(const std::vector<Extent>& extents, void*
         if (!f.get()) return false;
     }
     
+    return true;
+}
+
+bool ERWT3DReader::readLineBatched(const std::vector<Extent>& extents,
+                                    const std::vector<uint64_t>& extentBases,
+                                    uint64_t srcOff, uint64_t srcStride,
+                                    uint64_t dimLen, uint64_t elemStride,
+                                    float* output, int numThreads, size_t memoryLimitMB) {
+    auto merged = mergeExtents(extents);
+    size_t maxBuf = memoryLimitMB * 1024 * 1024;
+    if (maxBuf == 0) maxBuf = 1024 * 1024;
+    size_t totalSize = 0; for (auto& e : merged) totalSize += e.size;
+
+    if (totalSize <= maxBuf) {
+        std::vector<uint8_t> buf(totalSize);
+        if (numThreads <= 1) { if (!readExtents(merged, buf.data())) return false; }
+        else { if (!readExtentsThreaded(merged, buf.data(), numThreads)) return false; }
+        for (size_t i = 0; i < extents.size(); ++i) {
+            uint64_t bo = 0; for (size_t j = 0; j < merged.size(); ++j) {
+                if (extents[i].offset >= merged[j].offset && extents[i].offset < merged[j].end()) {
+                    const float* ld = reinterpret_cast<const float*>(buf.data() + bo + (extents[i].offset - merged[j].offset));
+                    uint64_t base = extentBases[i], valid = std::min(elemStride, dimLen - base);
+                    for (uint64_t d = 0; d < valid; ++d)
+                        output[base + d] = ld[d * srcStride + srcOff];
+                    break;
+                }
+                bo += merged[j].size;
+            }
+        }
+        return true;
+    }
+
+    uint64_t batchSz = 0; size_t bs = 0;
+    for (size_t i = 0; i <= merged.size(); ++i) {
+        bool flush = (i == merged.size());
+        if (!flush) { uint64_t nxt = batchSz + merged[i].size; if (nxt <= maxBuf) { batchSz = nxt; continue; } if (batchSz == 0) { batchSz = merged[i].size; continue; } flush = true; }
+        if (bs < i) {
+            size_t be = i; uint64_t bsz = 0;
+            for (size_t j = bs; j < be; ++j) bsz += merged[j].size;
+            std::vector<uint8_t> buf2(bsz);
+            std::vector<Extent> bext(merged.begin() + bs, merged.begin() + be);
+            uint64_t bo2 = 0;
+            for (const auto& e : bext) { if (!readOneExtent(e.offset, e.size, buf2.data() + bo2)) return false; bo2 += e.size; }
+            bo2 = 0;
+            for (size_t j = bs; j < be; ++j) {
+                for (size_t k = 0; k < extents.size(); ++k) {
+                    if (extents[k].offset >= merged[j].offset && extents[k].offset < merged[j].end()) {
+                        const float* ld = reinterpret_cast<const float*>(buf2.data() + bo2 + (extents[k].offset - merged[j].offset));
+                        uint64_t base = extentBases[k], valid = std::min(elemStride, dimLen - base);
+                        for (uint64_t d = 0; d < valid; ++d)
+                            output[base + d] = ld[d * srcStride + srcOff];
+                    }
+                }
+                bo2 += merged[j].size;
+            }
+        }
+        bs = i; batchSz = 0; if (!flush) batchSz = merged[i].size;
+    }
     return true;
 }
 

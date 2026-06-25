@@ -12,6 +12,8 @@
 #include <filesystem>
 #include <thread>
 #include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 static void printUsage(const char* prog) {
     std::cerr << "Usage: " << prog << " --input data.erwt3d --output-dir DIR [options]\n\n"
@@ -123,14 +125,14 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
             // Write all slices in this batch
             for (size_t i = 0; i < batchLen; ++i) {
                 std::string outPath = outputDir + "/" + axisName + "_" + mode + "_" + std::to_string(batchStart + i) + ".raw";
-                std::ofstream outFile(outPath, std::ios::binary);
-                if (!outFile) {
+                int wfd = open(outPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                if (wfd < 0) {
                     std::cerr << "\nError: Cannot write " << outPath << "\n";
                     return false;
                 }
-                outFile.write(reinterpret_cast<const char*>(buffers[i].data()), outBytes);
-                outFile.close();
-                if (!outFile.good()) {
+                ssize_t written = write(wfd, buffers[i].data(), outBytes);
+                close(wfd);
+                if (written != static_cast<ssize_t>(outBytes)) {
                     std::cerr << "\nError: Write failed for " << outPath << "\n";
                     return false;
                 }
@@ -151,14 +153,14 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
 
             // Write to standard raw format
             std::string outPath = outputDir + "/" + axisName + "_" + mode + "_" + std::to_string(i) + ".raw";
-            std::ofstream outFile(outPath, std::ios::binary);
-            if (!outFile) {
+            int wfd = open(outPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (wfd < 0) {
                 std::cerr << "\nError: Cannot write " << outPath << "\n";
                 return false;
             }
-            outFile.write(reinterpret_cast<const char*>(output.data()), outBytes);
-            outFile.close();
-            if (!outFile.good()) {
+            ssize_t written = write(wfd, output.data(), outBytes);
+            close(wfd);
+            if (written != static_cast<ssize_t>(outBytes)) {
                 std::cerr << "\nError: Write failed for " << outPath << "\n";
                 return false;
             }

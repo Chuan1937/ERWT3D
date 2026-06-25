@@ -26,6 +26,59 @@ namespace erwt3d {
 
 using namespace detail;
 
+namespace {
+
+struct Window {
+    uint64_t file_offset;
+    uint64_t read_bytes;
+    size_t first_task;
+    size_t task_count;
+};
+
+std::vector<Window> buildWindows(const uint64_t* offsets, size_t n,
+                                  uint64_t sbBV, uint64_t rwBytes, uint64_t gapBytes) {
+    std::vector<Window> windows;
+    for (size_t i = 0; i < n; ) {
+        Window w;
+        w.file_offset = offsets[i];
+        w.first_task = i;
+        w.task_count = 1;
+        w.read_bytes = sbBV;
+        while (i + w.task_count < n) {
+            uint64_t nextOff = offsets[i + w.task_count];
+            uint64_t curEnd = w.file_offset + w.read_bytes;
+            if (nextOff < curEnd) { ++w.task_count; continue; }
+            uint64_t gap = nextOff - curEnd;
+            uint64_t extended = curEnd + gap + sbBV - w.file_offset;
+            if (gap == 0 && extended <= rwBytes) {
+                w.read_bytes += sbBV;
+                ++w.task_count;
+            } else if (gap > 0 && gap <= gapBytes && extended <= rwBytes) {
+                w.read_bytes += gap + sbBV;
+                ++w.task_count;
+            } else {
+                break;
+            }
+        }
+        windows.push_back(w);
+        i += w.task_count;
+    }
+    return windows;
+}
+
+inline void prefetchWindows(int fd, const std::vector<Window>& wins,
+                             size_t curIdx, size_t endIdx, int count) {
+    for (int ahead = 1; ahead <= count; ++ahead) {
+        if (curIdx + ahead < endIdx) {
+            const auto& fw = wins[curIdx + ahead];
+            if (fw.file_offset > wins[curIdx].file_offset)
+                readahead(fd, fw.file_offset, fw.read_bytes);
+        }
+    }
+}
+
+} // anonymous namespace
+
 // ============================================================================
 // RunBatch: Merge contiguous superblock reads
 //
@@ -271,42 +324,11 @@ bool executeSBPlanHDDReadWindow(int fd, const SBTaskPlan& plan, const ERWT3DHead
     const uint64_t rwBytes = cfg.read_window_bytes > 0 ? cfg.read_window_bytes : 128 * 1024 * 1024;
     const uint64_t gapBytes = cfg.max_gap_bytes > 0 ? cfg.max_gap_bytes : 1024 * 1024;
 
-    // HDD优化: 提示内核顺序访问模式
     posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
 
-    struct Window {
-        uint64_t file_offset;
-        uint64_t read_bytes;
-        size_t first_task;
-        size_t task_count;
-    };
-    std::vector<Window> windows;
-
-    for (size_t i = 0; i < n; ) {
-        Window w;
-        w.file_offset = plan.tasks[i].file_offset;
-        w.first_task = i;
-        w.task_count = 1;
-        w.read_bytes = sbBV;
-        while (i + w.task_count < n) {
-            uint64_t nextOff = plan.tasks[i + w.task_count].file_offset;
-            uint64_t curEnd = w.file_offset + w.read_bytes;
-            if (nextOff < curEnd) { ++w.task_count; continue; }
-            uint64_t gap = nextOff - curEnd;
-            uint64_t extended = curEnd + gap + sbBV - w.file_offset;
-            if (gap == 0 && extended <= rwBytes) {
-                w.read_bytes += sbBV;
-                ++w.task_count;
-            } else if (gap > 0 && gap <= gapBytes && extended <= rwBytes) {
-                w.read_bytes += gap + sbBV;
-                ++w.task_count;
-            } else {
-                break;
-            }
-        }
-        windows.push_back(w);
-        i += w.task_count;
-    }
+    std::vector<uint64_t> offsets(n);
+    for (size_t i = 0; i < n; ++i) offsets[i] = plan.tasks[i].file_offset;
+    auto windows = buildWindows(offsets.data(), n, sbBV, rwBytes, gapBytes);
 
     size_t maxWinBytes = 0;
     for (const auto& w : windows) maxWinBytes = std::max(maxWinBytes, w.read_bytes);
@@ -319,15 +341,7 @@ bool executeSBPlanHDDReadWindow(int fd, const SBTaskPlan& plan, const ERWT3DHead
         for (size_t wi = startW; wi < endW; ++wi) {
             const auto& win = windows[wi];
 
-            // HDD优化: 预取后续多个窗口，确保磁头连续运动
-            for (int ahead = 1; ahead <= 10; ++ahead) {
-                if (wi + ahead < endW) {
-                    const auto& futureWin = windows[wi + ahead];
-                    if (futureWin.file_offset > win.file_offset) {
-                        readahead(fd, futureWin.file_offset, futureWin.read_bytes);
-                    }
-                }
-            }
+            prefetchWindows(fd, windows, wi, endW, 10);
 
             if (win.read_bytes > maxBufPerThread) {
                 uint64_t winOff = win.file_offset;
@@ -428,40 +442,31 @@ bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr
     if (n == 0) return true;
     if (numThreads <= 1) numThreads = 1;
 
+    // Guard: multi-thread with shared output buffers causes data races.
+    // Different windows may contain tasks for the same output_id.
+    if (numThreads > 1 && batch.plans.size() > 1) {
+        numThreads = 1;
+    }
+
     const uint64_t rwB = wcfg.read_window_bytes > 0 ? wcfg.read_window_bytes : 128 * 1024 * 1024;
     const uint64_t gapB = wcfg.max_gap_bytes > 0 ? wcfg.max_gap_bytes : 1024 * 1024;
 
-    // HDD优化: 提示内核顺序访问模式
     posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
 
-    struct Win { uint64_t fo, rb; size_t ft, tc; };
-    std::vector<Win> wins;
-    for (size_t i = 0; i < n; ) {
-        Win w; w.fo = batch.batch_tasks[i].file_offset; w.ft = i; w.tc = 1; w.rb = sbBV;
-        while (i + w.tc < n) {
-            uint64_t no = batch.batch_tasks[i + w.tc].file_offset;
-            uint64_t ce = w.fo + w.rb;
-            if (no < ce) { ++w.tc; continue; }
-            uint64_t g = no - ce;
-            uint64_t ext = ce + g + sbBV - w.fo;
-            if (g == 0 && ext <= rwB) { w.rb += sbBV; ++w.tc; }
-            else if (g > 0 && g <= gapB && ext <= rwB) { w.rb += g + sbBV; ++w.tc; }
-            else break;
-        }
-        wins.push_back(w); i += w.tc;
-    }
-    size_t mwb = 0; for (auto& w : wins) mwb = std::max(mwb, w.rb);
+    std::vector<uint64_t> offsets(n);
+    for (size_t i = 0; i < n; ++i) offsets[i] = batch.batch_tasks[i].file_offset;
+    auto wins = buildWindows(offsets.data(), n, sbBV, rwB, gapB);
+    size_t mwb = 0; for (auto& w : wins) mwb = std::max(mwb, w.read_bytes);
     size_t mbpt = memoryLimitMB * 1024ULL * 1024ULL / static_cast<size_t>(numThreads);
     if (mbpt < sbBV) return false;
     mbpt = std::min(mbpt, std::max(mwb, sbBV * 4));
 
-    // Profile: compute from windows before execution
     if (profile) {
         profile->windows_count = wins.size();
-        profile->superblocks_decoded = batch.batch_tasks.size(); // one SB per task
+        profile->superblocks_decoded = batch.batch_tasks.size();
         for (auto& w : wins) {
-            profile->bytes_actual_read += w.rb;
-            profile->pread_calls += (w.rb > mbpt) ? (w.rb + mbpt - 1) / mbpt : 1;
+            profile->bytes_actual_read += w.read_bytes;
+            profile->pread_calls += (w.read_bytes > mbpt) ? (w.read_bytes + mbpt - 1) / mbpt : 1;
         }
     }
 
@@ -470,23 +475,15 @@ bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr
         for (size_t wi = sw; wi < ew; ++wi) {
             const auto& win = wins[wi];
 
-            // HDD优化: 预取后续多个窗口
-            for (int ahead = 1; ahead <= 10; ++ahead) {
-                if (wi + ahead < ew) {
-                    const auto& futureWin = wins[wi + ahead];
-                    if (futureWin.fo > win.fo) {
-                        readahead(fd, futureWin.fo, futureWin.rb);
-                    }
-                }
-            }
+            prefetchWindows(fd, wins, wi, ew, 10);
 
-            if (win.rb > mbpt) {
-                uint64_t wo = win.fo, rem = win.rb; size_t ti = win.ft;
+            if (win.read_bytes > mbpt) {
+                uint64_t wo = win.file_offset, rem = win.read_bytes; size_t ti = win.first_task;
                 size_t mtpc = mbpt / sbBV; if (mtpc == 0) return false;
                 while (rem > 0) {
-                    size_t ttc = std::min(static_cast<size_t>(win.tc - (ti - win.ft)), mtpc);
+                    size_t ttc = std::min(static_cast<size_t>(win.task_count - (ti - win.first_task)), mtpc);
                     uint64_t chunk = ttc * sbBV;
-                    if (pread(fd, buf.data(), chunk, wo + (ti - win.ft) * sbBV) != static_cast<ssize_t>(chunk))
+                    if (pread(fd, buf.data(), chunk, wo + (ti - win.first_task) * sbBV) != static_cast<ssize_t>(chunk))
                         return false;
                     for (size_t j = 0; j < ttc; ++j) {
                         const auto& bt = batch.batch_tasks[ti + j];
@@ -496,10 +493,10 @@ bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr
                     ti += ttc; rem -= chunk;
                 }
             } else {
-                if (pread(fd, buf.data(), win.rb, win.fo) != static_cast<ssize_t>(win.rb)) return false;
-                for (size_t j = 0; j < win.tc; ++j) {
-                    const auto& bt = batch.batch_tasks[win.ft + j];
-                    uint64_t toff = bt.file_offset - win.fo;
+                if (pread(fd, buf.data(), win.read_bytes, win.file_offset) != static_cast<ssize_t>(win.read_bytes)) return false;
+                for (size_t j = 0; j < win.task_count; ++j) {
+                    const auto& bt = batch.batch_tasks[win.first_task + j];
+                    uint64_t toff = bt.file_offset - win.file_offset;
                     SBTask t{bt.file_offset, bt.first_leaf, bt.leaf_count};
                     unpackLeaves(hdr, *bt.plan, t, buf.data() + toff, outputs[bt.output_id]);
                 }

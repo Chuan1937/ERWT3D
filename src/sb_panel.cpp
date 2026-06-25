@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <vector>
 #include <unistd.h>
+#include <fcntl.h>
 
 namespace erwt3d {
 
@@ -42,17 +43,29 @@ bool tryReadSliceXPanels(int fd, const ERWT3DHeader& hdr, uint64_t x,
     uint64_t panelDataOff = getPanelDataOffset(hdr);
     uint64_t ny = hdr.ny, nz = hdr.nz;
 
+    uint32_t panelsPerSB = hdr.super_x / stride;
+
+    // Batch: read all panels for this superblock in one pread
+    // This minimizes 9p pread overhead (the dominant cost)
+    uint32_t batchCount = panelsPerSB;
+    uint64_t batchBytes = batchCount * planeBytes;
+    uint32_t panelIdxInBatch = static_cast<uint32_t>(panelIdx);
+
+    std::vector<uint8_t> batchBuf(batchBytes);
+
     uint64_t totalRead = 0, sbCount = 0;
-    std::vector<float> plane(hdr.super_y * hdr.super_z);
 
     for (uint64_t szi = 0; szi < sgZ; ++szi) {
         for (uint64_t syi = 0; syi < sgY; ++syi) {
             uint64_t sbIdx = (szi * sgY + syi) * sgX + superX;
             if (sbIdx >= sgX * sgY * sgZ) continue;
             uint64_t sbPanelOff = panelDataOff + sbIdx * sbPanelBytes + panelIdx * planeBytes;
-            if (pread(fd, plane.data(), planeBytes, sbPanelOff) != static_cast<ssize_t>(planeBytes))
+            if (pread(fd, batchBuf.data(), batchBytes, sbPanelOff) != static_cast<ssize_t>(batchBytes))
                 return false;
-            totalRead += planeBytes; ++sbCount;
+            totalRead += batchBytes; ++sbCount;
+
+            const float* plane = reinterpret_cast<const float*>(
+                batchBuf.data() + panelIdxInBatch * planeBytes);
 
             uint64_t dz = szi * hdr.super_z, dy = syi * hdr.super_y;
             uint64_t vz = std::min(static_cast<uint64_t>(hdr.super_z), nz - dz);
@@ -93,7 +106,10 @@ bool tryReadSliceXPanelsParallel(int fd, const ERWT3DHeader& hdr, uint64_t x,
     if (totalSB == 0) return true;
     size_t nThreads = std::max(1, numThreads);
 
-    // Build per-superblock task list for YZ plane
+    uint32_t panelsPerSB = hdr.super_x / stride;
+    uint32_t batchCount = panelsPerSB;
+    uint64_t batchBytes = batchCount * planeBytes;
+
     struct PanelTask { uint64_t sbIdx; uint64_t dy; uint64_t dz; uint64_t vy; uint64_t vz; };
     std::vector<PanelTask> ptasks;
     for (uint64_t szi = 0; szi < sgZ; ++szi) {
@@ -117,12 +133,13 @@ bool tryReadSliceXPanelsParallel(int fd, const ERWT3DHeader& hdr, uint64_t x,
         futures.push_back(pool.submit([&, t]() -> bool {
             size_t start = t * total / nThreads;
             size_t end = (t + 1) * total / nThreads;
-            std::vector<float> plane(hdr.super_y * hdr.super_z);
+            std::vector<uint8_t> buf(batchBytes);
             for (size_t i = start; i < end; ++i) {
                 const auto& pt = ptasks[i];
                 uint64_t off = panelDataOff + pt.sbIdx * sbPanelBytes + panelIdx * planeBytes;
-                if (pread(fd, plane.data(), planeBytes, off) != static_cast<ssize_t>(planeBytes))
+                if (pread(fd, buf.data(), batchBytes, off) != static_cast<ssize_t>(batchBytes))
                     return false;
+                const float* plane = reinterpret_cast<const float*>(buf.data());
                 for (uint64_t z = 0; z < pt.vz; ++z)
                     for (uint64_t y = 0; y < pt.vy; ++y)
                         output[(pt.dz + z) * ny + (pt.dy + y)] = plane[z * hdr.super_y + y];
@@ -138,7 +155,7 @@ bool tryReadSliceXPanelsParallel(int fd, const ERWT3DHeader& hdr, uint64_t x,
         profile->superblocks_touched = total;
         profile->panel_hit = true;
         profile->pread_calls = total;
-        profile->bytes_read = total * planeBytes;
+        profile->bytes_read = total * batchBytes;
         profile->output_bytes = ny * nz * sizeof(float);
     }
     return true;
