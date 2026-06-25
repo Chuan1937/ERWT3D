@@ -126,6 +126,7 @@ inline bool hasAnyPanels(const ERWT3DHeader& h) { return (h.flags & (FLAG_HAS_X_
 inline bool hasXPlanes(const ERWT3DHeader& h) { return (h.flags & FLAG_HAS_X_PLANES) != 0; }
 inline uint64_t getXPlaneOffset(const ERWT3DHeader& h) { return h.reserved[16]; }
 inline uint64_t getXPlaneCount(const ERWT3DHeader& h) { return h.reserved[17]; }
+inline uint32_t getXPlaneStride(const ERWT3DHeader& h) { return h.reserved[18] ? static_cast<uint32_t>(h.reserved[18]) : 1; }
 
 inline uint32_t getPanelStrideX(const ERWT3DHeader& h) { return static_cast<uint32_t>(h.reserved[0]); }
 inline uint32_t getPanelStrideY(const ERWT3DHeader& h) { return static_cast<uint32_t>(h.reserved[1]); }

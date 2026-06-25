@@ -604,21 +604,24 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
 
     // Try X-plane fast path (single pread for entire X slice)
     if (axis == SliceAxis::X && hasXPlanes(header_)) {
-        uint64_t planeOffset = getXPlaneOffset(header_);
-        uint64_t planeCount = getXPlaneCount(header_);
-        if (index < planeCount) {
-            uint64_t planeBytes = header_.ny * header_.nz * sizeof(float);
-            uint64_t off = planeOffset + index * planeBytes;
-            ssize_t n = pread(fd_, output, planeBytes, off);
-            if (n == static_cast<ssize_t>(planeBytes)) {
-                if (profileIO_) {
-                    lastProfile_ = IOProfile{};
-                    lastProfile_.panel_hit = true;
-                    lastProfile_.pread_calls = 1;
-                    lastProfile_.bytes_read = planeBytes;
-                    lastProfile_.output_bytes = planeBytes;
+        uint32_t stride = getXPlaneStride(header_);
+        if (index % stride == 0) {
+            uint64_t planeIdx = index / stride;
+            uint64_t planeCount = getXPlaneCount(header_);
+            if (planeIdx < planeCount) {
+                uint64_t planeBytes = header_.ny * header_.nz * sizeof(float);
+                uint64_t off = getXPlaneOffset(header_) + planeIdx * planeBytes;
+                ssize_t n = pread(fd_, output, planeBytes, off);
+                if (n == static_cast<ssize_t>(planeBytes)) {
+                    if (profileIO_) {
+                        lastProfile_ = IOProfile{};
+                        lastProfile_.panel_hit = true;
+                        lastProfile_.pread_calls = 1;
+                        lastProfile_.bytes_read = planeBytes;
+                        lastProfile_.output_bytes = planeBytes;
+                    }
+                    return true;
                 }
-                return true;
             }
         }
         // Fall through to SB if plane miss
@@ -701,13 +704,16 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
         const auto& r = requests[i];
         // Try X-plane fast path first
         if (r.axis == SliceAxis::X && hasXPlanes(header_)) {
-            uint64_t planeOffset = getXPlaneOffset(header_);
-            uint64_t planeCount = getXPlaneCount(header_);
-            if (r.index < planeCount) {
-                uint64_t planeBytes = header_.ny * header_.nz * sizeof(float);
-                uint64_t off = planeOffset + r.index * planeBytes;
-                ssize_t n = pread(fd_, r.output, planeBytes, off);
-                if (n == static_cast<ssize_t>(planeBytes)) continue;
+            uint32_t stride = getXPlaneStride(header_);
+            if (r.index % stride == 0) {
+                uint64_t planeIdx = r.index / stride;
+                uint64_t planeCount = getXPlaneCount(header_);
+                if (planeIdx < planeCount) {
+                    uint64_t planeBytes = header_.ny * header_.nz * sizeof(float);
+                    uint64_t off = getXPlaneOffset(header_) + planeIdx * planeBytes;
+                    ssize_t n = pread(fd_, r.output, planeBytes, off);
+                    if (n == static_cast<ssize_t>(planeBytes)) continue;
+                }
             }
         }
         // Fall through to batch path
