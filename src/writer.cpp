@@ -198,7 +198,7 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
     std::vector<uint8_t> compBuf;
     if (compress) {
 #ifdef ERWT3D_HAVE_LZ4
-        compIndex.reserve(totalSB);
+        compIndex.resize(totalSB);
         leafBuf.resize(sbBytes);
         compBuf.resize(LZ4_compressBound(static_cast<int>(sbBytes)));
         std::cout << "Compression: lz4, sb_bytes=" << sbBytes << std::endl;
@@ -330,8 +330,29 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
 
                     if (compress) {
                         writeLeavesToBuffer(leafBuf.data(), header, sbBuffers[sbIdx]);
-                        compressAndWrite(leafBuf.data(), sbBytes, compBuf.data(),
-                                         static_cast<int>(compBuf.size()), outFile, compIndex);
+                        CompressedBlockIndex entry;
+#ifdef ERWT3D_HAVE_LZ4
+                        int compSize = LZ4_compress_default(
+                            reinterpret_cast<const char*>(leafBuf.data()),
+                            reinterpret_cast<char*>(compBuf.data()),
+                            static_cast<int>(sbBytes),
+                            static_cast<int>(compBuf.size()));
+                        if (compSize > 0 && static_cast<uint64_t>(compSize) < sbBytes * 95 / 100) {
+                            entry.file_offset = static_cast<uint64_t>(outFile.tellp());
+                            entry.compressed_size = static_cast<uint32_t>(compSize);
+                            entry.is_compressed = 1;
+                            std::memset(entry.padding, 0, sizeof(entry.padding));
+                            outFile.write(reinterpret_cast<const char*>(compBuf.data()), compSize);
+                        } else
+#endif
+                        {
+                            entry.file_offset = static_cast<uint64_t>(outFile.tellp());
+                            entry.compressed_size = static_cast<uint32_t>(sbBytes);
+                            entry.is_compressed = 0;
+                            std::memset(entry.padding, 0, sizeof(entry.padding));
+                            outFile.write(reinterpret_cast<const char*>(leafBuf.data()), sbBytes);
+                        }
+                        compIndex[idx] = entry;
                     } else {
                         uint64_t offset = sbOffsets[idx];
                         outFile.seekp(offset);
