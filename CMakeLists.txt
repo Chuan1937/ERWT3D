@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Options
-option(ERWT3D_NATIVE_OPT "Experimental: use -march=native -mtune=native (Release only)" OFF)
+option(ERWT3D_NATIVE_OPT "Use -march=native -mtune=native (Release only)" ON)
 
 # Thread support
 find_package(Threads REQUIRED)

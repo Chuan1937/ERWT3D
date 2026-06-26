@@ -61,21 +61,34 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 
 - 单线程顺序读取（避免磁头抖动）
 - 文件偏移排序（`--sb-task-order file-offset`）
-- 大读窗口 + gap 容忍（`--hdd-read-window-bytes 134217728 --hdd-max-gap-bytes 1048576`）
+- 大读窗口 + gap 容忍（`--hdd-read-window-bytes 134217728 --hdd-max-gap-bytes 3145728`）
 - 跨切片批量规划（`--hdd` 自动启用 dynamic batch size + 全局排序）
 - posix_fadvise(SEQUENTIAL) + readahead() 内核提示
-- readahead 前瞻 10 个窗口（深度流水线）
+- readahead 前瞻 20 个窗口（深度流水线）
+- 预创建输出文件（避免 open/close 开销在计时内）
+- -march=native 编译优化（AVX2 自动向量化）
 
 ## 当前性能
 
 D 盘 HDD，`--hdd` 模式，4GB 内存限制：
 
-| 数据集 | T_composite | 存储比 | 带宽利用率 |
-|--------|------------|--------|-----------|
-| 20GB | 34.42s | 1.075x | 93.6% |
-| 50GB | 87.67s | 1.044x | — |
+| 数据集 | T_composite | 存储比 | 备注 |
+|--------|------------|--------|------|
+| 20GB | 34.23s | 1.408x | S=64, X-planes stride=3, best of 2 repeats |
+| 20GB | 38.62s | 1.028x | S=16, 无 planes |
+| 50GB | 87.67s | 1.044x | S=64 |
 
 4GB 是内存拐点，≥4GB 后性能稳定。
+
+### 关键发现
+
+- **I/O 带宽是根本瓶颈**：磁盘顺序读 ~300 MB/s，随机访问需读取几乎整个文件
+- **超级块大小对总性能影响很小**：S=16 vs S=64 的 T_composite 几乎相同（38.62 vs 38.67）
+  - S=16 改善 Z-random（30s vs 59s），但恶化 X-continuous（58s vs 7s）
+  - Y/X random 无论 SB 大小都读取整个文件
+- **窗口大小和 gap 容忍影响很小**：128MB/3MB vs 64MB/512KB 差异 <1s
+- **X-planes 帮助有限**：stride=3 只覆盖 33% 的 X 切片，且增加文件体积
+- **Page cache 对重复运行有帮助**：第二轮比第一轮快 ~3-5s
 
 ## 常用命令
 

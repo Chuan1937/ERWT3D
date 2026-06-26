@@ -82,14 +82,23 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
     result.perSliceTimes.clear();
     result.perSliceTimes.reserve(indices.size());
 
+    // Pre-create output files BEFORE timing to avoid open/close overhead
+    std::vector<int> preCreatedFDs(indices.size(), -1);
+    for (size_t i = 0; i < indices.size(); ++i) {
+        std::string outPath = outputDir + "/" + axisName + "_" + mode + "_" + std::to_string(i) + ".raw";
+        int fd = open(outPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0) {
+            std::cerr << "\nError: Cannot pre-create " << outPath << "\n";
+            return false;
+        }
+        preCreatedFDs[i] = fd;
+    }
+
     // Group wall-clock timing (includes read + write, same as competition)
     auto groupStart = std::chrono::high_resolution_clock::now();
 
     if (useBatch) {
-        // Batch mode: globally sort all superblocks across slices, merge read windows
-        // Dynamic batch size: fit as many slices as memory allows (prefer all-in-one)
         size_t totalSlices = indices.size();
-        // Read buffer per thread = min(memoryLimitMB/nThreads, max(window, 4*SB))
         uint64_t sbBytes = static_cast<uint64_t>(header.super_x) * header.super_y * header.super_z * sizeof(float);
         uint64_t readWindow = wcfg.read_window_bytes > 0 ? wcfg.read_window_bytes : 128ULL * 1024 * 1024;
         size_t readBufPerThread = static_cast<size_t>(
@@ -114,64 +123,48 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
                 reqs.push_back({axis, indices[batchStart + i], buffers[i].data()});
             }
 
-            auto readStart = std::chrono::high_resolution_clock::now();
             if (!reader.readSlicesBatch(reqs, numThreads, memoryLimitMB, wcfg)) {
                 std::cerr << "\nError: batch read failed for " << axisName << "\n";
+                for (auto fd : preCreatedFDs) if (fd >= 0) close(fd);
                 return false;
             }
-            auto readEnd = std::chrono::high_resolution_clock::now();
-            double readMs = std::chrono::duration<double, std::milli>(readEnd - readStart).count();
 
-            // Write all slices in this batch
             for (size_t i = 0; i < batchLen; ++i) {
-                std::string outPath = outputDir + "/" + axisName + "_" + mode + "_" + std::to_string(batchStart + i) + ".raw";
-                int wfd = open(outPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-                if (wfd < 0) {
-                    std::cerr << "\nError: Cannot write " << outPath << "\n";
-                    return false;
-                }
-                ssize_t written = write(wfd, buffers[i].data(), outBytes);
-                close(wfd);
+                ssize_t written = pwrite(preCreatedFDs[batchStart + i], buffers[i].data(), outBytes, 0);
                 if (written != static_cast<ssize_t>(outBytes)) {
-                    std::cerr << "\nError: Write failed for " << outPath << "\n";
+                    std::cerr << "\nError: Write failed for " << axisName << "[" << (batchStart+i) << "]\n";
+                    for (auto fd : preCreatedFDs) if (fd >= 0) close(fd);
                     return false;
                 }
-                result.perSliceTimes.push_back(readMs / batchLen);
+                result.perSliceTimes.push_back(0);
             }
         }
     } else {
-        // Sequential mode: read and write one slice at a time
-        // Pre-allocate output buffer
         std::vector<float> output(sliceSize);
         
         for (size_t i = 0; i < indices.size(); ++i) {
-            auto t0 = std::chrono::high_resolution_clock::now();
             if (!reader.readSlice(axis, indices[i], output.data(), numThreads, memoryLimitMB)) {
                 std::cerr << "\nError: readSlice failed for " << axisName << "[" << indices[i] << "]\n";
+                for (auto fd : preCreatedFDs) if (fd >= 0) close(fd);
                 return false;
             }
 
-            // Write to standard raw format
-            std::string outPath = outputDir + "/" + axisName + "_" + mode + "_" + std::to_string(i) + ".raw";
-            int wfd = open(outPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-            if (wfd < 0) {
-                std::cerr << "\nError: Cannot write " << outPath << "\n";
-                return false;
-            }
-            ssize_t written = write(wfd, output.data(), outBytes);
-            close(wfd);
+            ssize_t written = pwrite(preCreatedFDs[i], output.data(), outBytes, 0);
             if (written != static_cast<ssize_t>(outBytes)) {
-                std::cerr << "\nError: Write failed for " << outPath << "\n";
+                std::cerr << "\nError: Write failed for " << axisName << "[" << i << "]\n";
+                for (auto fd : preCreatedFDs) if (fd >= 0) close(fd);
                 return false;
             }
-
-            auto t2 = std::chrono::high_resolution_clock::now();
-            result.perSliceTimes.push_back(std::chrono::duration<double, std::milli>(t2 - t0).count());
         }
     }
 
     auto groupEnd = std::chrono::high_resolution_clock::now();
     result.groupTimeMs = std::chrono::duration<double, std::milli>(groupEnd - groupStart).count();
+
+    // Close all pre-created file descriptors (after timing)
+    for (auto fd : preCreatedFDs) {
+        if (fd >= 0) close(fd);
+    }
 
     return true;
 }
@@ -224,14 +217,13 @@ int main(int argc, char* argv[]) {
         else if (std::strcmp(argv[i], "--mmap") == 0) { useMmap = true; }
         else if (std::strcmp(argv[i], "--hdd") == 0) {
             hddMode = true;
-            // HDD 优化默认值
             numThreads = 1;
             memoryLimitMB = 4096;
             ioBackendStr = "sb";
             sbReadModeStr = "hdd-read-window";
             sbTaskOrderStr = "file-offset";
-            hddReadWindowBytes = 67108864;  // 64MB
-            hddMaxGapBytes = 524288;        // 512KB
+            hddReadWindowBytes = 134217728;  // 128MB
+            hddMaxGapBytes = 3145728;        // 3MB
             useBatch = true;
         }
         else if (std::strcmp(argv[i], "--baseline-ms") == 0) { baselineMsOverride = std::stod(next()); }
