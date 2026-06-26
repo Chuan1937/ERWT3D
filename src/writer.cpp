@@ -12,6 +12,10 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#ifdef ERWT3D_HAVE_LZ4
+#include <lz4.h>
+#endif
+
 namespace erwt3d {
 
 static void writeLeaves(std::ofstream& file, const ERWT3DHeader& header,
@@ -31,6 +35,56 @@ static void writeLeaves(std::ofstream& file, const ERWT3DHeader& header,
                         superBuffer[((bz+z)*superY+(by+y))*header.super_x+(bx+x)];
         file.write(reinterpret_cast<const char*>(leafBuffer.data()), leafBytes);
     }
+}
+
+static void writeLeavesToBuffer(uint8_t* out, const ERWT3DHeader& header,
+                                const std::vector<float>& superBuffer) {
+    uint64_t leafBytes = getLeafBytes(header);
+    uint64_t totalLeafs = getTotalLeafsPerSuper(header);
+    uint64_t superY = header.super_y;
+    size_t pos = 0;
+    for (uint64_t j = 0; j < totalLeafs; ++j) {
+        uint32_t lx, ly, lz; unmorton3D(j, lx, ly, lz);
+        if (lx >= getLeafsPerSuperX(header) || ly >= getLeafsPerSuperY(header) || lz >= getLeafsPerSuperZ(header)) continue;
+        uint64_t bx = lx*header.leaf_x, by = ly*header.leaf_y, bz = lz*header.leaf_z;
+        float* leaf = reinterpret_cast<float*>(out + pos);
+        for (uint64_t z=0; z<header.leaf_z; ++z)
+            for (uint64_t y=0; y<header.leaf_y; ++y)
+                for (uint64_t x=0; x<header.leaf_x; ++x)
+                    leaf[(z*header.leaf_y+y)*header.leaf_x+x] =
+                        superBuffer[((bz+z)*superY+(by+y))*header.super_x+(bx+x)];
+        pos += leafBytes;
+    }
+}
+
+static bool compressAndWrite(const uint8_t* rawData, uint64_t rawSize,
+                              uint8_t* compBuf, int compBufCapacity,
+                              std::ofstream& outFile,
+                              std::vector<CompressedBlockIndex>& index) {
+    CompressedBlockIndex entry;
+#ifdef ERWT3D_HAVE_LZ4
+    int compSize = LZ4_compress_default(
+        reinterpret_cast<const char*>(rawData),
+        reinterpret_cast<char*>(compBuf),
+        static_cast<int>(rawSize),
+        compBufCapacity);
+    if (compSize > 0 && static_cast<uint64_t>(compSize) < rawSize * 95 / 100) {
+        entry.file_offset = static_cast<uint64_t>(outFile.tellp());
+        entry.compressed_size = static_cast<uint32_t>(compSize);
+        entry.is_compressed = 1;
+        std::memset(entry.padding, 0, sizeof(entry.padding));
+        outFile.write(reinterpret_cast<const char*>(compBuf), compSize);
+    } else
+#endif
+    {
+        entry.file_offset = static_cast<uint64_t>(outFile.tellp());
+        entry.compressed_size = static_cast<uint32_t>(rawSize);
+        entry.is_compressed = 0;
+        std::memset(entry.padding, 0, sizeof(entry.padding));
+        outFile.write(reinterpret_cast<const char*>(rawData), rawSize);
+    }
+    index.push_back(entry);
+    return true;
 }
 
 static void fillSuperBuffer(std::vector<float>& sb, const float* rawData,
@@ -97,7 +151,8 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
                                            uint32_t superX, uint32_t superY, uint32_t superZ,
                                            uint32_t leafX, uint32_t leafY, uint32_t leafZ,
                                            int numThreads, size_t memoryLimitMB,
-                                           uint32_t panelAxis, uint32_t panelStride) {
+                                           uint32_t panelAxis, uint32_t panelStride,
+                                           bool compress = false) {
     ERWT3DHeader header;
     initHeader(header);
     header.nx=nx; header.ny=ny; header.nz=nz;
@@ -136,6 +191,22 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
                 uint64_t idx = (sz*sgY+sy)*sgX+sx;
                 sbOffsets[idx] = sizeof(header) + idx * sbBytes;
             }
+
+    // Compression support
+    std::vector<CompressedBlockIndex> compIndex;
+    std::vector<uint8_t> leafBuf;
+    std::vector<uint8_t> compBuf;
+    if (compress) {
+#ifdef ERWT3D_HAVE_LZ4
+        compIndex.reserve(totalSB);
+        leafBuf.resize(sbBytes);
+        compBuf.resize(LZ4_compressBound(static_cast<int>(sbBytes)));
+        std::cout << "Compression: lz4, sb_bytes=" << sbBytes << std::endl;
+#else
+        std::cerr << "Warning: lz4 not available, disabling compression" << std::endl;
+        compress = false;
+#endif
+    }
 
     // Panel support
     bool doPanels = (panelAxis == 0) && panelStride > 0 && panelStride <= superX;
@@ -256,10 +327,16 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
                 for (uint64_t sx=0; sx<sgX; ++sx) {
                     uint64_t idx = (sz*sgY+sy)*sgX+sx;
                     uint64_t sbIdx = (sx * batchSYCount + syIdx) * sgZ + sz;
-                    uint64_t offset = sbOffsets[idx];
 
-                    outFile.seekp(offset);
-                    writeLeaves(outFile, header, sbBuffers[sbIdx]);
+                    if (compress) {
+                        writeLeavesToBuffer(leafBuf.data(), header, sbBuffers[sbIdx]);
+                        compressAndWrite(leafBuf.data(), sbBytes, compBuf.data(),
+                                         static_cast<int>(compBuf.size()), outFile, compIndex);
+                    } else {
+                        uint64_t offset = sbOffsets[idx];
+                        outFile.seekp(offset);
+                        writeLeaves(outFile, header, sbBuffers[sbIdx]);
+                    }
 
                     // Write panel data for this superblock
                     if (doPanels) {
@@ -295,6 +372,30 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
         outFile.write(reinterpret_cast<const char*>(&header), sizeof(header));
 
         std::cout << "Panels written: " << (panelWritePos - panelDataStart) / (1024*1024) << " MB" << std::endl;
+    }
+
+    // Write compression index and update header
+    if (compress && !compIndex.empty()) {
+        uint64_t indexOffset = static_cast<uint64_t>(outFile.tellp());
+        uint64_t indexBytes = compIndex.size() * sizeof(CompressedBlockIndex);
+        outFile.write(reinterpret_cast<const char*>(compIndex.data()), indexBytes);
+
+        uint64_t totalCompBytes = 0;
+        uint64_t compCount = 0;
+        for (const auto& e : compIndex) {
+            totalCompBytes += e.compressed_size;
+            if (e.is_compressed) ++compCount;
+        }
+
+        outFile.seekp(0);
+        header.flags |= FLAG_COMPRESSED;
+        header.reserved[19] = indexOffset;
+        header.reserved[20] = compIndex.size();
+        outFile.write(reinterpret_cast<const char*>(&header), sizeof(header));
+
+        std::cout << "Compression: " << compCount << "/" << compIndex.size()
+                  << " blocks compressed, index at " << indexOffset
+                  << " (" << indexBytes << " bytes)" << std::endl;
     }
 
     std::cout << "Conversion complete." << std::endl;
@@ -394,15 +495,16 @@ bool writeERWT3DFromFile(const std::string& outputPath,
                          uint32_t superX, uint32_t superY, uint32_t superZ,
                          uint32_t leafX, uint32_t leafY, uint32_t leafZ,
                          int numThreads, size_t memoryLimitMB,
-                         uint32_t panelAxis, uint32_t panelStride) {
-    // 使用顺序读取策略（HDD优化）
+                         uint32_t panelAxis, uint32_t panelStride,
+                         bool compress) {
     std::cout << "Using sequential read strategy (HDD optimized)" << std::endl;
+    if (compress) std::cout << "Compression: enabled (lz4)" << std::endl;
     return writeERWT3DFromFileSequential(outputPath, inputPath,
                                           nx, ny, nz,
                                           superX, superY, superZ,
                                           leafX, leafY, leafZ,
                                           numThreads, memoryLimitMB,
-                                          panelAxis, panelStride);
+                                          panelAxis, panelStride, compress);
 }
 
 } // namespace erwt3d

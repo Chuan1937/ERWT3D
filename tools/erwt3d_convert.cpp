@@ -37,6 +37,7 @@ int main(int argc, char* argv[]) {
     uint32_t leafSize = 4;
     uint32_t panelAxis = 0;
     uint32_t panelStride = 0;
+    bool compress = false;
     
     // Parse arguments
     for (int i = 1; i < argc; ++i) {
@@ -72,6 +73,8 @@ int main(int argc, char* argv[]) {
             }
         } else if (std::strcmp(argv[i], "--panel-stride") == 0 && i + 1 < argc) {
             panelStride = std::stoul(argv[++i]);
+        } else if (std::strcmp(argv[i], "--compress") == 0) {
+            compress = true;
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             printUsage(argv[0]);
             return 0;
@@ -114,7 +117,7 @@ int main(int argc, char* argv[]) {
                                          superSize, superSize, superSize,
                                          leafSize, leafSize, leafSize,
                                          numThreads, memoryLimitMB,
-                                         panelAxis, panelStride)) {
+                                         panelAxis, panelStride, compress)) {
             std::cerr << "Error: Failed to convert raw to ERWT3D" << std::endl;
             return 1;
         }

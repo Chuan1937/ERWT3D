@@ -12,6 +12,10 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 
+#ifdef ERWT3D_HAVE_LZ4
+#include <lz4.h>
+#endif
+
 namespace erwt3d {
 
 ERWT3DReader::ERWT3DReader(const std::string& path, size_t cacheMB, bool useMmap)
@@ -33,6 +37,23 @@ ERWT3DReader::ERWT3DReader(const std::string& path, size_t cacheMB, bool useMmap
 
     if (cacheMB > 0) {
         cache_ = std::make_unique<LeafCache>(cacheMB * 1024 * 1024);
+    }
+
+    // Load compression index if file is compressed
+    compressed_ = isCompressed(header_);
+    if (compressed_) {
+        uint64_t idxOffset = getCompressionIndexOffset(header_);
+        uint64_t idxCount = getCompressedBlockCount(header_);
+        if (idxOffset > 0 && idxCount > 0) {
+            compIndex_.resize(idxCount);
+            ssize_t idxBytes = idxCount * sizeof(CompressedBlockIndex);
+            if (pread(fd_, compIndex_.data(), idxBytes, idxOffset) != idxBytes) {
+                compIndex_.clear();
+                compressed_ = false;
+            }
+        } else {
+            compressed_ = false;
+        }
     }
 
     if (useMmap_) {
@@ -88,6 +109,39 @@ bool ERWT3DReader::readOneExtent(uint64_t offset, uint64_t size, void* buffer) {
         cache_->put(offset, buffer, size);
     }
     return true;
+}
+
+bool ERWT3DReader::readSuperblock(uint64_t sbIdx, void* buffer) {
+    if (fd_ < 0) return false;
+    uint64_t sbBytes = getSuperblockBytes(header_);
+
+    if (compressed_ && sbIdx < compIndex_.size()) {
+        const auto& entry = compIndex_[sbIdx];
+        if (entry.is_compressed) {
+#ifdef ERWT3D_HAVE_LZ4
+            std::vector<uint8_t> compBuf(entry.compressed_size);
+            ssize_t n = pread(fd_, compBuf.data(), entry.compressed_size, entry.file_offset);
+            if (n != static_cast<ssize_t>(entry.compressed_size)) return false;
+            int decSize = LZ4_decompress_safe(
+                reinterpret_cast<const char*>(compBuf.data()),
+                reinterpret_cast<char*>(buffer),
+                static_cast<int>(entry.compressed_size),
+                static_cast<int>(sbBytes));
+            if (decSize != static_cast<int>(sbBytes)) return false;
+#else
+            return false;
+#endif
+        } else {
+            ssize_t n = pread(fd_, buffer, sbBytes, entry.file_offset);
+            if (n != static_cast<ssize_t>(sbBytes)) return false;
+        }
+        return true;
+    }
+
+    // Uncompressed: use direct pread
+    uint64_t offset = header_.data_offset + sbIdx * sbBytes;
+    ssize_t n = pread(fd_, buffer, sbBytes, offset);
+    return n == static_cast<ssize_t>(sbBytes);
 }
 
 // --- readSlice (legacy wrapper) ---
@@ -359,10 +413,8 @@ bool ERWT3DReader::readFull(float* output, int numThreads, size_t memoryLimitMB)
         for (uint64_t syi = 0; syi < getSuperGridY(header_); ++syi) {
             for (uint64_t sxi = 0; sxi < getSuperGridX(header_); ++sxi) {
                 uint64_t superIdx = (szi * getSuperGridY(header_) + syi) * getSuperGridX(header_) + sxi;
-                uint64_t superOffset = header_.data_offset + superIdx * superBytes;
                 
-                ssize_t bytesRead = pread(fd_, superBuffer.data(), superBytes, superOffset);
-                if (bytesRead != static_cast<ssize_t>(superBytes)) return false;
+                if (!readSuperblock(superIdx, superBuffer.data())) return false;
                 
                 uint64_t startX = sxi * sx;
                 uint64_t startY = syi * sy;
@@ -478,10 +530,8 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
         for (uint64_t syi = 0; syi < getSuperGridY(header_); ++syi) {
             for (uint64_t sxi = 0; sxi < getSuperGridX(header_); ++sxi) {
                 uint64_t superIdx = (szi * getSuperGridY(header_) + syi) * getSuperGridX(header_) + sxi;
-                uint64_t superOffset = header_.data_offset + superIdx * superBytes;
                 
-                ssize_t bytesRead = pread(fd_, superBuffer.data(), superBytes, superOffset);
-                if (bytesRead != static_cast<ssize_t>(superBytes)) {
+                if (!readSuperblock(superIdx, superBuffer.data())) {
                     munmap(outMap, rawSize); close(outFd); return false;
                 }
                 
@@ -609,7 +659,18 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
     lastProfile_.output_bytes = plan.output_bytes;
 
     bool ok;
-    if (sbReadMode_ == SBReadMode::HDDReadWindow) {
+    if (compressed_) {
+        // Compressed path: read each superblock individually
+        const uint64_t sbBV = getSuperblockBytes(header_);
+        std::vector<uint8_t> sbBuf(sbBV);
+        posix_fadvise(fd_, 0, 0, POSIX_FADV_SEQUENTIAL);
+        ok = true;
+        for (const auto& task : plan.tasks) {
+            uint64_t sbIdx = (task.file_offset - header_.data_offset) / sbBV;
+            if (!readSuperblock(sbIdx, sbBuf.data())) { ok = false; break; }
+            unpackLeaves(header_, plan, task, sbBuf.data(), output);
+        }
+    } else if (sbReadMode_ == SBReadMode::HDDReadWindow) {
         ok = executeSBPlanHDDReadWindow(fd_, plan, header_, output, 1,
                                         memoryLimitMB, hddReadWindowCfg_,
                                         profileIO_ ? &lastProfile_ : nullptr,
@@ -681,6 +742,41 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
 
     if (plans.empty()) return true;
     for (auto& p : plans) pp.push_back(&p);
+
+    if (compressed_) {
+        // Compressed path: read each superblock individually via readSuperblock
+        auto batch = buildSBBatchPlan(pp);
+        const uint64_t sbBV = getSuperblockBytes(header_);
+        std::vector<uint8_t> sbBuf(sbBV);
+
+        // Sort tasks by compressed file offset for sequential access
+        std::vector<size_t> taskOrder(batch.batch_tasks.size());
+        for (size_t i = 0; i < taskOrder.size(); ++i) taskOrder[i] = i;
+        std::sort(taskOrder.begin(), taskOrder.end(), [&](size_t a, size_t b) {
+            uint64_t sbIdxA = (batch.batch_tasks[a].file_offset - header_.data_offset) / sbBV;
+            uint64_t sbIdxB = (batch.batch_tasks[b].file_offset - header_.data_offset) / sbBV;
+            if (compressed_ && sbIdxA < compIndex_.size() && sbIdxB < compIndex_.size())
+                return compIndex_[sbIdxA].file_offset < compIndex_[sbIdxB].file_offset;
+            return batch.batch_tasks[a].file_offset < batch.batch_tasks[b].file_offset;
+        });
+
+        posix_fadvise(fd_, 0, 0, POSIX_FADV_SEQUENTIAL);
+
+        uint64_t lastSbIdx = UINT64_MAX;
+        for (size_t ti = 0; ti < taskOrder.size(); ++ti) {
+            const auto& bt = batch.batch_tasks[taskOrder[ti]];
+            uint64_t sbIdx = (bt.file_offset - header_.data_offset) / sbBV;
+
+            if (sbIdx != lastSbIdx) {
+                if (!readSuperblock(sbIdx, sbBuf.data())) return false;
+                lastSbIdx = sbIdx;
+            }
+            SBTask t{bt.file_offset, bt.first_leaf, bt.leaf_count};
+            unpackLeaves(header_, *bt.plan, t, sbBuf.data(), outputs[bt.output_id]);
+        }
+        return true;
+    }
+
     return executeSBBatchHDD(fd_, buildSBBatchPlan(pp), header_, outputs.data(),
                               1, memoryLimitMB, wcfg, pinThreads_, nullptr);
 }

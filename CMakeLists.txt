@@ -11,6 +11,17 @@ option(ERWT3D_NATIVE_OPT "Use -march=native -mtune=native (Release only)" ON)
 # Thread support
 find_package(Threads REQUIRED)
 
+# lz4 for compression
+find_library(LZ4_LIBRARY lz4)
+find_path(LZ4_INCLUDE_DIR lz4.h)
+if(LZ4_LIBRARY AND LZ4_INCLUDE_DIR)
+    message(STATUS "Found lz4: ${LZ4_LIBRARY}")
+    set(HAVE_LZ4 TRUE)
+else()
+    message(WARNING "lz4 not found, compression disabled")
+    set(HAVE_LZ4 FALSE)
+endif()
+
 # Native optimization (optional, Release only)
 if(ERWT3D_NATIVE_OPT)
     if(NOT CMAKE_BUILD_TYPE MATCHES "Release")
@@ -50,6 +61,11 @@ set(LIB_SOURCES
 add_library(erwt3d STATIC ${LIB_SOURCES})
 target_include_directories(erwt3d PUBLIC include)
 target_link_libraries(erwt3d PUBLIC Threads::Threads)
+if(HAVE_LZ4)
+    target_link_libraries(erwt3d PUBLIC ${LZ4_LIBRARY})
+    target_include_directories(erwt3d PUBLIC ${LZ4_INCLUDE_DIR})
+    target_compile_definitions(erwt3d PUBLIC ERWT3D_HAVE_LZ4=1)
+endif()
 
 # Tools
 add_executable(erwt3d_info tools/erwt3d_info.cpp)

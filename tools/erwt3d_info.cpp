@@ -32,6 +32,12 @@ int main(int argc, char* argv[]) {
         std::cout << "Panel storage: " << erwt3d::getPanelStorageBytes(header) << " bytes ("
                   << std::fixed << std::setprecision(2) << erwt3d::getPanelStorageBytes(header) / (1024.0*1024.0) << " MB)" << std::endl;
     }
+
+    if (erwt3d::isCompressed(header)) {
+        uint64_t idxOffset = erwt3d::getCompressionIndexOffset(header);
+        uint64_t idxCount = erwt3d::getCompressedBlockCount(header);
+        std::cout << "Compression: lz4 (" << idxCount << " blocks, index at " << idxOffset << ")" << std::endl;
+    }
     
     uint64_t rawSize = erwt3d::getRawSize(header);
     std::cout << "Estimated raw size: " << rawSize << " bytes (" 

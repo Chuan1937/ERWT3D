@@ -53,6 +53,16 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 - Header：256 字节（magic、维度、块大小、flags）
 - Superblock：64×64×64 float32 = 1 MiB，Z-Y-X 顺序排列
 - Leaf block：4×4×4 float32 = 256 字节，superblock 内 Morton 顺序
+- 可选 X-plane：预存 YZ 平面，加速 X 切片访问
+- 可选 lz4 压缩：每个 superblock 独立压缩，不压缩的块直接存原始数据
+- 压缩索引：文件末尾存储每个块的偏移和大小（16 字节/块）
+- 偏移公式：`data_offset + sb_idx * sb_bytes + morton3D(lx,ly,lz) * leaf_bytes`
+
+## 文件格式
+
+- Header：256 字节（magic、维度、块大小、flags）
+- Superblock：64×64×64 float32 = 1 MiB，Z-Y-X 顺序排列
+- Leaf block：4×4×4 float32 = 256 字节，superblock 内 Morton 顺序
 - 可选 X-panel：预存 YZ 平面，加速 X 切片访问
 - 可选 X-plane：连续 X 切片平面（存储比 >1.5x）
 - 偏移公式：`data_offset + sb_idx * sb_bytes + morton3D(lx,ly,lz) * leaf_bytes`
@@ -74,9 +84,9 @@ D 盘 HDD，`--hdd` 模式，4GB 内存限制：
 
 | 数据集 | T_composite | 存储比 | 备注 |
 |--------|------------|--------|------|
-| 20GB | 34.23s | 1.408x | S=64, X-planes stride=3, best of 2 repeats |
-| 20GB | 38.62s | 1.028x | S=16, 无 planes |
-| 50GB | 87.67s | 1.044x | S=64 |
+| 20GB | 23.56s | 0.443x | S=64, lz4压缩, best of 2 repeats |
+| 20GB | 34.23s | 1.408x | S=64, X-planes stride=3, 无压缩 |
+| 50GB | 87.67s | 1.044x | S=64, 无压缩 |
 
 4GB 是内存拐点，≥4GB 后性能稳定。
 

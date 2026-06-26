@@ -15,6 +15,7 @@ constexpr uint64_t FLAG_HAS_X_PANELS = 1ULL << 0;
 constexpr uint64_t FLAG_HAS_Y_PANELS = 1ULL << 1;
 constexpr uint64_t FLAG_HAS_Z_PANELS = 1ULL << 2;
 constexpr uint64_t FLAG_HAS_X_PLANES = 1ULL << 3;
+constexpr uint64_t FLAG_COMPRESSED = 1ULL << 4;
 
 // Default block sizes
 constexpr uint32_t DEFAULT_SUPER_X = 64;
@@ -144,5 +145,18 @@ inline uint64_t panelsPerSuperblock(const ERWT3DHeader& h, uint32_t stride) {
 inline uint64_t panelBytesPerSuperblock(const ERWT3DHeader& h, uint32_t stride) {
     return panelsPerSuperblock(h, stride) * panelPlaneBytes(h);
 }
+
+// Compression support
+inline bool isCompressed(const ERWT3DHeader& h) { return (h.flags & FLAG_COMPRESSED) != 0; }
+inline uint64_t getCompressionIndexOffset(const ERWT3DHeader& h) { return h.reserved[19]; }
+inline uint64_t getCompressedBlockCount(const ERWT3DHeader& h) { return h.reserved[20]; }
+
+struct CompressedBlockIndex {
+    uint64_t file_offset;
+    uint32_t compressed_size;
+    uint8_t is_compressed; // 1=lz4, 0=raw
+    uint8_t padding[3];
+};
+static_assert(sizeof(CompressedBlockIndex) == 16);
 
 } // namespace erwt3d

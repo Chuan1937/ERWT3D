@@ -34,6 +34,7 @@ bool writeERWT3DFromFile(const std::string& outputPath,
                          int numThreads = 1,
                          size_t memoryLimitMB = 2048,
                          uint32_t panelAxis = 0,
-                         uint32_t panelStride = 0);
+                         uint32_t panelStride = 0,
+                         bool compress = false);
 
 } // namespace erwt3d

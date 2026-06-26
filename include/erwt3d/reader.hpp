@@ -100,10 +100,13 @@ private:
     HDDContiguousConfig hddContigCfg_;
     bool profileIO_ = false;
     IOProfile lastProfile_;
+    bool compressed_ = false;
+    std::vector<CompressedBlockIndex> compIndex_;
     
     bool readExtents(const std::vector<Extent>& extents, void* buffer);
     bool readExtentsThreaded(const std::vector<Extent>& extents, void* buffer, int numThreads);
     bool readOneExtent(uint64_t offset, uint64_t size, void* buffer);
+    bool readSuperblock(uint64_t sbIdx, void* buffer);
     
     bool readSliceSB(SliceAxis axis, uint64_t index, float* output,
                       int numThreads, size_t memoryLimitMB);

@@ -3,13 +3,17 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
-#include <cmath>
+#include <random>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <fcntl.h>
 #include <unistd.h>
-#include <unordered_map>
 #include <map>
+
+#ifdef ERWT3D_HAVE_LZ4
+#include <lz4.h>
+#endif
 
 void printUsage(const char* progName) {
     std::cerr << "Usage:" << std::endl;
@@ -143,14 +147,50 @@ int main(int argc, char* argv[]) {
             
             std::vector<uint8_t> sbBuf(superBytes);
             
+            // Load compression index if needed
+            bool compressed = erwt3d::isCompressed(hdr);
+            std::vector<erwt3d::CompressedBlockIndex> compIdx;
+            if (compressed) {
+                uint64_t idxOff = erwt3d::getCompressionIndexOffset(hdr);
+                uint64_t idxCnt = erwt3d::getCompressedBlockCount(hdr);
+                compIdx.resize(idxCnt);
+                pread(erwt3dFd, compIdx.data(), idxCnt * sizeof(erwt3d::CompressedBlockIndex), idxOff);
+            }
+            std::vector<uint8_t> compBuf(compressed ? superBytes : 0);
+            
             for (const auto& [sbIdx, samples] : sbGroups) {
                 // Read entire superblock from ERWT3D
-                uint64_t sbOff = hdr.data_offset + sbIdx * superBytes;
-                if (pread(erwt3dFd, sbBuf.data(), superBytes, sbOff) != static_cast<ssize_t>(superBytes)) {
-                    std::cerr << "Error: failed to read superblock " << sbIdx << std::endl;
-                    close(erwt3dFd);
-                    close(rawFd);
-                    return 1;
+                if (compressed && sbIdx < compIdx.size()) {
+                    const auto& entry = compIdx[sbIdx];
+                    if (entry.is_compressed) {
+#ifdef ERWT3D_HAVE_LZ4
+                        if (compBuf.size() < entry.compressed_size) compBuf.resize(entry.compressed_size);
+                        if (pread(erwt3dFd, compBuf.data(), entry.compressed_size, entry.file_offset) != static_cast<ssize_t>(entry.compressed_size)) {
+                            std::cerr << "Error: failed to read compressed block " << sbIdx << std::endl;
+                            close(erwt3dFd); close(rawFd); return 1;
+                        }
+                        if (LZ4_decompress_safe(reinterpret_cast<const char*>(compBuf.data()), reinterpret_cast<char*>(sbBuf.data()), entry.compressed_size, superBytes) != static_cast<int>(superBytes)) {
+                            std::cerr << "Error: failed to decompress block " << sbIdx << std::endl;
+                            close(erwt3dFd); close(rawFd); return 1;
+                        }
+#else
+                        std::cerr << "Error: lz4 not available" << std::endl;
+                        close(erwt3dFd); close(rawFd); return 1;
+#endif
+                    } else {
+                        if (pread(erwt3dFd, sbBuf.data(), superBytes, entry.file_offset) != static_cast<ssize_t>(superBytes)) {
+                            std::cerr << "Error: failed to read block " << sbIdx << std::endl;
+                            close(erwt3dFd); close(rawFd); return 1;
+                        }
+                    }
+                } else {
+                    uint64_t sbOff = hdr.data_offset + sbIdx * superBytes;
+                    if (pread(erwt3dFd, sbBuf.data(), superBytes, sbOff) != static_cast<ssize_t>(superBytes)) {
+                        std::cerr << "Error: failed to read superblock " << sbIdx << std::endl;
+                        close(erwt3dFd);
+                        close(rawFd);
+                        return 1;
+                    }
                 }
                 
                 for (const auto& [linIdx, byteOffSb] : samples) {
