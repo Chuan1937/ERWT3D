@@ -1,8 +1,98 @@
 #include "erwt3d/writer.hpp"
 #include "erwt3d/reader.hpp"
+#include "erwt3d/morton.hpp"
 #include <iostream>
+#include <iomanip>
 #include <string>
 #include <cstring>
+#include <cmath>
+#include <fcntl.h>
+#include <unistd.h>
+#include <algorithm>
+
+#ifdef ERWT3D_HAVE_LZ4
+#include <lz4.h>
+
+static bool estimateCompressionRatio(const std::string& rawPath,
+                                      uint64_t nx, uint64_t ny, uint64_t nz,
+                                      uint32_t sx, uint32_t sy, uint32_t sz,
+                                      uint32_t lx, uint32_t ly, uint32_t lz,
+                                      double& outRatio, int numSamples = 200) {
+    uint64_t sgX = (nx + sx - 1) / sx;
+    uint64_t sgY = (ny + sy - 1) / sy;
+    uint64_t sgZ = (nz + sz - 1) / sz;
+    uint64_t totalSB = sgX * sgY * sgZ;
+    uint64_t sbFloats = (uint64_t)sx * sy * sz;
+    uint64_t sbBytes = sbFloats * sizeof(float);
+
+    int fd = open(rawPath.c_str(), O_RDONLY);
+    if (fd < 0) return false;
+
+    std::vector<float> sbBuf(sbFloats);
+    std::vector<uint8_t> leafBuf(sbBytes);
+    int compBufSize = LZ4_compressBound(static_cast<int>(sbBytes));
+    std::vector<uint8_t> compBuf(compBufSize);
+
+    uint64_t totalRaw = 0, totalComp = 0;
+    int actualSamples = 0;
+    uint64_t step = std::max<uint64_t>(1, totalSB / numSamples);
+
+    for (uint64_t si = 0; si < totalSB && actualSamples < numSamples; si += step) {
+        uint64_t szi = si / (sgY * sgX);
+        uint64_t rem = si % (sgY * sgX);
+        uint64_t syi = rem / sgX;
+        uint64_t sxi = rem % sgX;
+
+        // Read raw data for this superblock
+        std::memset(sbBuf.data(), 0, sbBytes);
+        uint64_t startX = sxi * sx, startY = syi * sy, startZ = szi * sz;
+        for (uint64_t z = 0; z < sz; ++z) {
+            uint64_t gz = startZ + z; if (gz >= nz) break;
+            for (uint64_t y = 0; y < sy; ++y) {
+                uint64_t gy = startY + y; if (gy >= ny) break;
+                uint64_t rawOff = ((gz * ny + gy) * nx + startX) * sizeof(float);
+                uint64_t vx = std::min<uint64_t>(sx, nx - startX);
+                ssize_t rd = pread(fd, sbBuf.data() + (z * sy + y) * sx, vx * sizeof(float), rawOff);
+                if (rd < 0) { close(fd); return false; }
+            }
+        }
+
+        // Convert to leaf order (same as writeLeavesToBuffer)
+        uint64_t totalLeafs = (uint64_t)(sx/lx) * (sy/ly) * (sz/lz);
+        size_t pos = 0;
+        for (uint64_t j = 0; j < totalLeafs; ++j) {
+            uint32_t plx, ply, plz;
+            erwt3d::unmorton3D(j, plx, ply, plz);
+            if (plx >= sx/lx || ply >= sy/ly || plz >= sz/lz) continue;
+            uint64_t bx = plx*lx, by = ply*ly, bz = plz*lz;
+            float* leaf = reinterpret_cast<float*>(leafBuf.data() + pos);
+            for (uint64_t zz = 0; zz < lz; ++zz)
+                for (uint64_t yy = 0; yy < ly; ++yy)
+                    for (uint64_t xx = 0; xx < lx; ++xx)
+                        leaf[(zz*ly+yy)*lx+xx] = sbBuf[((bz+zz)*sy+(by+yy))*sx+(bx+xx)];
+            pos += lx*ly*lz*sizeof(float);
+        }
+
+        // Compress
+        int compSize = LZ4_compress_default(
+            reinterpret_cast<const char*>(leafBuf.data()),
+            reinterpret_cast<char*>(compBuf.data()),
+            static_cast<int>(sbBytes), compBufSize);
+
+        if (compSize > 0) {
+            totalRaw += sbBytes;
+            totalComp += compSize;
+            actualSamples++;
+        }
+    }
+
+    close(fd);
+
+    if (actualSamples == 0) return false;
+    outRatio = static_cast<double>(totalComp) / totalRaw;
+    return true;
+}
+#endif
 
 void printUsage(const char* progName) {
     std::cerr << "Usage:" << std::endl;
@@ -112,6 +202,28 @@ int main(int argc, char* argv[]) {
         
         std::cout << "Converting raw to ERWT3D..." << std::endl;
         std::cout << "Dimensions: " << nx << " x " << ny << " x " << nz << std::endl;
+
+#ifdef ERWT3D_HAVE_LZ4
+        if (compress) {
+            std::cout << "Estimating compression ratio (sampling superblocks)..." << std::endl;
+            double estRatio = 1.0;
+            if (estimateCompressionRatio(inputPath, nx, ny, nz,
+                                          superSize, superSize, superSize,
+                                          leafSize, leafSize, leafSize,
+                                          estRatio)) {
+                std::cout << "  Estimated compression ratio: " << std::fixed
+                          << std::setprecision(3) << estRatio << "x" << std::endl;
+                if (estRatio > 0.90) {
+                    std::cout << "  Compression ratio too low (>0.90x), skipping compression." << std::endl;
+                    compress = false;
+                } else {
+                    std::cout << "  Compression beneficial, proceeding with lz4." << std::endl;
+                }
+            } else {
+                std::cerr << "  Warning: could not estimate ratio, proceeding with compression." << std::endl;
+            }
+        }
+#endif
         
         if (!erwt3d::writeERWT3DFromFile(outputPath, inputPath, nx, ny, nz,
                                          superSize, superSize, superSize,
