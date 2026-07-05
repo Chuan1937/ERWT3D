@@ -6,11 +6,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/_datasets.sh"
 
 OUT=/mnt/d/CUP/test_hdd/mem_sweep
-BIN=./build/erwt3d_bench_contest
+ERWT3D="$SCRIPT_DIR/../build/erwt3d"
 RESULT="$OUT/results.csv"
 mkdir -p "$OUT"
 
-echo "dataset,mem_mb,x_random,y_random,z_random,x_cont,y_cont,z_cont,T_composite" > "$RESULT"
+echo "数据集,内存_GB,x_random_ms,y_random_ms,z_random_ms,x_cont_ms,y_cont_ms,z_cont_ms,T_composite_s" > "$RESULT"
 
 TOTAL=12
 DONE=0
@@ -23,12 +23,12 @@ run_one() {
     mkdir -p "$od"
     echo ""
     echo "========================================"
-    echo "  [$DONE/$TOTAL] $LABEL  memory=${mem}GB"
+    echo "  [$DONE/$TOTAL] $LABEL  内存=${mem}GB"
     echo "========================================"
     local out
-    out=$("$BIN" --input "$ERWT" --output-dir "$od" \
-        --random-count 100 --continuous-count 10 \
-        --hdd --memory-limit-mb "$((mem * 1024))" --seed 20260511 2>&1)
+    out=$($ERWT3D bench-contest input="$ERWT" output-dir="$od" \
+        random-count=100 continuous-count=10 \
+        hdd memory-limit-mb=$((mem * 1024)) seed=20260511 2>&1)
     echo "$out" | grep -E '^\s*\[[1-6]/6\]'
     echo "$out" | grep 'T_composite = total'
     local csv="$od/contest_summary.csv"
@@ -52,5 +52,5 @@ for ds in small big; do
 done
 
 echo ""
-echo "=== RESULTS ==="
+echo "=== 结果 ==="
 column -t -s',' "$RESULT"

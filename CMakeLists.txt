@@ -100,3 +100,7 @@ target_link_libraries(erwt3d_precompute_x PRIVATE erwt3d)
 
 add_executable(example_api tools/example_api.cpp)
 target_link_libraries(example_api PRIVATE erwt3d)
+
+# sw4-style single entry point
+add_executable(erwt3d_cli tools/erwt3d_main.cpp)
+set_target_properties(erwt3d_cli PROPERTIES OUTPUT_NAME erwt3d)

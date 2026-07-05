@@ -2,6 +2,24 @@
 
 本文件记录 ERWT3D 的重要变更。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.4.0] - 2026-07-05
+
+### Added
+
+- sw4 风格统一入口 `build/erwt3d`：读取配置文件或直接命令行，替代原有的多个独立二进制
+- 配置文件模式：支持 sw4 风格分段配置（`command key=value`），空行分隔任务
+- 直接命令模式：`build/erwt3d convert input=... output=...`，不再需要 `--key value` 长参数
+- `tools/erwt3d_main.cpp` 作为 C++ 单一入口，自动分派到各子工具
+
+### Changed
+
+- 废弃根目录 `erwt3d` shell 脚本，改为 `build/erwt3d` C++ 二进制
+- 全部 `scripts/` 脚本改用 `build/erwt3d <command> key=value` 格式
+
+### Removed
+
+- 根目录 `erwt3d` shell 脚本（由 `build/erwt3d` 替代）
+
 ## [0.3.0] - 2026-06-25
 
 ### Added

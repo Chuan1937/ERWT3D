@@ -1,6 +1,6 @@
 #!/bin/bash
 # RAW → ERWT3D 转换 + 验证
-# Usage: convert.sh [small|big|all]
+# 用法：convert.sh [small|big|all]
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -8,6 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 OUT_BASE=/mnt/d/CUP/test_hdd
 DATASET="${1:-small}"
+ERWT3D="$SCRIPT_DIR/../build/erwt3d"
 
 run_one() {
     local ds="$1"
@@ -20,17 +21,16 @@ run_one() {
     echo "    raw:     $RAW"
     echo "    output:  $out"
     echo "=========================================="
-    ./build/erwt3d_convert --input "$RAW" --output "$out" \
-        --nx $NX --ny $NY --nz $NZ \
-        --threads 8 --memory-limit-mb 4096
-    echo "Verifying..."
-    ./build/erwt3d_verify --raw "$RAW" --erwt3d "$out" \
-        --nx $NX --ny $NY --nz $NZ \
-        --samples 100000
+    $ERWT3D convert input="$RAW" output="$out" \
+        nx=$NX ny=$NY nz=$NZ \
+        threads=8 memory-limit-mb=4096
+    echo "验证中..."
+    $ERWT3D verify raw="$RAW" erwt3d="$out" \
+        nx=$NX ny=$NY nz=$NZ samples=100000
 }
 
 case "$DATASET" in
     small|big) run_one "$DATASET" ;;
     all)        run_one small; run_one big ;;
-    *)          echo "Usage: $0 [small|big|all]"; exit 1 ;;
+    *)          echo "用法：$0 [small|big|all]"; exit 1 ;;
 esac

@@ -1,6 +1,6 @@
 #!/bin/bash
 # 单切片读取延迟测试
-# Usage: bench_single.sh [small|big|all]
+# 用法：bench_single.sh [small|big|all]
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -8,6 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 OUT=/mnt/d/CUP/test_hdd/single
 DATASET="${1:-small}"
+ERWT3D="$SCRIPT_DIR/../build/erwt3d"
 
 run_one() {
     local ds="$1"
@@ -26,8 +27,8 @@ run_one() {
         local axis=$(echo "$spec" | awk '{print $1}')
         local idx=$(echo "$spec" | awk '{print $2}')
         local t0=$(date +%s%N)
-        ./build/erwt3d_slice --input "$ERWT" --axis "$axis" --index "$idx" \
-            --output "$outdir/${axis}_${idx}.raw"
+        $ERWT3D slice input="$ERWT" axis="$axis" index="$idx" \
+            output="$outdir/${axis}_${idx}.raw"
         local t1=$(date +%s%N)
         local ms=$(( (t1 - t0) / 1000000 ))
         echo "  $axis[$idx]: ${ms}ms"
@@ -37,5 +38,5 @@ run_one() {
 case "$DATASET" in
     small|big) run_one "$DATASET" ;;
     all)        run_one small; run_one big ;;
-    *)          echo "Usage: $0 [small|big|all]"; exit 1 ;;
+    *)          echo "用法：$0 [small|big|all]"; exit 1 ;;
 esac

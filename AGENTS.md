@@ -106,17 +106,31 @@ D 盘 HDD，`--hdd` 模式，4GB 内存限制：
 
 ## 常用命令
 
+使用 sw4 风格的 `erwt3d` 统一入口（`build/erwt3d`）：
+
 ```bash
-# 赛题 benchmark
-./build/erwt3d_bench_contest --input data.erwt3d --output-dir out --hdd
+# 直接命令模式：erwt3d <command> key=value ...
+./build/erwt3d convert input=data.raw output=data.erwt3d nx=801 ny=2405 nz=2501 threads=8 memory-limit-mb=4096
 
-# 转换
-./build/erwt3d_convert --input data.raw --output data.erwt3d \
-    --nx 801 --ny 2405 --nz 2501 --threads 8 --memory-limit-mb 4096
+./build/erwt3d bench-contest input=data.erwt3d output-dir=out hdd
 
-# 验证
-./build/erwt3d_verify --raw data.raw --erwt3d data.erwt3d \
-    --nx 801 --ny 2405 --nz 2501 --samples 100000
+./build/erwt3d verify raw=data.raw erwt3d=data.erwt3d nx=801 ny=2405 nz=2501 samples=100000
+
+./build/erwt3d info data.erwt3d
+
+# 配置文件模式（sw4 风格，支持多任务）
+# job.txt 内容：
+#   convert
+#     input = data.raw
+#     output = data.erwt3d
+#     nx = 801  ny = 2405  nz = 2501
+#     threads = 8  memory-limit-mb = 4096
+#
+#   verify raw=data.raw erwt3d=data.erwt3d nx=801 ny=2405 nz=2501 samples=100000
+./build/erwt3d job.txt
+
+# 预览模式（不实际执行）
+./build/erwt3d --dry-run job.txt
 
 # 内存扫描
 ./scripts/bench_mem_sweep.sh
