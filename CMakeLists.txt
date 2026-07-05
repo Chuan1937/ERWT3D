@@ -86,6 +86,9 @@ target_link_libraries(erwt3d_bench PRIVATE erwt3d)
 add_executable(erwt3d_line tools/erwt3d_line.cpp)
 target_link_libraries(erwt3d_line PRIVATE erwt3d)
 
+add_executable(erwt3d_bench_line tools/erwt3d_bench_line.cpp)
+target_link_libraries(erwt3d_bench_line PRIVATE erwt3d)
+
 add_executable(gen_test_data tools/gen_test_data.cpp)
 
 add_executable(erwt3d_bench_raw tools/erwt3d_bench_raw.cpp)

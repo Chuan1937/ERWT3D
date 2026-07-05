@@ -18,6 +18,28 @@
 
 namespace erwt3d {
 
+namespace {
+
+inline void adviseSequential(int fd) {
+#if defined(POSIX_FADV_SEQUENTIAL)
+    posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+#else
+    (void)fd;
+#endif
+}
+
+inline void adviseWillNeed(int fd, uint64_t offset, uint64_t bytes) {
+#if defined(POSIX_FADV_WILLNEED)
+    posix_fadvise(fd, static_cast<off_t>(offset), static_cast<off_t>(bytes), POSIX_FADV_WILLNEED);
+#else
+    (void)fd;
+    (void)offset;
+    (void)bytes;
+#endif
+}
+
+}  // namespace
+
 ERWT3DReader::ERWT3DReader(const std::string& path, size_t cacheMB, bool useMmap)
     : path_(path), fd_(-1), cacheMB_(cacheMB), useMmap_(useMmap) {
     fd_ = open(path.c_str(), O_RDONLY);
@@ -592,7 +614,7 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
             if (planeIdx < planeCount) {
                 uint64_t planeBytes = header_.ny * header_.nz * sizeof(float);
                 uint64_t off = getXPlaneOffset(header_) + planeIdx * planeBytes;
-                posix_fadvise(fd_, off, planeBytes, POSIX_FADV_WILLNEED);
+                adviseWillNeed(fd_, off, planeBytes);
                 auto readStart = std::chrono::high_resolution_clock::now();
                 ssize_t n = pread(fd_, output, planeBytes, off);
                 auto readEnd = std::chrono::high_resolution_clock::now();
@@ -619,7 +641,7 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
 
     // Try X-panel fast path
     if (axis == SliceAxis::X && hasXPanels(header_)) {
-        posix_fadvise(fd_, 0, 0, POSIX_FADV_SEQUENTIAL);
+        adviseSequential(fd_);
         auto readStart = std::chrono::high_resolution_clock::now();
         bool panelOk = tryReadSliceXPanels(fd_, header_, index, output,
                                            profileIO_ ? &lastProfile_ : nullptr);
@@ -663,7 +685,7 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
         // Compressed path: read each superblock individually
         const uint64_t sbBV = getSuperblockBytes(header_);
         std::vector<uint8_t> sbBuf(sbBV);
-        posix_fadvise(fd_, 0, 0, POSIX_FADV_SEQUENTIAL);
+        adviseSequential(fd_);
         ok = true;
         for (const auto& task : plan.tasks) {
             uint64_t sbIdx = (task.file_offset - header_.data_offset) / sbBV;
@@ -760,7 +782,7 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
             return batch.batch_tasks[a].file_offset < batch.batch_tasks[b].file_offset;
         });
 
-        posix_fadvise(fd_, 0, 0, POSIX_FADV_SEQUENTIAL);
+        adviseSequential(fd_);
 
         uint64_t lastSbIdx = UINT64_MAX;
         for (size_t ti = 0; ti < taskOrder.size(); ++ti) {

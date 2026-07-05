@@ -30,6 +30,8 @@ static std::string resolveBinary(const std::string& cmd) {
         return cmd;
     if (cmd == "bench-contest" || cmd == "bench_contest" || cmd == "contest")
         return "erwt3d_bench_contest";
+    if (cmd == "bench-line" || cmd == "bench_line")
+        return "erwt3d_bench_line";
     if (cmd == "precompute-x" || cmd == "precompute_x")
         return "erwt3d_precompute_x";
     if (cmd == "benchmark" || cmd == "bench")
@@ -43,12 +45,14 @@ static bool isKnownCommand(const std::string& s) {
     static const std::unordered_set<std::string> cmds = {
         "convert", "verify", "slice", "line", "info",
         "bench", "benchmark", "bench-contest", "bench_contest", "contest",
+        "bench-line", "bench_line",
         "precompute-x", "precompute_x",
         "gen-test-data", "gen_test_data",
         // also accept prefixed names
         "erwt3d_convert", "erwt3d_verify", "erwt3d_slice",
         "erwt3d_line", "erwt3d_info", "erwt3d_bench",
         "erwt3d_bench_contest", "erwt3d_precompute_x",
+        "erwt3d_bench_line",
     };
     return cmds.find(s) != cmds.end();
 }
@@ -301,6 +305,7 @@ static void printUsage(const char* prog) {
               << "  info          File information\n"
               << "  bench         Generic benchmark\n"
               << "  bench-contest Competition benchmark\n"
+              << "  bench-line    Primary-axis line benchmark\n"
               << "  precompute-x  Precompute X-planes\n\n"
               << "Options:\n"
               << "  --dry-run, -n  Print what would be executed\n"

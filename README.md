@@ -1,8 +1,6 @@
 # ERWT3D
 
-三维空间数据高效读写库（HDD 优化）
-
-赛题2 - 三维空间数据的高效读写
+三维空间数据高效读写库，面向赛题2“三维空间数据的高效读写”。核心存储布局仍是单文件、Superblock + Leaf、Morton Z-order；本次收口重点放在更严格的 benchmark、verify、脚本和文档口径。
 
 ## 构建
 
@@ -11,69 +9,83 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
-## 快速开始
+## 严格比赛模拟
 
-```bash
-# 转换
-./build/erwt3d_convert --input data.raw --output data.erwt3d \
-    --nx 801 --ny 2405 --nz 2501 --threads 8 --memory-limit-mb 4096
+赛题性能口径仍为：
 
-# 赛题 benchmark
-./build/erwt3d_bench_contest --input data.erwt3d --output-dir out --hdd
-
-# 验证正确性
-./build/erwt3d_verify --raw data.raw --erwt3d data.erwt3d \
-    --nx 801 --ny 2405 --nz 2501 --samples 100000
+```text
+T_composite = (T_x_random + T_y_random + T_z_random + T_x_continuous + T_y_continuous + T_z_continuous) / 6
 ```
 
-## 核心二进制
+预处理时间不计入性能分，但预处理后全部必要文件大小计入存储分。推荐先做相对误差验证，再做严格 benchmark：
+
+```bash
+./build/erwt3d_verify \
+  --raw data.dat \
+  --erwt3d data.erwt3d \
+  --nx NX --ny NY --nz NZ \
+  --samples 100000 \
+  --rel-tol 1e-3
+
+./build/erwt3d_bench_contest \
+  --input data.erwt3d \
+  --output-dir bench_out \
+  --random-count 100 \
+  --continuous-count 10 \
+  --continuous-start random \
+  --timing-mode strict \
+  --storage-path data.erwt3d \
+  --hdd
+```
+
+`--timing-mode strict` 是推荐正式口径，计时覆盖 output file 的 open/create、切片读取、解码/重排、raw 写出和 close。`--timing-mode fast` 只适合调试核心读取性能，不适合正式报告。
+
+## 关键工具
 
 | 二进制 | 用途 |
 |--------|------|
-| `erwt3d_convert` | Raw ↔ ERWT3D 格式转换 |
-| `erwt3d_bench_contest` | 赛题标准 benchmark（6 组测试） |
-| `erwt3d_bench` | 通用 benchmark，支持全部参数 |
+| `erwt3d_convert` | Raw ↔ ERWT3D 转换 |
+| `erwt3d_bench_contest` | 赛题2 六组 benchmark |
+| `erwt3d_bench` | 通用 benchmark |
+| `erwt3d_verify` | 正确性验证，默认按相对误差判定 |
 | `erwt3d_slice` | 单切片读取 |
-| `erwt3d_verify` | 正确性验证 |
+| `erwt3d_line` | 主维度单列读取 |
+| `erwt3d_bench_line` | 主维度单列 benchmark，不计入 60 分公式 |
 | `erwt3d_info` | 文件信息查看 |
-| `erwt3d_precompute_x` | X-plane 预计算（可选加速） |
+| `erwt3d_precompute_x` | 可选 X-plane 预计算 |
 
-## HDD 性能
+## 验证与计时说明
 
-D 盘机械硬盘实测（WSL 9p，`--hdd` 模式，4GB 内存限制）：
+`erwt3d_verify` 现在默认按赛题要求使用相对误差判据：
 
-| 数据集 | T_composite | 存储比 |
-|--------|------------|--------|
-| 20GB (801×2405×2501) | 34.42s | 1.075x |
-| 50GB (2001×2201×3000) | 87.67s | 1.044x |
+- 官方否决项是单点相对误差 `< 0.001`
+- 对参考值接近 0 的点，默认使用 `--zero-abs-tol 1e-6` 保护
+- 如果要完全严格地对所有点都按相对误差处理，可加 `--strict-relative`
 
-带宽利用率 93.6%，接近 HDD 物理极限。
+`erwt3d_bench_contest` 的连续切片起点默认是 `--continuous-start random`，并由 `--seed` 控制复现。`--storage-path` 支持统计单文件，也支持递归统计整个预处理目录，更接近“预处理后全部文件都计入存储分”的比赛口径。
 
-## 存储设计
+`--repeats` 默认仍为 `1`。当 `repeats > 1` 时，`T_composite` 仍按每组最小值计算以保持兼容，但 CSV 和终端会同时输出 min/mean/median/max，并提示该结果偏乐观。
 
-- 两级层次：Superblock (64³ = 1MB) → Leaf (4³ = 256B)
-- Morton Z-order 物理布局，三轴访问均衡
-- 公式计算偏移，无需索引表
-- 128MB 读窗口 + 1MB gap 容忍 + 文件偏移排序
-- 单线程顺序 pread + readahead 内核预取
+## 输出目录建议
+
+输出目录位置会直接影响结果：
+
+- 输出目录放在 SSD 或 tmpfs，更偏向读取算法本身
+- 输出目录放在同一块 HDD，更接近比赛中的总 I/O 压力
+- 正式报告应明确写出 output 目录所在磁盘
 
 ## 脚本
 
-| 脚本 | 功能 |
+| 脚本 | 用途 |
 |------|------|
-| `scripts/benchmark.sh` | 赛题 benchmark |
+| `scripts/benchmark_contest_strict.sh` | 严格比赛模拟 |
+| `scripts/benchmark.sh` | 日常调参 benchmark，默认 `fast` |
+| `scripts/verify_contest.sh` | 赛题口径验证 |
+| `scripts/verify.sh` | 常用验证脚本 |
 | `scripts/bench_mem_sweep.sh` | 内存限制扫描 |
-| `scripts/bench_single.sh` | 单切片延迟测试 |
-| `scripts/convert.sh` | 转换 + 验证 |
-| `scripts/verify.sh` | 正确性验证 |
 
 ## 文档
 
-- [存储结构与算法](docs/design.md)
 - [性能测试](docs/benchmark.md)
 - [赛题说明](docs/competiton_guide.md)
-- [变更日志](CHANGELOG.md)
-
-## 许可
-
-BSD 3-Clause License
+- [存储结构与算法](docs/design.md)
