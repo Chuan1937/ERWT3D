@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -69,6 +70,7 @@ struct BenchOptions {
 };
 
 struct StorageStats {
+    bool ok = true;
     uint64_t fileBytes = 0;
     uint64_t storageBytes = 0;
     uint64_t rawBytes = 0;
@@ -153,40 +155,45 @@ bool writeBufferToFd(int fd, const float* data, uint64_t bytes) {
     return true;
 }
 
-uint64_t computeStorageBytes(const std::string& path) {
+bool computeStorageBytes(const std::string& path, uint64_t& totalBytes) {
+    totalBytes = 0;
     std::error_code ec;
     auto st = std::filesystem::status(path, ec);
     if (ec) {
-        return 0;
+        return false;
     }
     if (std::filesystem::is_regular_file(st)) {
-        return std::filesystem::file_size(path, ec);
+        totalBytes = std::filesystem::file_size(path, ec);
+        return !ec;
     }
     if (!std::filesystem::is_directory(st)) {
-        return 0;
+        return false;
     }
 
-    uint64_t total = 0;
     for (std::filesystem::recursive_directory_iterator it(path, ec), end; it != end && !ec; it.increment(ec)) {
         if (it->is_regular_file(ec)) {
-            total += it->file_size(ec);
+            totalBytes += it->file_size(ec);
         }
     }
-    return ec ? 0 : total;
+    return !ec;
 }
 
 StorageStats computeStorageStats(const BenchOptions& opt, const erwt3d::ERWT3DHeader& header) {
     StorageStats stats;
     stats.rawBytes = erwt3d::getRawSize(header);
-    stats.storagePath = opt.storagePath.empty() ? opt.inputPath : opt.storagePath;
+    bool explicitStoragePath = !opt.storagePath.empty();
+    stats.storagePath = explicitStoragePath ? opt.storagePath : opt.inputPath;
 
     struct stat fileStat;
     if (stat(opt.inputPath.c_str(), &fileStat) == 0) {
         stats.fileBytes = static_cast<uint64_t>(fileStat.st_size);
     }
 
-    stats.storageBytes = computeStorageBytes(stats.storagePath);
-    if (stats.storageBytes == 0 && !stats.storagePath.empty()) {
+    if (!computeStorageBytes(stats.storagePath, stats.storageBytes)) {
+        if (explicitStoragePath) {
+            stats.ok = false;
+            return stats;
+        }
         stats.storageBytes = stats.fileBytes;
     }
 
@@ -219,18 +226,19 @@ uint64_t chooseContinuousStart(uint64_t dim, int count, ContinuousStartMode mode
 }
 
 bool closeGroupFds(std::vector<int>& fds, bool fsyncOutput) {
+    bool ok = true;
     for (int fd : fds) {
         if (fd < 0) {
             continue;
         }
         if (fsyncOutput && fsync(fd) != 0) {
-            return false;
+            ok = false;
         }
         if (close(fd) != 0) {
-            return false;
+            ok = false;
         }
     }
-    return true;
+    return ok;
 }
 
 bool prepareFastOutputs(const std::string& outputDir,
@@ -244,6 +252,7 @@ bool prepareFastOutputs(const std::string& outputDir,
         int fd = open(outPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (fd < 0) {
             std::cerr << "\nError: Cannot pre-create " << outPath << "\n";
+            closeGroupFds(fds, false);
             return false;
         }
         fds[i] = fd;
@@ -471,6 +480,10 @@ int main(int argc, char* argv[]) {
 
     const auto& header = reader.getHeader();
     StorageStats storage = computeStorageStats(opt, header);
+    if (!storage.ok) {
+        std::cerr << "Error: invalid or inaccessible --storage-path: " << storage.storagePath << "\n";
+        return 1;
+    }
 
     std::cout << "============================================================\n"
               << "  ERWT3D Competition Benchmark (赛题2 评分标准)\n"

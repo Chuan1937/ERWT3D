@@ -25,6 +25,7 @@ T_composite = (T_x_random + T_y_random + T_z_random + T_x_continuous + T_y_conti
   --erwt3d data.erwt3d \
   --nx NX --ny NY --nz NZ \
   --samples 100000 \
+  --seed 20260511 \
   --rel-tol 1e-3
 
 ./build/erwt3d_bench_contest \
@@ -60,9 +61,10 @@ T_composite = (T_x_random + T_y_random + T_z_random + T_x_continuous + T_y_conti
 
 - 官方否决项是单点相对误差 `< 0.001`
 - 对参考值接近 0 的点，默认使用 `--zero-abs-tol 1e-6` 保护
+- 采样验证使用 `std::mt19937_64`，可通过 `--seed` 复现
 - 如果要完全严格地对所有点都按相对误差处理，可加 `--strict-relative`
 
-`erwt3d_bench_contest` 的连续切片起点默认是 `--continuous-start random`，并由 `--seed` 控制复现。`--storage-path` 支持统计单文件，也支持递归统计整个预处理目录，更接近“预处理后全部文件都计入存储分”的比赛口径。
+`erwt3d_bench_contest` 的连续切片起点默认是 `--continuous-start random`，并由 `--seed` 控制复现。`--storage-path` 支持统计单文件，也支持递归统计整个预处理目录，更接近“预处理后全部文件都计入存储分”的比赛口径；如果用户显式传入 `--storage-path` 但路径不存在、不可访问或递归统计失败，程序会直接报错退出，避免误算存储分。
 
 `--repeats` 默认仍为 `1`。当 `repeats > 1` 时，`T_composite` 仍按每组最小值计算以保持兼容，但 CSV 和终端会同时输出 min/mean/median/max，并提示该结果偏乐观。
 

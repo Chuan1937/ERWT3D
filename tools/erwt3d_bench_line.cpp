@@ -1,6 +1,7 @@
 #include "erwt3d/reader.hpp"
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -170,6 +171,24 @@ int main(int argc, char* argv[]) {
     double meanMs = totalMs / static_cast<double>(timesMs.size());
     double medianMs = medianOf(timesMs);
 
+    std::string summaryPath = outputDir + "/line_summary.csv";
+    std::ofstream summary(summaryPath);
+    summary << "metric,value\n"
+            << "axis," << axisStr << "\n"
+            << "count," << count << "\n"
+            << "seed," << seed << "\n"
+            << "threads," << numThreads << "\n"
+            << "memory_limit_mb," << memoryLimitMB << "\n"
+            << "io_backend," << ioBackendStr << "\n"
+            << std::fixed << std::setprecision(3)
+            << "total_time_ms," << totalMs << "\n"
+            << "avg_time_ms," << meanMs << "\n"
+            << "median_time_ms," << medianMs << "\n"
+            << "min_time_ms," << minMs << "\n"
+            << "max_time_ms," << maxMs << "\n"
+            << "output_bytes_total," << totalOutputBytes << "\n";
+    summary.close();
+
     std::cout << "input: " << inputPath << "\n"
               << "axis: " << axisStr << "\n"
               << "count: " << count << "\n"
@@ -184,6 +203,7 @@ int main(int argc, char* argv[]) {
               << "min_time_ms: " << minMs << "\n"
               << "max_time_ms: " << maxMs << "\n"
               << "output_bytes_total: " << totalOutputBytes << "\n"
-              << "csv: " << csvPath << "\n";
+              << "csv: " << csvPath << "\n"
+              << "summary_csv: " << summaryPath << "\n";
     return 0;
 }

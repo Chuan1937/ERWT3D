@@ -2,10 +2,12 @@
 #include "erwt3d/morton.hpp"
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <random>
 #include <vector>
 #include <fcntl.h>
 #include <unistd.h>
@@ -25,6 +27,7 @@ struct VerifyOptions {
     uint64_t ny = 0;
     uint64_t nz = 0;
     uint64_t numSamples = 0;
+    uint64_t seed = 20260511;
     double relTol = 1e-3;
     double zeroAbsTol = 1e-6;
     bool strictRelative = false;
@@ -48,6 +51,7 @@ void printUsage(const char* progName) {
         << "Error options:\n"
         << "  --rel-tol VALUE          Relative error threshold (default: 1e-3)\n"
         << "  --zero-abs-tol VALUE     Absolute tolerance for near-zero reference values (default: 1e-6)\n"
+        << "  --seed N                 Sampling seed for streaming mode (default: 20260511)\n"
         << "  --strict-relative        Apply relative error check to all points, including near-zero values\n";
 }
 
@@ -76,6 +80,7 @@ void updateStats(VerifyStats& stats, float refVal, float actualVal, const Verify
 void printStats(const VerifyStats& stats, const VerifyOptions& opt) {
     std::cout << "max_abs_error: " << stats.maxAbsError << std::endl;
     std::cout << "max_rel_error: " << stats.maxRelError << std::endl;
+    std::cout << "seed: " << opt.seed << std::endl;
     std::cout << "rel_tol: " << opt.relTol << std::endl;
     std::cout << "zero_abs_tol: " << opt.zeroAbsTol << std::endl;
     std::cout << "strict_relative: " << (opt.strictRelative ? "true" : "false") << std::endl;
@@ -110,11 +115,12 @@ bool compareRawVsErwt3d(const VerifyOptions& opt, VerifyStats& stats) {
             return false;
         }
 
-        srand(42);
+        std::mt19937_64 rng(opt.seed);
+        std::uniform_int_distribution<uint64_t> dist(0, totalElements - 1);
         std::map<uint64_t, std::vector<std::pair<uint64_t, uint64_t>>> sbGroups;
         uint64_t nxy = static_cast<uint64_t>(opt.nx) * opt.ny;
         for (uint64_t s = 0; s < opt.numSamples; ++s) {
-            uint64_t idx = rand() % totalElements;
+            uint64_t idx = dist(rng);
             uint64_t x = idx % opt.nx;
             uint64_t y = (idx / opt.nx) % opt.ny;
             uint64_t z = idx / nxy;
@@ -307,6 +313,8 @@ int main(int argc, char* argv[]) {
             opt.nz = std::stoull(next());
         } else if (std::strcmp(argv[i], "--samples") == 0) {
             opt.numSamples = std::stoull(next());
+        } else if (std::strcmp(argv[i], "--seed") == 0) {
+            opt.seed = std::stoull(next());
         } else if (std::strcmp(argv[i], "--rel-tol") == 0) {
             opt.relTol = std::stod(next());
         } else if (std::strcmp(argv[i], "--zero-abs-tol") == 0) {

@@ -38,6 +38,7 @@ cmake --build build -j
   --erwt3d data.erwt3d \
   --nx NX --ny NY --nz NZ \
   --samples 100000 \
+  --seed 20260511 \
   --rel-tol 1e-3
 
 ./build/erwt3d_bench_contest \
@@ -92,6 +93,7 @@ close output files
 - 目录：递归统计目录下所有普通文件大小
 
 如果不传 `--storage-path`，默认只统计 `--input` 文件大小以保持兼容。正式测试建议显式传入完整预处理输出目录或必要文件路径。
+如果显式传入 `--storage-path` 但路径不存在、不可访问或递归统计失败，benchmark 会直接报错退出，避免把错误路径静默算成 `--input` 的大小。
 
 存储分规则保持：
 
@@ -134,14 +136,15 @@ abs(raw) <= zero_abs_tol 且未启用 strict-relative:
 
 - `--rel-tol 1e-3`
 - `--zero-abs-tol 1e-6`
+- `--seed 20260511`
 
-如果要完全按“所有点都看相对误差”模拟，可加 `--strict-relative`。
+采样验证使用 `std::mt19937_64` 和全范围 `uniform_int_distribution<uint64_t>(0, totalElements - 1)`，相同 `--seed` 可复现相同采样点。如果要完全按“所有点都看相对误差”模拟，可加 `--strict-relative`。
 
 ## 主维度单列读取
 
 项目支持主维度单列读取：
 
 - `erwt3d_line`：读取单条线并写出标准 raw
-- `erwt3d_bench_line`：随机主维度单列 benchmark，输出 `line_benchmark.csv`
+- `erwt3d_bench_line`：随机主维度单列 benchmark，输出 `line_benchmark.csv` 和 `line_summary.csv`
 
 这部分能力不计入当前 60 分性能公式，但属于题目要求的功能支持范围。
