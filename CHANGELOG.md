@@ -4,48 +4,90 @@
 
 ## [0.4.0] - 2026-07-06
 
+### 数据布局说明
+
+当前文件格式的两级层次：
+
+- **Superblock 级别**：Z-Y-X 逻辑顺序排列（file_offset = data_offset + sbIdx × sbBytes, sbIdx = (z·gridY + y)·gridX + x）
+- **Leaf block 级别**：Superblock 内部 4096 个 Leaf（16×16×16）按 Morton Z-order 排列
+  - `leaf_offset = sb_offset + morton3D(lx, ly, lz) × leaf_bytes`
+  - Morton 编码使三轴在 Leaf 级别访问均衡
+
 ### Added
 
-- sw4 风格统一入口 `build/erwt3d`：读取配置文件或直接命令行，替代原有的多个独立二进制
-- 配置文件模式：支持 sw4 风格分段配置（`command key=value`），空行分隔任务
-- 直接命令模式：`build/erwt3d convert input=... output=...`，不再需要 `--key value` 长参数
-- `tools/erwt3d_main.cpp` 作为 C++ 单一入口，自动分派到各子工具
+- **sw4 风格统一入口** `tools/erwt3d_main.cpp` → `build/erwt3d`：
+  - 支持配置文件模式（`erwt3d config.txt`，sw4 风格分段格式 `command\n  key=value`）
+  - 支持直接命令模式（`erwt3d convert input=... output=...`，不再需要 `--key value` 长参数）
+  - 自动分派到各子工具（`erwt3d_convert`, `erwt3d_bench_contest` 等）
+- **读/写分离计时诊断**（`tools/erwt3d_bench_contest.cpp`）：
+  - `GroupResult` 新增 `readTimeMs` / `writeTimeMs` 字段
+  - 每组输出格式：`x random (100 slices)... 82.88s (r=71.30s w=10.30s)`
+  - `contest_summary.csv` 新增 `read_time_ms` / `write_time_ms` 列
+  - `contest_score.csv` 新增每组 `read_*_ms` / `write_*_ms` 列
+- **远程 merge 引入**：`tools/erwt3d_bench_line.cpp` 单列 benchmark、`scripts/benchmark_contest_strict.sh`、`scripts/verify_contest.sh`
 
 ### Changed
 
 - 废弃根目录 `erwt3d` shell 脚本，改为 `build/erwt3d` C++ 二进制
 - 全部 `scripts/` 脚本改用 `build/erwt3d <command> key=value` 格式
-- 压缩文件 `readSliceSB` 路径按物理偏移排序（`compIndex[].file_offset`），避免 HDD 随机寻道
-- `readSlicesBatch` 不再硬编码单线程，响应传入的 `numThreads` 参数
 
 ### Fixed
 
-- 压缩文件 HDD 读路径未按物理偏移排序导致大量随机寻道
-- `readSlicesBatch` 忽略 `numThreads` 参数，一直单线程
-- batch 模式 `contest_detail.csv` per-slice 时间全为 0
-- Reference 消息比较字节数而非时间，完全无参考意义
+- **压缩文件 HDD 单切片读未按物理偏移排序**（`src/reader.cpp:readSliceSB`）
+  - **根因**：压缩文件中 superblock 的物理位置在 `compIndex[sbIdx].file_offset`，与逻辑偏移 `data_offset + sbIdx * sbBytes` 无关。原代码按逻辑偏移顺序遍历 tasks，在 HDD 上造成大量随机寻道。
+  - **修复**：构建 `taskOrder` 按 `compIndex[sbIdx].file_offset` 排序后遍历。
+  - **额外优化**：添加 `lastSbIdx` 缓存——同一 superblock 若被同一 slice 的多个 task 引用，只读一次。
+  - **影响文件**：`src/reader.cpp:662-690`
+  - **参照**：`readSlicesBatch` 的压缩路径（`src/reader.cpp:753-761`）早已正确排序，修复后单切片路径与之行为一致。
 
-### Removed
+- **`readSlicesBatch` 硬编码单线程**（`src/reader.cpp:794`）
+  - **根因**：`executeSBBatchHDD(..., 1, ...)` 第4参数硬编码为 `1`，忽略调用者传入的 `numThreads`。
+  - **修复**：改为 `executeSBBatchHDD(..., numThreads, ...)`，由 `executeSBBatchHDD` 内部的线程安全保护（`batch.plans.size() > 1` 时强制单线程）兜底。
+  - **影响**：SSD/NVMe 场景可使用多线程 batch 读；HDD 场景 `numThreads=1` 不受影响。
 
-- 根目录 `erwt3d` shell 脚本（由 `build/erwt3d` 替代）
+- **batch 模式 per-slice detail 全为 0**（`tools/erwt3d_bench_contest.cpp:139`）
+  - **根因**：batch 模式下 `result.perSliceTimes.push_back(0)` 未记录各切片写出耗时。
+  - **修复**：在 pwrite 前后计时，写入实际耗时。相当于记录单切片写出时间（含 HDD 写入竞争开销）。
+
+- **Reference 消息计算错误**（`tools/erwt3d_bench_contest.cpp:515-519`）
+  - **根因**：打印 "Compare T_composite with your disk's sequential read of 3 × slice_bytes bytes"，将时间与字节数比较，完全无参考意义。且用 3 个切片体积而非全量体积。
+  - **修复**：改为输出全量体积（GiB）+ 公式 + 示例估算时间。
 
 ### Performance
 
-D 盘 HDD 实测（存储比 ≤1.5x，`--hdd` 模式，计时含文件写出）：
+- **输出文件预分配（ftruncate）**（`tools/erwt3d_bench_contest.cpp:runGroup`）
+  - **原理**：原来 `open(O_WRONLY | O_CREAT | O_TRUNC)` 创建零长度文件，首次 `pwrite(fd, data, outBytes, 0)` 触发 NTFS 文件扩展元数据操作（分配簇链、更新 MFT），与读请求在 HDD 上竞争磁头定位。`ftruncate(fd, outBytes)` 提前预分配文件大小，pwrite 时只需写数据无需扩展元数据。
+  - **实现**：文件预创建时改为 `open(O_RDWR | O_CREAT | O_TRUNC)` + `ftruncate(fd, outBytes)`，避免 `pwrite` 在计时路径内做元数据更新。
+  - **前置探索**：尝试过 mmap 写（`mmap + memcpy + munmap`）替代 pwrite，分析发现 mmap 需额外 syscall 且写回时机不可控；尝试过自适应 gap tolerance（按 gridX 动态增大 gap），分析发现 X random 在 3MB gap 下已自然连续（100 个随机位置覆盖所有 superX 值，相邻 superblock 间无间隙），增大 gap 反而让 X continuous 读放大了 13x（合并全文件为一个窗口）。
+  
+  实测提升：
 
-| 数据集 | T_composite | 存储比 | 存储分 |
-|--------|------------|--------|--------|
-| 20GB (801×2405×2501) | 37.99s | 1.408x | 20/20 |
-| 50GB (2001×2201×3000) | 105.91s | 1.378x | 20/20 |
+  | 数据集 | 优化前 T_composite | 优化后 T_composite | 提升 |
+  |--------|-------------------|--------------------|------|
+  | 20GB (X-plane stride=3) | 40.86s | 37.99s | **-7.0%** |
+  | 50GB (X-plane stride=3) | 136.81s | 105.91s | **-22.6%** |
 
-**注意**：v0.4 计时包含文件写出（符合比赛评分口径）。此前版本仅计读取时间，不可直接对比。
+  50GB 各组分时间对比：
 
-v0.4 优化效果：
-- **输出文件预分配（ftruncate）**：消除 pwrite 时 NTFS 文件扩展元数据开销
-  - 20GB: T_composite 40.86s → 37.99s (-7.0%)
-  - 50GB: T_composite 136.81s → 105.91s (-22.6%)，X random 从 421s 降至 268s (-36%)
-- 读/写分离诊断：每组分组的 readTimeMs / writeTimeMs 输出
-- 压缩路径 HDD 读按物理偏移排序 + lastSbIdx 缓存
+  | 测试组 | 优化前 | 优化后 | 提升 |
+  |--------|--------|--------|------|
+  | X random (100片) | 421.02s | 267.84s | **-36.4%** |
+  | Y random (100片) | 196.30s | 178.68s | -9.0% |
+  | Z random (100片) | 176.03s | 171.32s | -2.7% |
+  | X continuous (10片) | 16.43s | 7.66s | **-53.4%** |
+  | Y continuous (10片) | 6.29s | 5.70s | -9.4% |
+  | Z continuous (10片) | 4.76s | 4.27s | -10.3% |
+
+  **关键发现**：X random 读时（243.8s）仍占组时间 91%，瓶颈在 HDD 顺序带宽。X 方向读取需遍历全部 superblock（50GB 数据集 ~52GB），受 HDD 实际有效带宽 ~215 MB/s 限制。进一步优化需改变文件物理布局或提高 X-plane 命中率。
+
+  **被放弃的优化方向**：
+  - 增大读窗口（128MB → 1GB）：分析发现对 X random 窗口合并不起作用（所有 superX 在 3MB gap 下已自然连续，增大 gap 反而让 X continuous 全文件合并为 1 个大窗口，数据放大了 13x）
+  - mmap 替代 pwrite：pre-truncate 已消除主要写入瓶颈（元数据开销），mmap 额外引入 syscall 开销且写回不可控
+  - 自适应 gap tolerance：仅对 X 轴有效且与现有 3MB gap 效果相同
+
+### Removed
+
+- 根目录 `erwt3d` shell 脚本（由 `build/erwt3d` C++ 二进制替代）
 
 ## [0.3.0] - 2026-06-25
 
