@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/mman.h>
 
 static void printUsage(const char* prog) {
     std::cerr << "Usage: " << prog << " --input data.erwt3d --output-dir DIR [options]\n\n"
@@ -45,9 +46,11 @@ struct GroupResult {
     std::string axis;
     std::string mode;
     int sliceCount;
-    double groupTimeMs;   // wall-clock time for the entire group
+    double groupTimeMs;
+    double readTimeMs;
+    double writeTimeMs;
     uint64_t outputBytesPerSlice;
-    std::vector<double> perSliceTimes;  // for diagnostics only
+    std::vector<double> perSliceTimes;
 };
 
 static double percentile(std::vector<double> sorted, double p) {
@@ -79,16 +82,23 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
     result.mode = mode;
     result.sliceCount = static_cast<int>(indices.size());
     result.outputBytesPerSlice = outBytes;
+    result.readTimeMs = 0;
+    result.writeTimeMs = 0;
     result.perSliceTimes.clear();
     result.perSliceTimes.reserve(indices.size());
 
-    // Pre-create output files BEFORE timing to avoid open/close overhead
+    // Pre-create output files BEFORE timing, with pre-allocation
     std::vector<int> preCreatedFDs(indices.size(), -1);
     for (size_t i = 0; i < indices.size(); ++i) {
         std::string outPath = outputDir + "/" + axisName + "_" + mode + "_" + std::to_string(i) + ".raw";
-        int fd = open(outPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        int fd = open(outPath.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
         if (fd < 0) {
             std::cerr << "\nError: Cannot pre-create " << outPath << "\n";
+            return false;
+        }
+        if (ftruncate(fd, static_cast<off_t>(outBytes)) != 0) {
+            std::cerr << "\nError: Cannot pre-allocate " << outPath << "\n";
+            close(fd);
             return false;
         }
         preCreatedFDs[i] = fd;
@@ -112,6 +122,8 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
         if (maxBatch < 1) maxBatch = 1;
         size_t batchSize = std::min(totalSlices, maxBatch);
 
+        double totalReadMs = 0, totalWriteMs = 0;
+
         for (size_t batchStart = 0; batchStart < totalSlices; batchStart += batchSize) {
             size_t batchEnd = std::min(batchStart + batchSize, totalSlices);
             size_t batchLen = batchEnd - batchStart;
@@ -123,11 +135,14 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
                 reqs.push_back({axis, indices[batchStart + i], buffers[i].data()});
             }
 
+            auto rStart = std::chrono::high_resolution_clock::now();
             if (!reader.readSlicesBatch(reqs, numThreads, memoryLimitMB, wcfg)) {
                 std::cerr << "\nError: batch read failed for " << axisName << "\n";
                 for (auto fd : preCreatedFDs) if (fd >= 0) close(fd);
                 return false;
             }
+            auto rEnd = std::chrono::high_resolution_clock::now();
+            totalReadMs += std::chrono::duration<double, std::milli>(rEnd - rStart).count();
 
             for (size_t i = 0; i < batchLen; ++i) {
                 auto wStart = std::chrono::high_resolution_clock::now();
@@ -138,27 +153,41 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
                     for (auto fd : preCreatedFDs) if (fd >= 0) close(fd);
                     return false;
                 }
-                result.perSliceTimes.push_back(
-                    std::chrono::duration<double, std::milli>(wEnd - wStart).count());
+                double t = std::chrono::duration<double, std::milli>(wEnd - wStart).count();
+                totalWriteMs += t;
+                result.perSliceTimes.push_back(t);
             }
         }
+        result.readTimeMs = totalReadMs;
+        result.writeTimeMs = totalWriteMs;
     } else {
         std::vector<float> output(sliceSize);
-        
+        double totalReadMs = 0, totalWriteMs = 0;
+
         for (size_t i = 0; i < indices.size(); ++i) {
+            auto rStart = std::chrono::high_resolution_clock::now();
             if (!reader.readSlice(axis, indices[i], output.data(), numThreads, memoryLimitMB)) {
                 std::cerr << "\nError: readSlice failed for " << axisName << "[" << indices[i] << "]\n";
                 for (auto fd : preCreatedFDs) if (fd >= 0) close(fd);
                 return false;
             }
+            auto rEnd = std::chrono::high_resolution_clock::now();
+            totalReadMs += std::chrono::duration<double, std::milli>(rEnd - rStart).count();
 
+            auto wStart = std::chrono::high_resolution_clock::now();
             ssize_t written = pwrite(preCreatedFDs[i], output.data(), outBytes, 0);
+            auto wEnd = std::chrono::high_resolution_clock::now();
             if (written != static_cast<ssize_t>(outBytes)) {
                 std::cerr << "\nError: Write failed for " << axisName << "[" << i << "]\n";
                 for (auto fd : preCreatedFDs) if (fd >= 0) close(fd);
                 return false;
             }
+            double t = std::chrono::duration<double, std::milli>(wEnd - wStart).count();
+            totalWriteMs += t;
+            result.perSliceTimes.push_back(t);
         }
+        result.readTimeMs = totalReadMs;
+        result.writeTimeMs = totalWriteMs;
     }
 
     auto groupEnd = std::chrono::high_resolution_clock::now();
@@ -374,7 +403,8 @@ int main(int argc, char* argv[]) {
             }
 
             std::cout << " " << std::fixed << std::setprecision(4) << gr.groupTimeMs / 1000.0 << "s"
-                      << " (avg=" << std::setprecision(4) << gr.groupTimeMs / gr.sliceCount / 1000.0 << "s)\n";
+                      << " (r=" << std::setprecision(3) << gr.readTimeMs / 1000.0
+                      << "s w=" << gr.writeTimeMs / 1000.0 << "s)\n";
 
             if (gr.groupTimeMs < bestGroupMs) {
                 bestGroupMs = gr.groupTimeMs;
@@ -434,11 +464,12 @@ int main(int argc, char* argv[]) {
     std::string summaryPath = outputDir + "/contest_summary.csv";
     {
         std::ofstream sf(summaryPath);
-        sf << "group,axis,mode,slice_count,group_time_ms,avg_per_slice_ms,output_bytes_per_slice\n";
+        sf << "group,axis,mode,slice_count,group_time_ms,read_time_ms,write_time_ms,avg_per_slice_ms,output_bytes_per_slice\n";
         for (int g = 0; g < 6; ++g) {
             const auto& r = results[g];
             sf << g << "," << r.axis << "," << r.mode << "," << r.sliceCount << ","
                << std::fixed << std::setprecision(3) << r.groupTimeMs << ","
+               << r.readTimeMs << "," << r.writeTimeMs << ","
                << r.groupTimeMs / r.sliceCount << "," << r.outputBytesPerSlice << "\n";
         }
     }
@@ -459,11 +490,17 @@ int main(int argc, char* argv[]) {
            << std::fixed << std::setprecision(3)
            << "T_x_random_ms," << groupTimes[0] << "\n"
            << "T_y_random_ms," << groupTimes[1] << "\n"
-           << "T_z_random_ms," << groupTimes[2] << "\n"
-           << "T_x_continuous_ms," << groupTimes[3] << "\n"
-           << "T_y_continuous_ms," << groupTimes[4] << "\n"
-           << "T_z_continuous_ms," << groupTimes[5] << "\n"
-           << "total_all_groups_ms," << totalAllGroups << "\n"
+            << "T_z_random_ms," << groupTimes[2] << "\n"
+            << "T_x_continuous_ms," << groupTimes[3] << "\n"
+            << "T_y_continuous_ms," << groupTimes[4] << "\n"
+            << "T_z_continuous_ms," << groupTimes[5] << "\n"
+            << "read_x_random_ms," << results[0].readTimeMs << "\n"
+            << "write_x_random_ms," << results[0].writeTimeMs << "\n"
+            << "read_y_random_ms," << results[1].readTimeMs << "\n"
+            << "write_y_random_ms," << results[1].writeTimeMs << "\n"
+            << "read_z_random_ms," << results[2].readTimeMs << "\n"
+            << "write_z_random_ms," << results[2].writeTimeMs << "\n"
+            << "total_all_groups_ms," << totalAllGroups << "\n"
            << "T_composite_ms," << tComposite << "\n"
            << "avg_X_ms," << avgX << "\n"
            << "avg_Y_ms," << avgY << "\n"
@@ -478,11 +515,14 @@ int main(int argc, char* argv[]) {
     std::cout << "\n============================================================\n"
               << "  COMPETITION SCORE (赛题2 评分标准)\n"
               << "============================================================\n\n"
-              << "  6 Group Times (wall-clock, read + write):\n"
+               << "  6 Group Times (wall-clock, read + write):\n"
               << "    [1] X random:      " << std::setw(8) << std::fixed << std::setprecision(4)
-              << groupTimes[0] / 1000.0 << "s  (" << randomCount << " slices)\n"
-              << "    [2] Y random:      " << std::setw(8) << groupTimes[1] / 1000.0 << "s\n"
-              << "    [3] Z random:      " << std::setw(8) << groupTimes[2] / 1000.0 << "s\n"
+              << groupTimes[0] / 1000.0 << "s  (" << randomCount << " slices)  r=" << std::setprecision(3)
+              << results[0].readTimeMs / 1000.0 << "s w=" << results[0].writeTimeMs / 1000.0 << "s\n"
+              << "    [2] Y random:      " << std::setw(8) << groupTimes[1] / 1000.0
+              << "s  r=" << results[1].readTimeMs / 1000.0 << "s w=" << results[1].writeTimeMs / 1000.0 << "s\n"
+              << "    [3] Z random:      " << std::setw(8) << groupTimes[2] / 1000.0
+              << "s  r=" << results[2].readTimeMs / 1000.0 << "s w=" << results[2].writeTimeMs / 1000.0 << "s\n"
               << "    [4] X continuous:  " << std::setw(8) << groupTimes[3] / 1000.0 << "s  (" << countX << " slices)\n"
               << "    [5] Y continuous:  " << std::setw(8) << groupTimes[4] / 1000.0 << "s\n"
               << "    [6] Z continuous:  " << std::setw(8) << groupTimes[5] / 1000.0 << "s\n"
