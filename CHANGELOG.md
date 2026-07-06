@@ -2,7 +2,7 @@
 
 本文件记录 ERWT3D 的重要变更。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [0.4.0] - 2026-07-05
+## [0.4.0] - 2026-07-06
 
 ### Added
 
@@ -15,10 +15,30 @@
 
 - 废弃根目录 `erwt3d` shell 脚本，改为 `build/erwt3d` C++ 二进制
 - 全部 `scripts/` 脚本改用 `build/erwt3d <command> key=value` 格式
+- 压缩文件 `readSliceSB` 路径按物理偏移排序（`compIndex[].file_offset`），避免 HDD 随机寻道
+- `readSlicesBatch` 不再硬编码单线程，响应传入的 `numThreads` 参数
+
+### Fixed
+
+- 压缩文件 HDD 读路径未按物理偏移排序导致大量随机寻道
+- `readSlicesBatch` 忽略 `numThreads` 参数，一直单线程
+- batch 模式 `contest_detail.csv` per-slice 时间全为 0
+- Reference 消息比较字节数而非时间，完全无参考意义
 
 ### Removed
 
 - 根目录 `erwt3d` shell 脚本（由 `build/erwt3d` 替代）
+
+### Performance
+
+D 盘 HDD 实测（存储比 ≤1.5x，`--hdd` 模式，计时含文件写出）：
+
+| 数据集 | T_composite | 存储比 | 存储分 |
+|--------|------------|--------|--------|
+| 20GB (801×2405×2501) | 40.86s | 1.408x | 20/20 |
+| 50GB (2001×2201×3000) | 136.81s | 1.378x | 20/20 |
+
+**注意**：v0.4 计时包含文件写出（符合比赛评分口径）。此前版本仅计读取时间，不可直接对比。
 
 ## [0.3.0] - 2026-06-25
 

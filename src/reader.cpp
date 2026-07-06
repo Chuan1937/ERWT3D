@@ -660,14 +660,30 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
 
     bool ok;
     if (compressed_) {
-        // Compressed path: read each superblock individually
+        // Compressed path: sort tasks by physical file offset for HDD
         const uint64_t sbBV = getSuperblockBytes(header_);
         std::vector<uint8_t> sbBuf(sbBV);
         posix_fadvise(fd_, 0, 0, POSIX_FADV_SEQUENTIAL);
+
+        std::vector<size_t> taskOrder(plan.tasks.size());
+        for (size_t i = 0; i < plan.tasks.size(); ++i) taskOrder[i] = i;
+        std::sort(taskOrder.begin(), taskOrder.end(), [&](size_t a, size_t b) {
+            uint64_t sbIdxA = (plan.tasks[a].file_offset - header_.data_offset) / sbBV;
+            uint64_t sbIdxB = (plan.tasks[b].file_offset - header_.data_offset) / sbBV;
+            if (sbIdxA < compIndex_.size() && sbIdxB < compIndex_.size())
+                return compIndex_[sbIdxA].file_offset < compIndex_[sbIdxB].file_offset;
+            return plan.tasks[a].file_offset < plan.tasks[b].file_offset;
+        });
+
         ok = true;
-        for (const auto& task : plan.tasks) {
+        uint64_t lastSbIdx = UINT64_MAX;
+        for (size_t ti = 0; ti < taskOrder.size(); ++ti) {
+            const auto& task = plan.tasks[taskOrder[ti]];
             uint64_t sbIdx = (task.file_offset - header_.data_offset) / sbBV;
-            if (!readSuperblock(sbIdx, sbBuf.data())) { ok = false; break; }
+            if (sbIdx != lastSbIdx) {
+                if (!readSuperblock(sbIdx, sbBuf.data())) { ok = false; break; }
+                lastSbIdx = sbIdx;
+            }
             unpackLeaves(header_, plan, task, sbBuf.data(), output);
         }
     } else if (sbReadMode_ == SBReadMode::HDDReadWindow) {
@@ -778,7 +794,7 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
     }
 
     return executeSBBatchHDD(fd_, buildSBBatchPlan(pp), header_, outputs.data(),
-                              1, memoryLimitMB, wcfg, pinThreads_, nullptr);
+                              numThreads, memoryLimitMB, wcfg, pinThreads_, nullptr);
 }
 
 bool ERWT3DReader::readExtents(const std::vector<Extent>& extents, void* buffer) {

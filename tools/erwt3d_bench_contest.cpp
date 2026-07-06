@@ -130,13 +130,16 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
             }
 
             for (size_t i = 0; i < batchLen; ++i) {
+                auto wStart = std::chrono::high_resolution_clock::now();
                 ssize_t written = pwrite(preCreatedFDs[batchStart + i], buffers[i].data(), outBytes, 0);
+                auto wEnd = std::chrono::high_resolution_clock::now();
                 if (written != static_cast<ssize_t>(outBytes)) {
                     std::cerr << "\nError: Write failed for " << axisName << "[" << (batchStart+i) << "]\n";
                     for (auto fd : preCreatedFDs) if (fd >= 0) close(fd);
                     return false;
                 }
-                result.perSliceTimes.push_back(0);
+                result.perSliceTimes.push_back(
+                    std::chrono::duration<double, std::milli>(wEnd - wStart).count());
             }
         }
     } else {
@@ -510,13 +513,14 @@ int main(int argc, char* argv[]) {
 
     // Reference: main-axis sequential read × 3
     // For row-major (z*ny+y)*nx+x, the "main axis" is X (nx is fastest-varying)
-    // Sequential X read = ny*nz * sizeof(float) / disk_bandwidth
+    // Sequential read of entire data = rawBytes / disk_bandwidth
+    // Baseline estimate ≈ 3 × sequential read (3 axes, each needing ~1 full pass)
     // This is a rough reference only
     std::cout << "  Reference (main-axis sequential × 3):\n"
-              << "    Raw size:     " << rawBytes << " bytes\n"
-              << "    Each X slice: " << header.ny * header.nz * sizeof(float) << " bytes\n"
-              << "    (Compare T_composite with your disk's sequential read of "
-              << 3 * header.ny * header.nz * sizeof(float) << " bytes)\n\n";
+              << "    Raw size:     " << rawBytes << " bytes (" << (rawBytes / (1024.0*1024*1024)) << " GiB)\n"
+              << "    Estimate:     T_composite ≈ 3 × (raw_size / disk_bandwidth)\n"
+              << "                 e.g. HDD 300MB/s → ~" << std::fixed << std::setprecision(1)
+              << (3.0 * rawBytes / (300.0 * 1024 * 1024)) << "s\n\n";
 
     std::cout << "  Output:\n"
               << "    Score:   " << scorePath << "\n"
