@@ -1,5 +1,6 @@
 #!/bin/bash
-# 赛题标准 benchmark（100 random + 10 continuous）
+# 常用 benchmark 脚本，偏向日常调参。
+# 这不是最严格的比赛口径；严格模拟请使用 benchmark_contest_strict.sh。
 # 用法：benchmark.sh [small|big|all]
 set -e
 
@@ -21,7 +22,8 @@ run_one() {
     echo "  [$LABEL] $ds -> $outdir"
     echo "=========================================="
     $ERWT3D bench-contest input="$ERWT" output-dir="$outdir" \
-        random-count=100 continuous-count=10 hdd
+        random-count=100 continuous-count=10 \
+        continuous-start=middle timing-mode=fast hdd
 }
 
 case "$DATASET" in

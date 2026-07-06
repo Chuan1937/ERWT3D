@@ -28,6 +28,24 @@ using namespace detail;
 
 namespace {
 
+inline void adviseSequential(int fd) {
+#if defined(POSIX_FADV_SEQUENTIAL)
+    posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+#else
+    (void)fd;
+#endif
+}
+
+inline void tryReadahead(int fd, uint64_t offset, uint64_t bytes) {
+#if defined(__linux__)
+    readahead(fd, static_cast<off_t>(offset), static_cast<size_t>(bytes));
+#else
+    (void)fd;
+    (void)offset;
+    (void)bytes;
+#endif
+}
+
 struct Window {
     uint64_t file_offset;
     uint64_t read_bytes;
@@ -71,7 +89,7 @@ inline void prefetchWindows(int fd, const std::vector<Window>& wins,
     for (int ahead = 1; ahead <= count && curIdx + ahead < endIdx; ++ahead) {
         const auto& fw = wins[curIdx + ahead];
         if (fw.file_offset > wins[curIdx].file_offset)
-            readahead(fd, fw.file_offset, fw.read_bytes);
+            tryReadahead(fd, fw.file_offset, fw.read_bytes);
     }
 }
 
@@ -93,7 +111,7 @@ bool executeSBPlanRunBatch(int fd, const SBTaskPlan& plan, const ERWT3DHeader& h
     if (numThreads <= 1) numThreads = 1;
 
     // HDD优化: 提示内核顺序访问模式
-    posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+    adviseSequential(fd);
 
     // Build runs: group contiguous superblock reads
     struct Run { uint64_t file_offset; uint64_t bytes; size_t first_task; size_t task_count; };
@@ -114,10 +132,10 @@ bool executeSBPlanRunBatch(int fd, const SBTaskPlan& plan, const ERWT3DHeader& h
     }
 
     size_t maxRunBytes = 0;
-    for (const auto& r : runs) maxRunBytes = std::max(maxRunBytes, r.bytes);
+    for (const auto& r : runs) maxRunBytes = std::max<size_t>(maxRunBytes, static_cast<size_t>(r.bytes));
     size_t maxBufPerThread = memoryLimitMB * 1024ULL * 1024ULL / static_cast<size_t>(numThreads);
     if (maxBufPerThread < sbBV) return false; // memory limit too small for one superblock
-    maxBufPerThread = std::min(maxBufPerThread, std::max(maxRunBytes, sbBV * 4));
+    maxBufPerThread = std::min(maxBufPerThread, std::max<size_t>(maxRunBytes, static_cast<size_t>(sbBV * 4)));
 
     auto processRuns = [&](size_t startR, size_t endR) -> bool {
         std::vector<uint8_t> buf(maxBufPerThread);
@@ -197,7 +215,7 @@ bool executeSBPlanLeafIndex(int fd, const SBTaskPlan& plan, const ERWT3DHeader& 
     size_t memLimit = memoryLimitMB * 1024ULL * 1024ULL;
 
     // HDD优化: 提示内核顺序访问模式
-    posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+    adviseSequential(fd);
     if (leafMergeBytes < lfBV * 2) leafMergeBytes = lfBV * 16;
     if (leafMergeBytes > memLimit / 2) leafMergeBytes = memLimit / 2;
     if (leafMergeBytes < lfBV * 4) return false; // memory too small
@@ -322,17 +340,17 @@ bool executeSBPlanHDDReadWindow(int fd, const SBTaskPlan& plan, const ERWT3DHead
     const uint64_t rwBytes = cfg.read_window_bytes > 0 ? cfg.read_window_bytes : 128 * 1024 * 1024;
     const uint64_t gapBytes = cfg.max_gap_bytes > 0 ? cfg.max_gap_bytes : 1024 * 1024;
 
-    posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+    adviseSequential(fd);
 
     std::vector<uint64_t> offsets(n);
     for (size_t i = 0; i < n; ++i) offsets[i] = plan.tasks[i].file_offset;
     auto windows = buildWindows(offsets.data(), n, sbBV, rwBytes, gapBytes);
 
     size_t maxWinBytes = 0;
-    for (const auto& w : windows) maxWinBytes = std::max(maxWinBytes, w.read_bytes);
+    for (const auto& w : windows) maxWinBytes = std::max<size_t>(maxWinBytes, static_cast<size_t>(w.read_bytes));
     size_t maxBufPerThread = memoryLimitMB * 1024ULL * 1024ULL / static_cast<size_t>(numThreads);
     if (maxBufPerThread < sbBV) return false;
-    maxBufPerThread = std::min(maxBufPerThread, std::max(maxWinBytes, sbBV * 4));
+    maxBufPerThread = std::min(maxBufPerThread, std::max<size_t>(maxWinBytes, static_cast<size_t>(sbBV * 4)));
 
     auto processWindows = [&](size_t startW, size_t endW) -> bool {
         std::vector<uint8_t> buf(maxBufPerThread);
@@ -449,15 +467,15 @@ bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr
     const uint64_t rwB = wcfg.read_window_bytes > 0 ? wcfg.read_window_bytes : 128 * 1024 * 1024;
     const uint64_t gapB = wcfg.max_gap_bytes > 0 ? wcfg.max_gap_bytes : 1024 * 1024;
 
-    posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+    adviseSequential(fd);
 
     std::vector<uint64_t> offsets(n);
     for (size_t i = 0; i < n; ++i) offsets[i] = batch.batch_tasks[i].file_offset;
     auto wins = buildWindows(offsets.data(), n, sbBV, rwB, gapB);
-    size_t mwb = 0; for (auto& w : wins) mwb = std::max(mwb, w.read_bytes);
+    size_t mwb = 0; for (auto& w : wins) mwb = std::max<size_t>(mwb, static_cast<size_t>(w.read_bytes));
     size_t mbpt = memoryLimitMB * 1024ULL * 1024ULL / static_cast<size_t>(numThreads);
     if (mbpt < sbBV) return false;
-    mbpt = std::min(mbpt, std::max(mwb, sbBV * 4));
+    mbpt = std::min(mbpt, std::max<size_t>(mwb, static_cast<size_t>(sbBV * 4)));
 
     if (profile) {
         profile->windows_count = wins.size();

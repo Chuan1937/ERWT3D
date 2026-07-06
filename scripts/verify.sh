@@ -1,5 +1,6 @@
 #!/bin/bash
 # 正确性验证：ERWT3D 数据与原始 RAW 逐点比对
+# 默认启用赛题推荐的相对误差阈值；严格比赛脚本见 verify_contest.sh。
 # 用法：verify.sh [small|big|all]
 set -e
 
@@ -19,7 +20,7 @@ run_one() {
     echo "    erwt3d:  $ERWT"
     echo "=========================================="
     $ERWT3D verify raw="$RAW" erwt3d="$ERWT" \
-        nx=$NX ny=$NY nz=$NZ samples=100000
+        nx=$NX ny=$NY nz=$NZ samples=100000 rel-tol=1e-3
 }
 
 case "$DATASET" in
