@@ -46,7 +46,7 @@ D 盘 HDD，`--hdd` 模式，4GB 内存限制，best run：
 - **X-plane 压缩 sidecar**（`data.erwt3d.xp`）：
   - 独立 sidecar 文件，不污染主文件数据布局
   - 每个 X-plane 按 Z 方向分段（默认 256 行/chunk），lz4 独立压缩
-  - 自动 stride 决策：先试 stride=1（100% 命中），存储超 1.45x 则降 stride=2，再超则跳过
+  - 自动 stride 决策：从 stride=1 开始递增（100% 命中），存储超 budget 则增大 stride，直到满足或超过 nx 则跳过（v0.5.1 修正：原 v0.5.0 逻辑反转，已修复）
   - 文件尾部带 chunk 索引（`plane_id → [chunk_offset, chunk_size, raw_size]`），单次 pread 加载
   - 主文件头仅新增 `FLAG_HAS_XP_SIDECAR`（bit 5）+ `reserved[21]` 哨兵
   - Reader 构造时懒加载 sidecar，命中走快路径（pread + LZ4 解压 → memcpy 到输出），miss 降级到 SB 路径
@@ -71,10 +71,10 @@ D 盘 HDD，`--hdd` 模式，4GB 内存限制，best run：
 
 | 数据集 | 配置 | T_composite | 存储比 | vs 旧基线 |
 |--------|------|-------------|--------|-----------|
-| 20GB | lz4 + sidecar stride=1 | **17.49s** | 0.932x | **-25.8%** (旧 23.56s) |
-| 50GB | lz4 (LeafOp 重构) | **104.74s** | 0.996x | **-6.0%** (旧 111.39s) |
+| 20GB | lz4 + sidecar stride=1 | **17.49s** | 0.932x | **-25.8%** (旧 23.56s, lz4 无 sidecar) |
+| 50GB | lz4 (LeafOp 重构) | **104.74s** | 0.996x | **-6.0%** (旧 111.39s, lz4 无 LeafOp) |
 
-20GB sidecar stride=1 各组对比（best run）：
+注：旧基线为 v0.4 的 lz4 压缩版本（无 sidecar、无 LeafOp 紧凑化）。v0.4 的无压缩 + X-plane stride=3 版本为 37.99s（20G）/ 105.91s（50G），不可直接对比。
 
 | 测试组 | 旧基线 (lz4) | sidecar stride=1 | 提升 |
 |--------|-------------|------------------|------|

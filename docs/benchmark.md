@@ -16,82 +16,79 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 - 配置：`--hdd`（单线程 / 128MB 读窗口 / 3MB gap / file-offset 排序）
 - 计时范围：索引定位 → 磁盘读取 → 解码 → 内存重排 → 切片拼接 → **文件写出**（符合比赛要求）
 - 输出目录在 HDD 上（比赛环境无可避免，写入竞争已计入）
+- 数据转换和 sidecar 生成不在计时内（预处理阶段）
 
-## 基准结果（存储比 ≤1.5x，v0.4 优化后代码）
+## 基准结果（v0.5.1，存储比 ≤1.5x）
 
-### 20GB（801×2405×2501，X-plane stride=3）
+### 20GB（801×2405×2501，lz4 压缩 + sidecar stride=1）
 
-存储比 1.408x → 存储得分 20/20
+存储比 0.932x → 存储得分 20/20
 
-| 测试项 | v0.2 基线 | v0.3 x-plane s=3 | v0.4 初始 | **v0.4 优化后** |
-|--------|----------|-----------------|----------|-----------------|
-| X random (100片) | 73.78s | 70.36s | 95.76s | **82.88s** |
-| Y random (100片) | 63.42s | 61.75s | 71.84s | **70.15s** |
-| Z random (100片) | 57.97s | 56.91s | 64.71s | **62.67s** |
-| X continuous (10片) | 7.11s | 7.00s | 8.41s | **7.74s** |
-| Y continuous (10片) | 2.18s | 2.04s | 2.23s | **2.32s** |
-| Z continuous (10片) | 2.06s | 1.94s | 2.20s | **2.15s** |
-| **T_composite** | **34.42s**\* | **33.21s**\* | **40.86s** | **37.99s** |
-| 存储比 | 1.075x | 1.408x | 1.408x | 1.408x |
+| 测试项 | v0.4 基线 | **v0.5.1** | 提升 |
+|--------|----------|-----------|------|
+| X random (100片) | 82.88s | **15.05s** | **-81.8%** |
+| Y random (100片) | 70.15s | **47.00s** | -33.0% |
+| Z random (100片) | 62.67s | **41.42s** | -33.9% |
+| X continuous (10片) | 7.74s | **1.59s** | **-79.5%** |
+| Y continuous (10片) | 2.32s | **1.41s** | -39.2% |
+| Z continuous (10片) | 2.15s | **1.32s** | -38.6% |
+| **T_composite** | **37.99s** | **17.49s** | **-53.9%** |
+| 存储比 | 1.408x | 0.932x | — |
 
-\* v0.2/v0.3 结果不含文件写出。v0.4 含写出：初始 40.86s → ftruncate 优化后 37.99s（-7%）。
+注：v0.4 基线使用 X-plane stride=3（无压缩，1.408x）。v0.5.1 使用 lz4 压缩 + sidecar stride=1（0.932x），存储比更低且性能更高。
 
-### 50GB（2001×2201×3000，X-plane stride=3）
+### 50GB（2001×2201×3000，lz4 压缩，LeafOp 紧凑化）
 
-存储比 1.378x → 存储得分 20/20
+存储比 0.996x → 存储得分 20/20
 
-| 测试项 | v0.2 基线\* | v0.4 初始 | **v0.4 优化后** |
-|--------|-----------|----------|-----------------|
-| X random (100片) | 177.50s | 421.02s | **267.84s** |
-| Y random (100片) | 171.85s | 196.30s | **178.68s** |
-| Z random (100片) | 158.58s | 176.03s | **171.32s** |
-| X continuous (10片) | 7.53s | 16.43s | **7.66s** |
-| Y continuous (10片) | 5.94s | 6.29s | **5.70s** |
-| Z continuous (10片) | 4.61s | 4.76s | **4.27s** |
-| **T_composite** | **87.67s**\* | **136.81s** | **105.91s** |
-| 存储比 | 1.044x | 1.378x | 1.378x |
+| 测试项 | v0.4 基线 | **v0.5.1** | 提升 |
+|--------|----------|-----------|------|
+| X random (100片) | 267.84s | **194.86s** | -27.3% |
+| Y random (100片) | 178.68s | **178.17s** | -0.3% |
+| Z random (100片) | 171.32s | **164.90s** | -3.7% |
+| X continuous (10片) | 7.66s | **6.84s** | -10.7% |
+| Y continuous (10片) | 5.70s | **6.17s** | +8.2% |
+| Z continuous (10片) | 4.27s | **4.35s** | +1.9% |
+| **T_composite** | **105.91s** | **104.74s** | **-1.1%** |
+| 存储比 | 1.378x | 0.996x | — |
 
-\* v0.2 不含文件写出。v0.4 初始 136.81s → ftruncate 优化后 105.91s（**-22.6%**）。
+注：v0.4 基线使用 X-plane stride=3（无压缩，1.378x）。v0.5.1 使用 lz4 压缩（0.996x）+ LeafOp 紧凑化。50G sidecar 因压缩率差（0.979x）导致 page cache 干扰，不使用。
+
+### 50GB sidecar stride=3 测试（已否决）
+
+| 测试项 | 无 sidecar | sidecar stride=3 | 变化 |
+|--------|-----------|-----------------|------|
+| X random | 194.86s | 187.70s | -3.7% |
+| Y random | 178.17s | 435.89s | **+144.5%** |
+| Z random | 164.90s | 283.99s | **+72.2%** |
+| T_composite | 104.74s | 154.18s | **+47.2%** |
+| 存储比 | 0.996x | 1.323x | — |
+
+**结论**：50G sidecar 16GB 占用 page cache，挤出主文件数据，Y/Z random 大幅恶化。50G 不使用 sidecar。
 
 ## 带宽利用率分析
 
-### 20GB
+### 20GB（v0.5.1，sidecar stride=1）
 
-6 组测试总读取量约 60.4 GB（含写出重叠）。纯顺序读理论最小：
+6 组测试中 X 切片走 sidecar（~11MB/plane 压缩数据），Y/Z 走主文件 SB 路径。
 
-```
-T_min = 60.4 GB / 345 MB/s / 6 = 29.9s
-实际 T_composite = 37.99s
-效率 = 29.9 / 37.99 = 78.7%
-```
+| 轴 | 路径 | 读时间 | 写时间 | 有效读带宽 |
+|----|------|--------|--------|----------|
+| X random | sidecar | 4.93s | 9.08s | ~220 MB/s (sidecar) |
+| Y random | SB | 43.82s | 2.93s | ~215 MB/s (主文件) |
+| Z random | SB | 38.02s | 3.32s | ~248 MB/s (主文件) |
 
-各轴效率（v0.4 优化后，读时 = readTimeMs）：
+X random 读带宽受 LZ4 解压 CPU 限制（~220 MB/s），而非磁盘带宽。Y/Z random 接近磁盘顺序带宽。
 
-| 轴 | 数据量 | 读时间 | 写时间 | 有效读带宽 |
-|----|--------|--------|--------|----------|
-| Z random | 19.76 GB | 59.6s | 2.9s | 332 MB/s |
-| Y random | 19.76 GB | 67.0s | 2.9s | 295 MB/s |
-| X random | 19.76 GB | 71.3s | 10.3s | 277 MB/s |
+### 50GB（v0.5.1，无 sidecar）
 
-### 50GB
+| 轴 | 读时间 | 写时间 | 有效读带宽 |
+|----|--------|--------|----------|
+| Z random | 154.47s | 9.63s | ~341 MB/s |
+| Y random | 177.69s | 8.74s | ~296 MB/s |
+| X random | 416.66s | 22.21s | ~126 MB/s |
 
-6 组测试总读取量约 157.8 GB。纯顺序读理论最小：
-
-```
-T_min = 157.8 GB / 345 MB/s / 6 = 76.2s
-实际 T_composite = 105.91s
-效率 = 76.2 / 105.91 = 71.9%
-```
-
-各轴效率（v0.4 优化后）：
-
-| 轴 | 数据量 | 读时间 | 写时间 | 有效读带宽 |
-|----|--------|--------|--------|----------|
-| Z random | 52.64 GB | 156.9s | 13.8s | 336 MB/s |
-| Y random | 52.64 GB | 169.7s | 8.1s | 310 MB/s |
-| X random | 52.64 GB | 243.8s | 22.6s | 216 MB/s |
-
-**关键发现**：X random 的写开销（22.6s for 100 slices）远大于 Y（8.1s）和 Z（13.8s），因为 X 切片体积最大（26MB vs 23MB/17MB）。预分配文件后写效率提升显著，但 X random 读带宽仍低于 Y/Z（X 切片需逐超块跳跃读取）。
+Z random 已接近顺序带宽极限（341/345 = 98.9%）。X random 仍受限于跨 superblock 跳跃读取。
 
 ## 内存限制扫描
 
@@ -99,18 +96,15 @@ T_min = 157.8 GB / 345 MB/s / 6 = 76.2s
 
 | MemLimit | X random | Y random | Z random | T_composite |
 |----------|----------|----------|----------|-------------|
-| 2 GB | — | — | — | — |
-| 4 GB | 82.88s | 70.15s | 62.67s | 37.99s |
-| 8 GB | — | — | — | — |
+| 4 GB | 15.05s | 47.00s | 41.42s | 17.49s |
 
 ### 50GB
 
 | MemLimit | X random | Y random | Z random | T_composite |
 |----------|----------|----------|----------|-------------|
-| 2 GB | — | — | — | — |
-| 4 GB | 267.84s | 178.68s | 171.32s | 105.91s |
+| 4 GB | 194.86s | 178.17s | 164.90s | 104.74s |
 
-**结论**：4GB 是拐点。≥4GB 后 all-in-one batch，性能稳定。瓶颈在磁盘带宽。
+**结论**：4GB 是拐点。≥4GB 后 all-in-one batch，性能稳定。
 
 ## 优化历史
 
@@ -119,75 +113,77 @@ T_min = 157.8 GB / 345 MB/s / 6 = 76.2s
 | v0.1 | 初始版本（batch=20） | 94.11s | 223.43s |
 | v0.2 | batch size 动态化 + 全局排序 | 34.42s | 87.67s |
 | v0.3 | __restrict__ + X-plane stride=3 | 33.21s | ~85s |
-| **v0.4** | **计时含写出 + ftruncate 预分配 + 诊断** | **37.99s** | **105.91s** |
+| v0.4 | 计时含写出 + ftruncate 预分配 + 诊断 | 37.99s | 105.91s |
+| **v0.5.0** | **LeafOp 紧凑化 + X-plane 压缩 sidecar** | **17.49s** | **104.74s** |
+| **v0.5.1** | **流式 writer + batch reader + 缓冲复用** | **17.49s** | **104.74s** |
 
-v0.3 结果不含文件写出，不可与 v0.4 直接对比。v0.4 首个含写出版本为 40.86s/136.81s。
+v0.3 结果不含文件写出，不可与 v0.4+ 直接对比。
 
-v0.4 改进：
-- 压缩文件 `readSliceSB` 按物理偏移排序 + `lastSbIdx` 缓存
-- `readSlicesBatch` 透传 `numThreads` 参数
-- **输出文件预分配（ftruncate）** — 消除 pwrite 时 NTFS 元数据竞争（50GB 提升 22.6%）
-- 读/写分离计时诊断（r= / w=）
-- batch 模式 per-slice detail 记录实际 write 耗时
-- Reference 信息修正为全量体积 + 估算时间
+### v0.5.0 改进
 
-## X-Plane 扩展（存储比 >1.5x，仅供参考）
+- **LeafOp 紧凑化**：per-leaf 48B → 16B（`leaf_data` 4×u64 + `leaf_out` 4×u32 合并为 `LeafOp` 单结构）
+- **X-plane 压缩 sidecar**：独立 `.erwt3d.xp` 文件，lz4 按 Z 分段压缩，自动 stride 决策
+- **存储比修正**：bench-contest/info/api 计入 sidecar 字节
 
-在文件末尾追加连续 X 切片平面数据，X 读取只需 1 次 pread：
+### v0.5.1 改进
 
-| 数据集 | 存储比 | T_composite | X random |
-|--------|--------|------------|----------|
-| 20GB (stride=1) | 2.075x | 25.18s | 25s (原 74s) |
-| 50GB (stride=1) | ~1.94x | 65.30s | 29s (原 167s) |
+- **流式 sidecar writer**：按 z-chunk 分批处理，内存 18GB → 1.9GB
+- **sidecar batch reader**：chunk task 全局排序 + 4KB gap 合并，减少 pread 次数
+- **复用读写缓冲**：`xpCompBuf_`/`xpRawBuf_` 挂在 reader 上长期复用
+- **stride 预算搜索**：从 stride=1 无上限递增，新增 `--storage-budget` 参数
+- **参数扫描**：chunk_z_rows 64-1024 压缩率差异 <0.2%，256 是合理默认
 
-X-plane 显著提升 X 切片性能，但 stride=1 存储比超过 1.5x 限制。
+## Sidecar 参数扫描
 
-## X-Plane stride 优化（存储比 ≤1.5x，已验证）
+### 压缩率 vs chunk_z_rows（20GB 数据集）
 
-使用 `erwt3d_precompute_x` 工具降低 X-plane stride，可在存储限制内大幅提升 X 随机性能：
+| chunk_z_rows | 压缩率 | 总存储比 (stride=1) |
+|-------------|--------|-------------------|
+| 64 | 0.4900x | 0.9330x |
+| 128 | 0.4891x | 0.9321x |
+| 256 | 0.4887x | 0.9317x |
+| 512 | 0.4885x | 0.9315x |
+| 1024 | 0.4884x | 0.9314x |
 
-| stride | 存储比 (20GB) | X 命中率 | X random (100片) | T_composite |
-|--------|--------------|----------|-----------------|-------------|
-| 64 (基线) | 1.075x | 1.6% | 73.78s | 34.42s |
-| 3 (推荐) | 1.408x | 33% | 95.76s* | 40.86s* |
-| 2 | 1.576x | 50% | — | — (存储扣1分) |
-| 1 | 2.08x | 100% | 25s | — (超限) |
+结论：压缩率几乎不随 chunk_z_rows 变化，256 是合理默认。
 
-\* v0.4 结果，计时含写出。stride=3 在 20GB 上存储比 1.408x 满分，X 随机命中 ~33 片。
+### stride vs 存储比（50GB 数据集）
 
-X-plane 和 X-panel 是两种不同机制：
-- X-plane：全量 YZ 平面，存储在文件末尾，`erwt3d_precompute_x --stride N` 生成（推荐）
-- X-panel：per-superblock YZ 平面，`erwt3d_convert --panel-axis x --panel-stride N` 生成
+| stride | sidecar 大小 | 总存储比 | 是否可用 |
+|--------|-------------|---------|---------|
+| 1 | 46.37 GB | 1.938x | 超限 |
+| 2 | 23.18 GB | 1.468x | 超限 |
+| 3 | 15.46 GB | 1.323x | 可用但 page cache 干扰 |
+| 4 | 11.59 GB | 1.232x | 可用但 page cache 干扰 |
+| 8 | 5.80 GB | 1.114x | 可用但命中率低 |
+
+结论：50G 压缩率 0.979x 太差，sidecar 文件过大导致 page cache 干扰，不应使用。
 
 ## 推荐命令
 
 ```bash
 # === 20GB 数据 ===
-# 数据转换
-./build/erwt3d convert input=cup_3d_small.dat output=cup_3d_small.erwt3d \
-    nx=801 ny=2405 nz=2501 threads=8 memory-limit-mb=4096
+# 数据转换（lz4 压缩）
+./build/erwt3d convert input=cup_3d_small.dat output=cup_3d_small_lz4.erwt3d \
+    nx=801 ny=2405 nz=2501 threads=8 memory-limit-mb=4096 compress=true
 
-# 追加 X-plane（stride=3，存储比 ~1.408x，20/20 存储分）
-./build/erwt3d precompute-x raw=cup_3d_small.dat erwt3d=cup_3d_small.erwt3d \
-    nx=801 ny=2405 nz=2501 stride=3
+# 生成 sidecar（stride=1，自动决策存储比）
+./build/erwt3d precompute-x raw=cup_3d_small.dat erwt3d=cup_3d_small_lz4.erwt3d \
+    nx=801 ny=2405 nz=2501 mode=sidecar
 
 # === 50GB 数据 ===
-# 数据转换
-./build/erwt3d convert input=cup_3d_big.dat output=cup_3d_big.erwt3d \
-    nx=2001 ny=2201 nz=3000 threads=8 memory-limit-mb=4096
-
-# 追加 X-plane（stride=3，存储比 ~1.378x，20/20 存储分）
-./build/erwt3d precompute-x raw=cup_3d_big.dat erwt3d=cup_3d_big.erwt3d \
-    nx=2001 ny=2201 nz=3000 stride=3
+# 数据转换（lz4 压缩，不生成 sidecar）
+./build/erwt3d convert input=cup_3d_big.dat output=cup_3d_big_lz4.erwt3d \
+    nx=2001 ny=2201 nz=3000 threads=8 memory-limit-mb=4096 compress=true
 
 # === 通用命令 ===
 # 正确性验证
 ./build/erwt3d verify raw=data.raw erwt3d=data.erwt3d \
     nx=N ny=N nz=N samples=100000
 
-# 赛题 benchmark（推荐 --hdd 模式，4GB 内存限制）
-./build/erwt3d_bench_contest --input data.erwt3d --output-dir /mnt/d/bench_out --hdd
+# 赛题 benchmark
+./build/erwt3d bench-contest input=data.erwt3d output-dir=/mnt/d/bench_out hdd
 
-# 内存扫描（约 1-2 小时）
-./scripts/bench_mem_sweep.sh
+# 查看文件信息（含 sidecar）
+./build/erwt3d info data.erwt3d
 ```
