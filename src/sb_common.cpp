@@ -73,8 +73,7 @@ SBTaskPlan buildSBPlanZ(const ERWT3DHeader& hdr, uint64_t z) {
     const uint64_t maxTasks = sgY * sgX;
     const uint64_t maxLeaves = maxTasks * lpy * lpx;
     plan.tasks.reserve(maxTasks);
-    plan.leaf_data.reserve(maxLeaves * 4);
-    plan.leaf_out.reserve(maxLeaves * 4);
+    plan.leaf_ops.reserve(maxLeaves);
     const auto mortonXY = buildMortonTableXY(lpx, lpy, leafZ);
 
     for (uint64_t syi = 0; syi < sgY; ++syi) {
@@ -84,7 +83,7 @@ SBTaskPlan buildSBPlanZ(const ERWT3DHeader& hdr, uint64_t z) {
 
             SBTask task;
             task.file_offset = off;
-            task.first_leaf = static_cast<uint32_t>(plan.leaf_out.size() / 4);
+            task.first_leaf = static_cast<uint32_t>(plan.leaf_ops.size());
 
             uint32_t lcnt = 0;
             for (uint64_t lyi = 0; lyi < lpy; ++lyi) {
@@ -94,16 +93,15 @@ SBTaskPlan buildSBPlanZ(const ERWT3DHeader& hdr, uint64_t z) {
                     uint64_t vy = std::min(ly, dy < ny ? ny - dy : uint64_t(0));
                     if (vx == 0 || vy == 0) continue;
 
-                    uint64_t mortar = mortonXY[lyi * lpx + lxi];
-                    plan.leaf_data.push_back(mortar);  // 0: mortar
-                    plan.leaf_data.push_back(0);        // 1: unused
-                    plan.leaf_data.push_back(0);        // 2: unused
-                    plan.leaf_data.push_back(inLeafZ);  // 3: param
-
-                    plan.leaf_out.push_back(static_cast<uint32_t>(dy * nx + dx)); // out_base
-                    plan.leaf_out.push_back(static_cast<uint32_t>(nx));            // out_stride
-                    plan.leaf_out.push_back(static_cast<uint32_t>(vx));            // inner (x)
-                    plan.leaf_out.push_back(static_cast<uint32_t>(vy));            // outer (y)
+                    LeafOp op;
+                    op.out_base = static_cast<uint32_t>(dy * nx + dx);
+                    op.out_stride = static_cast<uint32_t>(nx);
+                    op.morton = static_cast<uint16_t>(mortonXY[lyi * lpx + lxi]);
+                    op.param = static_cast<uint8_t>(inLeafZ);
+                    op.v_inner = static_cast<uint8_t>(vx);
+                    op.v_outer = static_cast<uint8_t>(vy);
+                    op.pad[0] = op.pad[1] = op.pad[2] = 0;
+                    plan.leaf_ops.push_back(op);
                     ++lcnt;
                 }
             }
@@ -133,8 +131,7 @@ SBTaskPlan buildSBPlanY(const ERWT3DHeader& hdr, uint64_t y) {
     const uint64_t maxTasks = sgZ * sgX;
     const uint64_t maxLeaves = maxTasks * lpz * lpx;
     plan.tasks.reserve(maxTasks);
-    plan.leaf_data.reserve(maxLeaves * 4);
-    plan.leaf_out.reserve(maxLeaves * 4);
+    plan.leaf_ops.reserve(maxLeaves);
     const auto mortonXZ = buildMortonTableXZ(lpx, lpz, leafY);
 
     for (uint64_t szi = 0; szi < sgZ; ++szi) {
@@ -144,7 +141,7 @@ SBTaskPlan buildSBPlanY(const ERWT3DHeader& hdr, uint64_t y) {
 
             SBTask task;
             task.file_offset = off;
-            task.first_leaf = static_cast<uint32_t>(plan.leaf_out.size() / 4);
+            task.first_leaf = static_cast<uint32_t>(plan.leaf_ops.size());
 
             uint32_t lcnt = 0;
             for (uint64_t lzi = 0; lzi < lpz; ++lzi) {
@@ -154,16 +151,15 @@ SBTaskPlan buildSBPlanY(const ERWT3DHeader& hdr, uint64_t y) {
                     uint64_t vz = std::min(lz, dz < nz ? nz - dz : uint64_t(0));
                     if (vx == 0 || vz == 0) continue;
 
-                    uint64_t mortar = mortonXZ[lzi * lpx + lxi];
-                    plan.leaf_data.push_back(mortar);
-                    plan.leaf_data.push_back(0);
-                    plan.leaf_data.push_back(0);
-                    plan.leaf_data.push_back(inLeafY);
-
-                    plan.leaf_out.push_back(static_cast<uint32_t>(dz * nx + dx)); // out_base
-                    plan.leaf_out.push_back(static_cast<uint32_t>(nx));            // out_stride
-                    plan.leaf_out.push_back(static_cast<uint32_t>(vx));            // inner (x)
-                    plan.leaf_out.push_back(static_cast<uint32_t>(vz));            // outer (z)
+                    LeafOp op;
+                    op.out_base = static_cast<uint32_t>(dz * nx + dx);
+                    op.out_stride = static_cast<uint32_t>(nx);
+                    op.morton = static_cast<uint16_t>(mortonXZ[lzi * lpx + lxi]);
+                    op.param = static_cast<uint8_t>(inLeafY);
+                    op.v_inner = static_cast<uint8_t>(vx);
+                    op.v_outer = static_cast<uint8_t>(vz);
+                    op.pad[0] = op.pad[1] = op.pad[2] = 0;
+                    plan.leaf_ops.push_back(op);
                     ++lcnt;
                 }
             }
@@ -193,8 +189,7 @@ SBTaskPlan buildSBPlanX(const ERWT3DHeader& hdr, uint64_t x) {
     const uint64_t maxTasks = sgZ * sgY;
     const uint64_t maxLeaves = maxTasks * lpz * lpy;
     plan.tasks.reserve(maxTasks);
-    plan.leaf_data.reserve(maxLeaves * 4);
-    plan.leaf_out.reserve(maxLeaves * 4);
+    plan.leaf_ops.reserve(maxLeaves);
     const auto mortonYZ = buildMortonTableYZ(lpy, lpz, leafX);
 
     for (uint64_t szi = 0; szi < sgZ; ++szi) {
@@ -204,7 +199,7 @@ SBTaskPlan buildSBPlanX(const ERWT3DHeader& hdr, uint64_t x) {
 
             SBTask task;
             task.file_offset = off;
-            task.first_leaf = static_cast<uint32_t>(plan.leaf_out.size() / 4);
+            task.first_leaf = static_cast<uint32_t>(plan.leaf_ops.size());
 
             uint32_t lcnt = 0;
             for (uint64_t lzi = 0; lzi < lpz; ++lzi) {
@@ -214,16 +209,15 @@ SBTaskPlan buildSBPlanX(const ERWT3DHeader& hdr, uint64_t x) {
                     uint64_t vz = std::min(lz, dz < nz ? nz - dz : uint64_t(0));
                     if (vy == 0 || vz == 0) continue;
 
-                    uint64_t mortar = mortonYZ[lzi * lpy + lyi];
-                    plan.leaf_data.push_back(mortar);
-                    plan.leaf_data.push_back(0);
-                    plan.leaf_data.push_back(0);
-                    plan.leaf_data.push_back(inLeafX);
-
-                    plan.leaf_out.push_back(static_cast<uint32_t>(dz * ny + dy)); // out_base
-                    plan.leaf_out.push_back(static_cast<uint32_t>(ny));            // out_stride
-                    plan.leaf_out.push_back(static_cast<uint32_t>(vy));            // inner (y)
-                    plan.leaf_out.push_back(static_cast<uint32_t>(vz));            // outer (z)
+                    LeafOp op;
+                    op.out_base = static_cast<uint32_t>(dz * ny + dy);
+                    op.out_stride = static_cast<uint32_t>(ny);
+                    op.morton = static_cast<uint16_t>(mortonYZ[lzi * lpy + lyi]);
+                    op.param = static_cast<uint8_t>(inLeafX);
+                    op.v_inner = static_cast<uint8_t>(vy);
+                    op.v_outer = static_cast<uint8_t>(vz);
+                    op.pad[0] = op.pad[1] = op.pad[2] = 0;
+                    plan.leaf_ops.push_back(op);
                     ++lcnt;
                 }
             }
@@ -250,20 +244,17 @@ void unpackLeaves(const ERWT3DHeader& hdr, const SBTaskPlan& plan,
     const uint64_t lx = hdr.leaf_x, ly = hdr.leaf_y;
     const uint64_t lfBV = lfBytes(hdr);
 
+    const LeafOp* __restrict__ ops = plan.leaf_ops.data() + task.first_leaf;
     for (uint32_t li = 0; li < task.leaf_count; ++li) {
-        uint64_t leafIdx = task.first_leaf + li;
+        const LeafOp& __restrict__ op = ops[li];
 
-        uint64_t ldOff = leafIdx * 4;
-        uint64_t morton = plan.leaf_data[ldOff];
-        uint64_t param  = plan.leaf_data[ldOff + 3];
-
-        uint32_t loOff = static_cast<uint32_t>(leafIdx) * 4;
-        uint32_t out_base   = plan.leaf_out[loOff];
-        uint32_t out_stride = plan.leaf_out[loOff + 1];
-        uint32_t v_inner    = plan.leaf_out[loOff + 2];
-        uint32_t v_outer    = plan.leaf_out[loOff + 3];
-
-        const float* __restrict__ leaf = reinterpret_cast<const float*>(sbBuf + morton * lfBV);
+        const float* __restrict__ leaf =
+            reinterpret_cast<const float*>(sbBuf + op.morton * lfBV);
+        const uint32_t out_base   = op.out_base;
+        const uint32_t out_stride = op.out_stride;
+        const uint8_t  v_inner    = op.v_inner;
+        const uint8_t  v_outer    = op.v_outer;
+        const uint8_t  param      = op.param;
 
         if (plan.axis == 2) {
             uint64_t srcBase = param * ly;
@@ -309,33 +300,22 @@ void sortTasksByFileOffset(SBTaskPlan& plan) {
     if (alreadySorted) return;
 
     std::vector<SBTask> newTasks; newTasks.reserve(n);
-    std::vector<uint64_t> newLeafData;
-    std::vector<uint32_t> newLeafOut;
-    newLeafData.reserve(plan.leaf_data.size());
-    newLeafOut.reserve(plan.leaf_out.size());
+    std::vector<LeafOp> newOps;  newOps.reserve(plan.leaf_ops.size());
 
     for (size_t i = 0; i < n; ++i) {
         const auto& old = plan.tasks[order[i]];
         SBTask nt;
         nt.file_offset = old.file_offset;
-        nt.first_leaf = static_cast<uint32_t>(newLeafOut.size() / 4);
+        nt.first_leaf = static_cast<uint32_t>(newOps.size());
         nt.leaf_count = old.leaf_count;
-        uint32_t base = old.first_leaf;
-        uint32_t cnt = old.leaf_count;
-        for (uint32_t li = 0; li < cnt; ++li) {
-            newLeafData.insert(newLeafData.end(),
-                plan.leaf_data.begin() + (base + li) * 4,
-                plan.leaf_data.begin() + (base + li + 1) * 4);
-            newLeafOut.insert(newLeafOut.end(),
-                plan.leaf_out.begin() + (base + li) * 4,
-                plan.leaf_out.begin() + (base + li + 1) * 4);
-        }
+        newOps.insert(newOps.end(),
+            plan.leaf_ops.begin() + old.first_leaf,
+            plan.leaf_ops.begin() + old.first_leaf + old.leaf_count);
         newTasks.push_back(nt);
     }
 
     plan.tasks = std::move(newTasks);
-    plan.leaf_data = std::move(newLeafData);
-    plan.leaf_out = std::move(newLeafOut);
+    plan.leaf_ops = std::move(newOps);
     plan.superblocks_touched = plan.tasks.size();
     plan.pread_calls = plan.tasks.size();
 }

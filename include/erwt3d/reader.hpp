@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <string>
 #include <memory>
+#include <vector>
 
 namespace erwt3d {
 
@@ -102,6 +103,13 @@ private:
     IOProfile lastProfile_;
     bool compressed_ = false;
     std::vector<CompressedBlockIndex> compIndex_;
+    
+    int xpFd_ = -1;
+    XPSidecarHeader xpHeader_{};
+    std::vector<XPChunkIndex> xpIndex_;
+    bool xpAvailable_ = false;
+    void loadSidecar_();
+    bool tryReadSliceXPSidecar_(uint64_t x, float* output, IOProfile* profile);
     
     bool readExtents(const std::vector<Extent>& extents, void* buffer);
     bool readExtentsThreaded(const std::vector<Extent>& extents, void* buffer, int numThreads);

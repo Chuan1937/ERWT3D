@@ -225,8 +225,8 @@ bool executeSBPlanLeafIndex(int fd, const SBTaskPlan& plan, const ERWT3DHeader& 
     std::vector<LeafOff> leafOffs;
     for (const auto& task : plan.tasks) {
         for (uint16_t li = 0; li < task.leaf_count; ++li) {
-            uint64_t ldOff = task.first_leaf + li; // leaf_data index (not byte offset)
-            leafOffs.push_back({task.file_offset + plan.leaf_data[ldOff * 4] * lfBV, &task, li});
+            uint64_t opIdx = task.first_leaf + li;
+            leafOffs.push_back({task.file_offset + plan.leaf_ops[opIdx].morton * lfBV, &task, li});
         }
     }
     if (leafOffs.empty()) return true;
@@ -266,29 +266,22 @@ bool executeSBPlanLeafIndex(int fd, const SBTaskPlan& plan, const ERWT3DHeader& 
                 // The leaf data at this offset: the buffer starts at the leaf block
                 // unpackLeaves expects the buffer to contain the full superblock
                 // We have only the leaf block. Use manual extraction instead.
-                uint64_t ldOff = oneLeaf.first_leaf * 4;
-                uint64_t morton = plan.leaf_data[ldOff];
-                uint64_t param  = plan.leaf_data[ldOff + 3];
-                uint32_t loOff = static_cast<uint32_t>(oneLeaf.first_leaf) * 4;
-                uint32_t out_base = plan.leaf_out[loOff];
-                uint32_t out_stride = plan.leaf_out[loOff + 1];
-                uint32_t v_inner = plan.leaf_out[loOff + 2];
-                uint32_t v_outer = plan.leaf_out[loOff + 3];
+                const LeafOp& op = plan.leaf_ops[oneLeaf.first_leaf];
                 const float* leaf = reinterpret_cast<const float*>(buf.data() + leafOffInBuf);
                 const uint64_t lx = hdr.leaf_x, ly = hdr.leaf_y;
                 if (plan.axis == 2) { // Z
-                    uint64_t srcBase = param * ly;
-                    for (uint32_t v = 0; v < v_outer; ++v)
-                        for (uint32_t u = 0; u < v_inner; ++u)
-                            output[out_base + v * out_stride + u] = leaf[(srcBase + v) * lx + u];
+                    uint64_t srcBase = op.param * ly;
+                    for (uint32_t v = 0; v < op.v_outer; ++v)
+                        for (uint32_t u = 0; u < op.v_inner; ++u)
+                            output[op.out_base + v * op.out_stride + u] = leaf[(srcBase + v) * lx + u];
                 } else if (plan.axis == 1) { // Y
-                    for (uint32_t v = 0; v < v_outer; ++v)
-                        for (uint32_t u = 0; u < v_inner; ++u)
-                            output[out_base + v * out_stride + u] = leaf[(v * ly + param) * lx + u];
+                    for (uint32_t v = 0; v < op.v_outer; ++v)
+                        for (uint32_t u = 0; u < op.v_inner; ++u)
+                            output[op.out_base + v * op.out_stride + u] = leaf[(v * ly + op.param) * lx + u];
                 } else { // X
-                    for (uint32_t v = 0; v < v_outer; ++v)
-                        for (uint32_t u = 0; u < v_inner; ++u)
-                            output[out_base + v * out_stride + u] = leaf[(v * ly) * lx + param + u * lx];
+                    for (uint32_t v = 0; v < op.v_outer; ++v)
+                        for (uint32_t u = 0; u < op.v_inner; ++u)
+                            output[op.out_base + v * op.out_stride + u] = leaf[(v * ly) * lx + op.param + u * lx];
                 }
             }
         }

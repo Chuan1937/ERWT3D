@@ -294,6 +294,11 @@ int main(int argc, char* argv[]) {
     struct stat fileStat;
     uint64_t fileBytes = 0;
     if (stat(inputPath.c_str(), &fileStat) == 0) fileBytes = fileStat.st_size;
+    if (erwt3d::hasXPSidecar(header)) {
+        std::string xpPath = inputPath + ".xp";
+        struct stat xpStat;
+        if (stat(xpPath.c_str(), &xpStat) == 0) fileBytes += xpStat.st_size;
+    }
     double storageRatio = static_cast<double>(fileBytes) / rawBytes;
     int storageScore = 20;
     if (storageRatio > 1.5) {

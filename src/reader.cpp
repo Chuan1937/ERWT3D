@@ -93,6 +93,10 @@ ERWT3DReader::ERWT3DReader(const std::string& path, size_t cacheMB, bool useMmap
             }
         }
     }
+
+    if (hasXPSidecar(header_)) {
+        loadSidecar_();
+    }
 }
 
 ERWT3DReader::~ERWT3DReader() {
@@ -101,6 +105,9 @@ ERWT3DReader::~ERWT3DReader() {
     }
     if (fd_ >= 0) {
         close(fd_);
+    }
+    if (xpFd_ >= 0) {
+        close(xpFd_);
     }
 }
 
@@ -595,6 +602,86 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
     return true;
 }
 
+// --- X-plane sidecar ---
+
+void ERWT3DReader::loadSidecar_() {
+    std::string xpPath = path_ + ".xp";
+    xpFd_ = open(xpPath.c_str(), O_RDONLY);
+    if (xpFd_ < 0) return;
+
+    if (pread(xpFd_, &xpHeader_, sizeof(xpHeader_), 0) != sizeof(xpHeader_)) {
+        close(xpFd_); xpFd_ = -1; return;
+    }
+    if (std::memcmp(xpHeader_.magic, XPSIDECAR_MAGIC, 8) != 0 ||
+        xpHeader_.version != XPSIDECAR_VERSION ||
+        xpHeader_.nx != header_.nx || xpHeader_.ny != header_.ny ||
+        xpHeader_.nz != header_.nz) {
+        close(xpFd_); xpFd_ = -1; return;
+    }
+
+    uint64_t idxBytes = xpHeader_.total_chunks * sizeof(XPChunkIndex);
+    if (idxBytes == 0) {
+        close(xpFd_); xpFd_ = -1; return;
+    }
+    xpIndex_.resize(xpHeader_.total_chunks);
+    if (pread(xpFd_, xpIndex_.data(), idxBytes, xpHeader_.index_offset) != static_cast<ssize_t>(idxBytes)) {
+        close(xpFd_); xpFd_ = -1; return;
+    }
+    xpAvailable_ = true;
+}
+
+bool ERWT3DReader::tryReadSliceXPSidecar_(uint64_t x, float* output, IOProfile* profile) {
+    uint32_t stride = xpHeader_.stride;
+    uint64_t planeIdx = x / stride;
+    uint32_t cpp = xpHeader_.chunks_per_plane;
+    uint64_t ny = xpHeader_.ny;
+
+    adviseSequential(xpFd_);
+
+    std::vector<uint8_t> compBuf;
+    std::vector<uint8_t> rawBuf;
+
+    uint64_t totalRead = 0;
+
+    for (uint32_t c = 0; c < cpp; ++c) {
+        const XPChunkIndex& ci = xpIndex_[planeIdx * cpp + c];
+        if (ci.compressed_size == 0) continue;
+
+        compBuf.resize(ci.compressed_size);
+        ssize_t n = pread(xpFd_, compBuf.data(), ci.compressed_size, ci.chunk_offset);
+        if (n != static_cast<ssize_t>(ci.compressed_size)) return false;
+        totalRead += ci.compressed_size;
+
+        rawBuf.resize(ci.raw_size);
+        if (xpHeader_.compression == 1) {
+#ifdef ERWT3D_HAVE_LZ4
+            int dec = LZ4_decompress_safe(
+                reinterpret_cast<const char*>(compBuf.data()),
+                reinterpret_cast<char*>(rawBuf.data()),
+                static_cast<int>(ci.compressed_size),
+                static_cast<int>(ci.raw_size));
+            if (dec != static_cast<int>(ci.raw_size)) return false;
+#else
+            return false;
+#endif
+        } else {
+            std::memcpy(rawBuf.data(), compBuf.data(), ci.raw_size);
+        }
+
+        uint64_t zStart = static_cast<uint64_t>(c) * xpHeader_.chunk_z_rows;
+        std::memcpy(output + zStart * ny, rawBuf.data(), ci.raw_size);
+    }
+
+    if (profile) {
+        profile->panel_hit = true;
+        profile->pread_calls = cpp;
+        profile->bytes_read = totalRead;
+        profile->output_bytes = ny * xpHeader_.nz * sizeof(float);
+        profile->superblocks_touched = 1;
+    }
+    return true;
+}
+
 // --- Superblock-level I/O backend ---
 
 bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
@@ -606,6 +693,30 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
     if (required > maxBytes) return false;
 
     auto planStart = std::chrono::high_resolution_clock::now();
+
+    // Try X-plane sidecar fast path (compressed sidecar file)
+    if (axis == SliceAxis::X && xpAvailable_) {
+        uint32_t stride = xpHeader_.stride;
+        if (index % stride == 0) {
+            uint64_t planeIdx = index / stride;
+            if (planeIdx < xpHeader_.plane_count) {
+                auto readStart = std::chrono::high_resolution_clock::now();
+                bool ok = tryReadSliceXPSidecar_(index, output,
+                                                  profileIO_ ? &lastProfile_ : nullptr);
+                auto readEnd = std::chrono::high_resolution_clock::now();
+                if (ok) {
+                    auto planEnd = std::chrono::high_resolution_clock::now();
+                    double planMs = std::chrono::duration<double, std::milli>(planEnd - planStart).count();
+                    double readMs = std::chrono::duration<double, std::milli>(readEnd - readStart).count();
+                    if (profileIO_) {
+                        lastProfile_.plan_time_ms = planMs - readMs;
+                        lastProfile_.read_time_ms = readMs;
+                    }
+                    return true;
+                }
+            }
+        }
+    }
 
     // Try X-plane fast path (single pread for entire X slice)
     if (axis == SliceAxis::X && hasXPlanes(header_)) {
@@ -748,6 +859,17 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
 
     for (size_t i = 0; i < requests.size(); ++i) {
         const auto& r = requests[i];
+        // Try X-plane sidecar fast path
+        if (r.axis == SliceAxis::X && xpAvailable_) {
+            uint32_t stride = xpHeader_.stride;
+            if (r.index % stride == 0) {
+                uint64_t planeIdx = r.index / stride;
+                if (planeIdx < xpHeader_.plane_count) {
+                    if (tryReadSliceXPSidecar_(r.index, r.output, nullptr))
+                        continue;
+                }
+            }
+        }
         // Try X-plane fast path first
         if (r.axis == SliceAxis::X && hasXPlanes(header_)) {
             uint32_t stride = getXPlaneStride(header_);

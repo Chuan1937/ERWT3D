@@ -15,7 +15,8 @@ constexpr uint64_t FLAG_HAS_X_PANELS = 1ULL << 0;
 constexpr uint64_t FLAG_HAS_Y_PANELS = 1ULL << 1;
 constexpr uint64_t FLAG_HAS_Z_PANELS = 1ULL << 2;
 constexpr uint64_t FLAG_HAS_X_PLANES = 1ULL << 3;
-constexpr uint64_t FLAG_COMPRESSED = 1ULL << 4;
+constexpr uint64_t FLAG_COMPRESSED  = 1ULL << 4;
+constexpr uint64_t FLAG_HAS_XP_SIDECAR = 1ULL << 5;
 
 // Default block sizes
 constexpr uint32_t DEFAULT_SUPER_X = 64;
@@ -158,5 +159,40 @@ struct CompressedBlockIndex {
     uint8_t padding[3];
 };
 static_assert(sizeof(CompressedBlockIndex) == 16);
+
+// X-plane sidecar support
+inline bool hasXPSidecar(const ERWT3DHeader& h) { return (h.flags & FLAG_HAS_XP_SIDECAR) != 0; }
+
+constexpr char XPSIDECAR_MAGIC[8] = {'E', 'R', 'W', 'T', '3', 'D', 'X', 'P'};
+constexpr uint32_t XPSIDECAR_VERSION = 1;
+
+#pragma pack(push, 1)
+struct XPSidecarHeader {
+    char     magic[8];
+    uint32_t version;
+    uint64_t nx, ny, nz;
+    uint32_t stride;
+    uint32_t chunk_z_rows;
+    uint32_t chunks_per_plane;
+    uint32_t plane_count;
+    uint64_t plane_floats;
+    uint64_t chunk_raw_bytes;
+    uint64_t index_offset;
+    uint64_t total_chunks;
+    uint64_t total_storage_bytes;
+    uint8_t  compression;
+    uint8_t  padding[35];
+};
+#pragma pack(pop)
+static_assert(sizeof(XPSidecarHeader) == 128, "XPSidecarHeader must be 128 bytes");
+
+#pragma pack(push, 1)
+struct XPChunkIndex {
+    uint64_t chunk_offset;
+    uint32_t compressed_size;
+    uint32_t raw_size;
+};
+#pragma pack(pop)
+static_assert(sizeof(XPChunkIndex) == 16, "XPChunkIndex must be 16 bytes");
 
 } // namespace erwt3d

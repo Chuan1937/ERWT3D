@@ -193,7 +193,13 @@ ContestResult benchmarkContest(const BenchConfig& cfg) {
     uint64_t rawBytes = getRawSize(header);
     struct stat st;
     if (stat(cfg.input.c_str(), &st) == 0) {
-        result.storageRatio = static_cast<double>(st.st_size) / rawBytes;
+        uint64_t fileBytes = st.st_size;
+        if (hasXPSidecar(header)) {
+            std::string xpPath = cfg.input + ".xp";
+            struct stat xpStat;
+            if (stat(xpPath.c_str(), &xpStat) == 0) fileBytes += xpStat.st_size;
+        }
+        result.storageRatio = static_cast<double>(fileBytes) / rawBytes;
         result.storageScore = 20;
         if (result.storageRatio > 1.5) {
             double over = result.storageRatio - 1.5;

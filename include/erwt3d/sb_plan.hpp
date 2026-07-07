@@ -26,16 +26,26 @@ struct SBTask {
     uint32_t leaf_count;
 };
 
+#pragma pack(push, 4)
+struct LeafOp {
+    uint32_t out_base;
+    uint32_t out_stride;
+    uint16_t morton;
+    uint8_t  param;
+    uint8_t  v_inner;
+    uint8_t  v_outer;
+    uint8_t  pad[3];
+};
+#pragma pack(pop)
+static_assert(sizeof(LeafOp) == 16, "LeafOp must be 16 bytes");
+
 struct SBTaskPlan {
     uint64_t superblocks_touched = 0;
     uint64_t pread_calls = 0;
     uint64_t bytes_read = 0;
     uint64_t output_bytes = 0;
     std::vector<SBTask> tasks;
-    // leaf_data: 4 uint64_t per leaf + output packing info
-    // [mortar, leafD0, leafD1, param | out_base_hi<<32|out_base_lo, out_stride, vx, vy]
-    std::vector<uint64_t> leaf_data;
-    std::vector<uint32_t> leaf_out; // [out_base, out_stride, v_inner, v_outer]
+    std::vector<LeafOp> leaf_ops;
     int axis = 0;
 };
 

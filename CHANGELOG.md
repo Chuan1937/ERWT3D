@@ -2,6 +2,58 @@
 
 本文件记录 ERWT3D 的重要变更。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.5.0] - 2026-07-07
+
+### Added
+
+- **X-plane 压缩 sidecar**（`data.erwt3d.xp`）：
+  - 独立 sidecar 文件，不污染主文件数据布局
+  - 每个 X-plane 按 Z 方向分段（默认 256 行/chunk），lz4 独立压缩
+  - 自动 stride 决策：先试 stride=1（100% 命中），存储超 1.45x 则降 stride=2，再超则跳过
+  - 文件尾部带 chunk 索引（`plane_id → [chunk_offset, chunk_size, raw_size]`），单次 pread 加载
+  - 主文件头仅新增 `FLAG_HAS_XP_SIDECAR`（bit 5）+ `reserved[21]` 哨兵
+  - Reader 构造时懒加载 sidecar，命中走快路径（pread + LZ4 解压 → memcpy 到输出），miss 降级到 SB 路径
+  - `erwt3d_precompute_x` 新增 `--mode sidecar`（默认）/ `--mode legacy`、`--stride`、`--chunk-z-rows` 参数
+
+### Changed
+
+- **LeafOp 紧凑化**（`include/erwt3d/sb_plan.hpp`）：
+  - per-leaf 表示从 48 字节（`leaf_data` 4×u64 + `leaf_out` 4×u32）压缩为 16 字节的 `LeafOp` 结构
+  - `LeafOp { out_base:u32, out_stride:u32, morton:u16, param:u8, v_inner:u8, v_outer:u8, pad[3] }`
+  - `SBTaskPlan.leaf_data` + `leaf_out` 合并为 `leaf_ops`，`first_leaf` 直接索引（无需 ×4）
+  - `sortTasksByFileOffset` 从双向量搬运简化为单向量 `insert(range)`
+  - 影响文件：`sb_plan.hpp`、`sb_common.cpp`（plan builders + unpackLeaves + sort）、`sb_hdd.cpp`（LeafIndex 路径）
+
+- **存储比计入 sidecar**（`erwt3d_bench_contest.cpp`、`erwt3d_info.cpp`、`api.cpp`）：
+  - bench-contest 和 info 的存储比计算现在累加 `.xp` sidecar 文件大小
+  - 修复了 sidecar 存在时存储比被低计的评分 bug
+
+### Performance
+
+D 盘 HDD，`--hdd` 模式，4GB 内存限制，best run：
+
+| 数据集 | 配置 | T_composite | 存储比 | vs 旧基线 |
+|--------|------|-------------|--------|-----------|
+| 20GB | lz4 + sidecar stride=1 | **15.39s** | 0.835x | **-34.7%** (旧 23.56s) |
+| 50GB | lz4 (LeafOp 重构) | **104.74s** | 0.996x | **-6.0%** (旧 111.39s) |
+
+20GB sidecar stride=1 各组对比：
+
+| 测试组 | 旧基线 (lz4) | sidecar stride=1 | 提升 |
+|--------|-------------|------------------|------|
+| X random (100片) | 62.99s | 14.48s | **-77.0%** |
+| X continuous (10片) | 3.68s | 1.26s | **-65.8%** |
+| Y random (100片) | 43.48s | 37.91s | -12.8% |
+| Z random (100片) | 35.23s | 36.18s | +2.7% |
+
+50GB sidecar 因数据压缩率差（0.94x）自动跳过，仅 LeafOp 重构收益。
+
+### Notes
+
+- 20GB 数据集 sidecar 压缩率 0.392x（YZ 平面空间相关性强），stride=1 总存储比 0.835x，远低于 1.5x 限制
+- 50GB 数据集 sidecar 压缩率 0.942x，stride=2 总存储比 1.467x 超 1.45x 安全阈值，工具正确跳过
+- X random 的改善主要来自 sidecar hit 时只需读取压缩 chunk（~9MB/plane）而非扫描整个文件（~8.5GB）
+
 ## [0.4.0] - 2026-07-06
 
 ### 数据布局说明

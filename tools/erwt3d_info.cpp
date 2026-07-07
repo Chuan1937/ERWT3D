@@ -47,6 +47,15 @@ int main(int argc, char* argv[]) {
     struct stat st;
     if (stat(inputPath.c_str(), &st) == 0) {
         uint64_t fileSize = st.st_size;
+        if (erwt3d::hasXPSidecar(header)) {
+            std::string xpPath = inputPath + ".xp";
+            struct stat xpStat;
+            if (stat(xpPath.c_str(), &xpStat) == 0) {
+                fileSize += xpStat.st_size;
+                std::cout << "Sidecar (.xp) size: " << xpStat.st_size << " bytes ("
+                          << std::fixed << std::setprecision(2) << xpStat.st_size / (1024.0 * 1024.0) << " MB)" << std::endl;
+            }
+        }
         std::cout << "Actual file size: " << fileSize << " bytes ("
                   << std::fixed << std::setprecision(2) << fileSize / (1024.0 * 1024.0) << " MB)" << std::endl;
         
