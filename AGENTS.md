@@ -87,15 +87,16 @@ D 盘 HDD，`--hdd` 模式，4GB 内存限制：
 
 | 数据集 | T_composite | 存储比 | 备注 |
 |--------|------------|--------|------|
-| 20GB | 15.39s | 0.835x | S=64, lz4压缩 + sidecar stride=1, best run |
+| 20GB | 17.49s | 0.932x | S=64, lz4压缩 + sidecar stride=1, best run |
 | 50GB | 104.74s | 0.996x | S=64, lz4压缩, LeafOp紧凑化, best run |
 
 4GB 是内存拐点，≥4GB 后性能稳定。
 
 ### 关键发现
 
-- **X-plane sidecar 是 X random 的最大收益点**：stride=1 全覆盖时 X random 从 63s 降到 14s（-77%），因为只需读压缩 chunk（~9MB/plane）而非扫描整个文件
-- **sidecar 压缩率取决于 YZ 平面空间相关性**：20GB 数据集 0.392x（可行），50GB 仅 0.942x（超存储限制自动跳过）
+- **X-plane sidecar 是 X random 的最大收益点**：stride=1 全覆盖时 X random 从 63s 降到 15s（-76%），因为只需读压缩 chunk（~11MB/plane）而非扫描整个文件
+- **sidecar 压缩率取决于 YZ 平面空间相关性**：20GB 数据集 0.489x（可行），50GB 仅 0.942x（超存储限制自动跳过）
+- **sidecar 生成需按 raw 的 X-Y-Z row-major 布局正确提取**：固定 x 的 YZ 平面在 raw 中是 strided 的，必须顺序扫描按 z 层读取后抽取 x 列
 - **LeafOp 紧凑化**（48B→16B/leaf）改善 cache 局部性，50GB T_composite 改善 6%
 - **I/O 带宽仍是根本瓶颈**：磁盘顺序读 ~300 MB/s，非 sidecar 路径的随机访问仍需读取几乎整个文件
 - **压缩效果因数据集而异**：20GB lz4 压缩率 2.26x (0.443x)，50GB 仅 1.004x (0.996x)

@@ -59,6 +59,8 @@ ERWT3DReader::ERWT3DReader(const std::string& path, size_t cacheMB, bool useMmap
         return;
     }
 
+    validateLeafOpRanges(header_);
+
     if (cacheMB > 0) {
         cache_ = std::make_unique<LeafCache>(cacheMB * 1024 * 1024);
     }

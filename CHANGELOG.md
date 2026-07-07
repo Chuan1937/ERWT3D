@@ -34,25 +34,26 @@ D 盘 HDD，`--hdd` 模式，4GB 内存限制，best run：
 
 | 数据集 | 配置 | T_composite | 存储比 | vs 旧基线 |
 |--------|------|-------------|--------|-----------|
-| 20GB | lz4 + sidecar stride=1 | **15.39s** | 0.835x | **-34.7%** (旧 23.56s) |
+| 20GB | lz4 + sidecar stride=1 | **17.49s** | 0.932x | **-25.8%** (旧 23.56s) |
 | 50GB | lz4 (LeafOp 重构) | **104.74s** | 0.996x | **-6.0%** (旧 111.39s) |
 
-20GB sidecar stride=1 各组对比：
+20GB sidecar stride=1 各组对比（best run）：
 
 | 测试组 | 旧基线 (lz4) | sidecar stride=1 | 提升 |
 |--------|-------------|------------------|------|
-| X random (100片) | 62.99s | 14.48s | **-77.0%** |
-| X continuous (10片) | 3.68s | 1.26s | **-65.8%** |
-| Y random (100片) | 43.48s | 37.91s | -12.8% |
-| Z random (100片) | 35.23s | 36.18s | +2.7% |
+| X random (100片) | 62.99s | 15.05s | **-76.1%** |
+| X continuous (10片) | 3.68s | 1.59s | **-56.8%** |
+| Y random (100片) | 43.48s | 47.00s | +8.1% |
+| Z random (100片) | 35.23s | 41.42s | +17.6% |
 
 50GB sidecar 因数据压缩率差（0.94x）自动跳过，仅 LeafOp 重构收益。
 
 ### Notes
 
-- 20GB 数据集 sidecar 压缩率 0.392x（YZ 平面空间相关性强），stride=1 总存储比 0.835x，远低于 1.5x 限制
+- 20GB 数据集 sidecar 压缩率 0.489x（YZ 平面空间相关性），stride=1 总存储比 0.932x
 - 50GB 数据集 sidecar 压缩率 0.942x，stride=2 总存储比 1.467x 超 1.45x 安全阈值，工具正确跳过
-- X random 的改善主要来自 sidecar hit 时只需读取压缩 chunk（~9MB/plane）而非扫描整个文件（~8.5GB）
+- X random 的改善主要来自 sidecar hit 时只需读取压缩 chunk（~11MB/plane）而非扫描整个文件（~8.5GB）
+- sidecar 生成采用顺序扫描 raw 文件（按 z 层读取 nx*ny 个 float，抽取 x 列），生成阶段不计时
 
 ## [0.4.0] - 2026-07-06
 

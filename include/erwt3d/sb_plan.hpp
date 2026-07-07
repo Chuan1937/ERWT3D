@@ -2,6 +2,8 @@
 
 #include "format.hpp"
 #include <cstdint>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace erwt3d {
@@ -35,9 +37,27 @@ struct LeafOp {
     uint8_t  v_inner;
     uint8_t  v_outer;
     uint8_t  pad[3];
+
+    // Range checks: these fields are truncated from wider types.
+    // morton must fit in uint16 (max 65535): super_x/leaf_x * super_y/leaf_y * super_z/leaf_z - 1
+    // param, v_inner, v_outer must fit in uint8 (max 255): bounded by leaf_size
+    // Call validateLeafOpRanges(header) once at startup to verify.
 };
 #pragma pack(pop)
 static_assert(sizeof(LeafOp) == 16, "LeafOp must be 16 bytes");
+
+inline void validateLeafOpRanges(const ERWT3DHeader& h) {
+    uint64_t totalLeafs = static_cast<uint64_t>(h.super_x / h.leaf_x) *
+                          (h.super_y / h.leaf_y) * (h.super_z / h.leaf_z);
+    if (totalLeafs > 65536) {
+        throw std::runtime_error("LeafOp::morton (uint16) cannot hold " +
+            std::to_string(totalLeafs) + " leafs per superblock (max 65536)");
+    }
+    if (h.leaf_x > 255 || h.leaf_y > 255 || h.leaf_z > 255) {
+        throw std::runtime_error("LeafOp param/v_inner/v_outer (uint8) cannot hold "
+            "leaf_size > 255");
+    }
+}
 
 struct SBTaskPlan {
     uint64_t superblocks_touched = 0;
