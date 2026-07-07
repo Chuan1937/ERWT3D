@@ -108,8 +108,12 @@ private:
     XPSidecarHeader xpHeader_{};
     std::vector<XPChunkIndex> xpIndex_;
     bool xpAvailable_ = false;
+    std::vector<uint8_t> xpCompBuf_;
+    std::vector<uint8_t> xpRawBuf_;
     void loadSidecar_();
     bool tryReadSliceXPSidecar_(uint64_t x, float* output, IOProfile* profile);
+    bool tryReadBatchXPSidecar_(const std::vector<SliceBatchRequest>& requests,
+                                std::vector<bool>& handled);
     
     bool readExtents(const std::vector<Extent>& extents, void* buffer);
     bool readExtentsThreaded(const std::vector<Extent>& extents, void* buffer, int numThreads);

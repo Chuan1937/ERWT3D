@@ -2,6 +2,43 @@
 
 本文件记录 ERWT3D 的重要变更。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.5.1] - 2026-07-07
+
+### Changed
+
+- **流式 sidecar writer**（`tools/erwt3d_precompute_x.cpp`）：
+  - 不再把所有 X plane 全放内存，改为按 z-chunk 分批处理
+  - 每个 chunk 覆盖 `chunk_z_rows` 个 z 层，扫描后立即压缩写出
+  - 内存从 `planeCount × ny × nz × 4` 降至 `planeCount × ny × chunkZRows × 4`（20G stride=1: 18GB → 1.9GB）
+  - legacy 模式也改为逐 plane 流式提取
+
+- **sidecar batch reader**（`src/reader.cpp`）：
+  - `tryReadBatchXPSidecar_`：把所有命中 sidecar 的 X 切片展开为 chunk task，按 `chunk_offset` 全局排序，4KB gap 容忍合并连续 chunk 为单次 pread
+  - 减少 HDD 寻道：100 个 X random 命中时从 100×10=1000 次 pread 降至按物理顺序合并的少量窗口读
+
+- **复用读写缓冲**（`src/reader.cpp`）：
+  - `xpCompBuf_`/`xpRawBuf_` 挂在 reader 上长期复用，不再每片/每 chunk 反复分配
+
+- **stride 自动决策改为预算搜索**（`tools/erwt3d_precompute_x.cpp`）：
+  - 不再硬编码 `stride < 8` 上限，从 stride=1 递增直到满足 budget 或超过 nx
+  - 新增 `--storage-budget` 参数（默认 1.45）
+
+### Performance
+
+D 盘 HDD，`--hdd` 模式，4GB 内存限制，best run：
+
+| 数据集 | 配置 | T_composite | 存储比 | vs 旧基线 |
+|--------|------|-------------|--------|-----------|
+| 20GB | lz4 + sidecar stride=1 | **17.49s** | 0.932x | **-25.8%** (旧 23.56s) |
+| 50GB | lz4 (无 sidecar) | **104.74s** | 0.996x | **-6.0%** (旧 111.39s) |
+
+50G sidecar stride=3 测试结果：T_composite 154s（恶化），原因是 sidecar 文件 16GB 占用 page cache 干扰 Y/Z random。50G 数据集压缩率太差（0.979x），不适合 sidecar。
+
+### Notes
+
+- 参数扫描：chunk_z_rows 64/128/256/512/1024 压缩率差异 <0.2%，256 是合理默认值
+- 50G stride 扫描：stride=3 可满足 1.45x（1.31x），但 sidecar 16GB 导致 page cache 干扰，净效果为负
+
 ## [0.5.0] - 2026-07-07
 
 ### Added

@@ -3,6 +3,7 @@
 #include <iostream>
 #include <vector>
 #include <cstring>
+#include <cmath>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -19,70 +20,157 @@ using erwt3d::XPSIDECAR_VERSION;
 
 // Raw data layout: X-Y-Z row-major (X varies fastest).
 // data[x, y, z] linear offset = x + y*nx + z*nx*ny
-// A fixed-x YZ plane is strided in raw: plane[y][z] at offset x + y*nx + z*nx*ny
 //
-// Extraction strategy: sequential scan of raw file by z-layer.
-// For each z, read the full nx*ny XY plane, then scatter the x-th column
-// into every sidecar plane's z-row. This is one sequential pass over raw.
+// Streaming sidecar build: process one z-chunk at a time.
+// For chunk c covering z ∈ [c*czr, min((c+1)*czr, nz)):
+//   - Scan those z-layers from raw (sequential)
+//   - For each plane pi (x = pi*stride), collect ny*czr floats into a buffer
+//   - Compress immediately, write to sidecar file, record index entry
+// Memory per chunk: planeCount * ny * czr * sizeof(float)
 
 #ifdef ERWT3D_HAVE_LZ4
-static double compressPlanesToSidecar(
-    int fdXp, const std::vector<std::vector<float>>& planes,
-    uint64_t ny, uint64_t nz, uint32_t stride, uint32_t chunkZRows,
-    std::vector<XPChunkIndex>& index, uint64_t dataOffset) {
 
-    uint64_t planeCount = planes.size();
+struct SidecarBuildState {
+    int fdXp;
+    int fdRaw;
+    uint64_t nx, ny, nz;
+    uint32_t stride;
+    uint32_t chunkZRows;
+    uint32_t chunksPerPlane;
+    uint32_t planeCount;
+    uint64_t totalChunks;
+    uint64_t dataOffset;
+    std::vector<XPChunkIndex> index;
+    uint64_t chunkIdx;
+    uint64_t totalStorageBytes;
+    std::vector<char> compBuf;
+    std::vector<float> rawRow;
+    std::vector<std::vector<float>> planeChunks;
+};
+
+static bool buildChunk(SidecarBuildState& s, uint32_t chunkIdx) {
+    uint64_t zStart = static_cast<uint64_t>(chunkIdx % s.chunksPerPlane) * s.chunkZRows;
+    uint64_t zEnd = std::min(zStart + s.chunkZRows, s.nz);
+    uint64_t rowsInChunk = zEnd - zStart;
+    uint64_t rowFloats = s.nx * s.ny;
+    uint64_t chunkRawBytes = rowsInChunk * s.ny * sizeof(float);
+
+    // Fill planeChunks for all planes
+    for (uint32_t pi = 0; pi < s.planeCount; ++pi) {
+        std::fill(s.planeChunks[pi].begin(), s.planeChunks[pi].end(), 0.0f);
+    }
+
+    for (uint64_t zi = 0; zi < rowsInChunk; ++zi) {
+        uint64_t z = zStart + zi;
+        uint64_t rowOff = z * rowFloats * sizeof(float);
+        ssize_t rd = pread(s.fdRaw, s.rawRow.data(), rowFloats * sizeof(float), rowOff);
+        if (rd != static_cast<ssize_t>(rowFloats * sizeof(float))) {
+            std::cerr << "\nError reading raw z-layer " << z << std::endl;
+            return false;
+        }
+        for (uint32_t pi = 0; pi < s.planeCount; ++pi) {
+            uint64_t x = static_cast<uint64_t>(pi) * s.stride;
+            if (x >= s.nx) x = s.nx - 1;
+            float* dst = s.planeChunks[pi].data() + zi * s.ny;
+            for (uint64_t y = 0; y < s.ny; ++y) {
+                dst[y] = s.rawRow[y * s.nx + x];
+            }
+        }
+    }
+
+    // Compress and write each plane's chunk
+    for (uint32_t pi = 0; pi < s.planeCount; ++pi) {
+        const char* src = reinterpret_cast<const char*>(s.planeChunks[pi].data());
+        int cs = LZ4_compress_default(src, s.compBuf.data(),
+                                      static_cast<int>(chunkRawBytes),
+                                      static_cast<int>(s.compBuf.size()));
+        if (cs <= 0) {
+            std::cerr << "\nLZ4 compress failed for plane " << pi
+                      << " chunk " << chunkIdx << std::endl;
+            return false;
+        }
+
+        uint64_t globalChunkIdx = static_cast<uint64_t>(pi) * s.chunksPerPlane +
+                                   (chunkIdx % s.chunksPerPlane);
+        s.index[globalChunkIdx].chunk_offset = s.dataOffset + s.totalStorageBytes;
+        s.index[globalChunkIdx].compressed_size = static_cast<uint32_t>(cs);
+        s.index[globalChunkIdx].raw_size = static_cast<uint32_t>(chunkRawBytes);
+        s.totalStorageBytes += cs;
+
+        if (pwrite(s.fdXp, s.compBuf.data(), cs, s.index[globalChunkIdx].chunk_offset) != cs) {
+            perror("write chunk");
+            return false;
+        }
+    }
+    return true;
+}
+
+// Estimate compression ratio by sampling a few planes
+static double estimateCompressionRatio(int fdRaw, uint64_t nx, uint64_t ny, uint64_t nz,
+                                       uint32_t stride, uint32_t chunkZRows) {
     uint32_t chunksPerPlane = (nz + chunkZRows - 1) / chunkZRows;
     uint64_t chunkRawBytes = ny * static_cast<uint64_t>(chunkZRows) * sizeof(float);
     std::vector<char> compBuf(LZ4_compressBound(static_cast<int>(chunkRawBytes)));
 
-    uint64_t chunkIdx = 0;
-    uint64_t totalStorageBytes = 0;
+    uint32_t sampleCount = 10;
+    uint64_t planeCount = (nx + stride - 1) / stride;
+    if (planeCount < sampleCount) sampleCount = planeCount;
+    if (sampleCount == 0) return 1.0;
 
-    for (uint64_t pi = 0; pi < planeCount; ++pi) {
-        const float* planeData = planes[pi].data();
+    std::vector<uint64_t> sampleXs;
+    for (uint32_t s = 0; s < sampleCount; ++s) {
+        uint64_t x = (static_cast<uint64_t>(s) * nx) / sampleCount;
+        if (x >= nx) x = nx - 1;
+        x = (x / stride) * stride;
+        sampleXs.push_back(x);
+    }
+
+    uint64_t rowFloats = nx * ny;
+    std::vector<float> row(rowFloats);
+    std::vector<float> planeChunk(ny * chunkZRows);
+
+    uint64_t totalComp = 0, totalRaw = 0;
+    for (uint32_t s = 0; s < sampleCount; ++s) {
         for (uint32_t c = 0; c < chunksPerPlane; ++c) {
             uint64_t zStart = static_cast<uint64_t>(c) * chunkZRows;
             uint64_t zEnd = std::min(zStart + chunkZRows, nz);
-            uint64_t thisRawBytes = (zEnd - zStart) * ny * sizeof(float);
-            const char* src = reinterpret_cast<const char*>(planeData + zStart * ny);
+            uint64_t rowsInChunk = zEnd - zStart;
+            uint64_t thisRawBytes = rowsInChunk * ny * sizeof(float);
 
-            int cs = LZ4_compress_default(src, compBuf.data(),
-                                          static_cast<int>(thisRawBytes),
-                                          static_cast<int>(compBuf.size()));
-            if (cs <= 0) {
-                std::cerr << "\nLZ4 compress failed for plane " << pi
-                          << " chunk " << c << std::endl;
-                return -1.0;
+            for (uint64_t zi = 0; zi < rowsInChunk; ++zi) {
+                uint64_t z = zStart + zi;
+                uint64_t rowOff = z * rowFloats * sizeof(float);
+                ssize_t rd = pread(fdRaw, row.data(), rowFloats * sizeof(float), rowOff);
+                if (rd != static_cast<ssize_t>(rowFloats * sizeof(float))) return 1.0;
+                uint64_t x = sampleXs[s];
+                float* dst = planeChunk.data() + zi * ny;
+                for (uint64_t y = 0; y < ny; ++y)
+                    dst[y] = row[y * nx + x];
             }
 
-            index[chunkIdx].chunk_offset = dataOffset + totalStorageBytes;
-            index[chunkIdx].compressed_size = static_cast<uint32_t>(cs);
-            index[chunkIdx].raw_size = static_cast<uint32_t>(thisRawBytes);
-            totalStorageBytes += cs;
-
-            if (pwrite(fdXp, compBuf.data(), cs, index[chunkIdx].chunk_offset) != cs) {
-                perror("write chunk");
-                return -1.0;
-            }
-            ++chunkIdx;
+            int cs = LZ4_compress_default(
+                reinterpret_cast<const char*>(planeChunk.data()), compBuf.data(),
+                static_cast<int>(thisRawBytes), static_cast<int>(compBuf.size()));
+            if (cs > 0) { totalComp += cs; totalRaw += thisRawBytes; }
         }
     }
-    return static_cast<double>(totalStorageBytes);
+    if (totalRaw == 0) return 1.0;
+    return static_cast<double>(totalComp) / static_cast<double>(totalRaw);
 }
+
 #endif
 
 static int runSidecar(const std::string& rawPath, const std::string& erwtPath,
                       uint64_t nx, uint64_t ny, uint64_t nz,
-                      uint32_t requestedStride, uint32_t chunkZRows) {
+                      uint32_t requestedStride, uint32_t chunkZRows,
+                      double storageBudget = 1.45) {
 #ifndef ERWT3D_HAVE_LZ4
     std::cerr << "Error: LZ4 support not compiled in. Sidecar mode requires LZ4." << std::endl;
     return 1;
 #else
     std::string xpPath = erwtPath + ".xp";
-
-    uint64_t planeFloats = ny * nz;
     uint64_t rawBytes = nx * ny * nz * sizeof(float);
+    uint64_t rowFloats = nx * ny;
 
     int fdRaw = open(rawPath.c_str(), O_RDONLY);
     if (fdRaw < 0) { perror("open raw"); return 1; }
@@ -100,93 +188,31 @@ static int runSidecar(const std::string& rawPath, const std::string& erwtPath,
     fstat(fdErwt, &erwtStat);
     uint64_t mainBytes = erwtStat.st_size;
 
-    // Stride decision: try stride=1 first (100% hit), increase if storage exceeds 1.45x
-    // We estimate compression by sampling a few planes via sequential scan.
+    posix_fadvise(fdRaw, 0, 0, POSIX_FADV_SEQUENTIAL);
+
+    // Estimate compression ratio
     std::cout << "Estimating sidecar compression ratio..." << std::endl;
-
-    uint32_t sampleStride = std::max(requestedStride, 1u);
-    uint32_t sampleCount = 10;
-    uint64_t samplePlaneCount = (nx + sampleStride - 1) / sampleStride;
-    if (samplePlaneCount < sampleCount) sampleCount = samplePlaneCount;
-    if (sampleCount == 0) sampleCount = 1;
-
-    uint32_t chunksPerPlane = (nz + chunkZRows - 1) / chunkZRows;
-    uint64_t chunkRawBytes = ny * static_cast<uint64_t>(chunkZRows) * sizeof(float);
-    std::vector<char> compBuf(LZ4_compressBound(static_cast<int>(chunkRawBytes)));
-
-    // Sample planes: sequential scan, extract every sampleStride-th x
-    std::vector<std::vector<float>> samplePlanes(sampleCount, std::vector<float>(planeFloats));
-    uint64_t rowFloats = nx * ny;
-    std::vector<float> row(rowFloats);
-
-    // Determine which x values to sample
-    std::vector<uint64_t> sampleXs;
-    for (uint32_t s = 0; s < sampleCount; ++s) {
-        uint64_t x = (static_cast<uint64_t>(s) * nx) / sampleCount;
-        if (x >= nx) x = nx - 1;
-        // Align to sampleStride
-        x = (x / sampleStride) * sampleStride;
-        sampleXs.push_back(x);
-    }
-
-    std::cout << "  Scanning raw to extract " << sampleCount << " sample planes..." << std::endl;
-    for (uint64_t z = 0; z < nz; ++z) {
-        uint64_t rowOff = z * rowFloats * sizeof(float);
-        ssize_t rd = pread(fdRaw, row.data(), rowFloats * sizeof(float), rowOff);
-        if (rd != static_cast<ssize_t>(rowFloats * sizeof(float))) {
-            std::cerr << "\nError reading raw z-layer " << z << std::endl;
-            close(fdRaw); close(fdErwt); return 1;
-        }
-        for (uint32_t s = 0; s < sampleCount; ++s) {
-            uint64_t x = sampleXs[s];
-            for (uint64_t y = 0; y < ny; ++y) {
-                samplePlanes[s][z * ny + y] = row[y * nx + x];
-            }
-        }
-        if (z % 100 == 0) {
-            std::cout << "\r  z=" << z << "/" << nz << " (" << (z * 100 / nz) << "%)" << std::flush;
-        }
-    }
-    std::cout << "\r  z=" << nz << "/" << nz << " (100%)" << std::endl;
-
-    // Compress samples to estimate ratio
-    uint64_t totalComp = 0, totalRaw = 0;
-    for (uint32_t s = 0; s < sampleCount; ++s) {
-        const float* planeData = samplePlanes[s].data();
-        for (uint32_t c = 0; c < chunksPerPlane; ++c) {
-            uint64_t zStart = static_cast<uint64_t>(c) * chunkZRows;
-            uint64_t zEnd = std::min(zStart + chunkZRows, nz);
-            uint64_t thisRawBytes = (zEnd - zStart) * ny * sizeof(float);
-            const char* src = reinterpret_cast<const char*>(planeData + zStart * ny);
-            int cs = LZ4_compress_default(src, compBuf.data(),
-                                          static_cast<int>(thisRawBytes),
-                                          static_cast<int>(compBuf.size()));
-            if (cs > 0) {
-                totalComp += cs;
-                totalRaw += thisRawBytes;
-            }
-        }
-    }
-    double ratio = (totalRaw > 0) ? static_cast<double>(totalComp) / static_cast<double>(totalRaw) : 1.0;
+    double ratio = estimateCompressionRatio(fdRaw, nx, ny, nz,
+                                            std::max(requestedStride, 1u), chunkZRows);
     std::cout << "  Estimated compression ratio: " << ratio << "x" << std::endl;
 
-    // Stride decision: start from stride=1, increase until storage fits
+    // Stride decision: start from stride=1, increase until storage fits budget
     uint32_t stride = 1;
     double projS = ratio * rawBytes;
     double totalRatio = static_cast<double>(mainBytes + projS) / rawBytes;
     std::cout << "  Projected total storage ratio (stride=1): " << totalRatio << "x" << std::endl;
 
-    while (totalRatio > 1.45 && stride < 8) {
+    while (totalRatio > storageBudget) {
         stride++;
         projS = ratio * rawBytes / stride;
         totalRatio = static_cast<double>(mainBytes + projS) / rawBytes;
         std::cout << "  Trying stride=" << stride << ": " << totalRatio << "x" << std::endl;
+        if (stride > nx) break;
     }
 
-    if (totalRatio > 1.45) {
+    if (totalRatio > storageBudget) {
         std::cout << "  Storage ratio too high (" << totalRatio
-                  << "x > 1.45x). Skipping sidecar." << std::endl;
-        // Clear sidecar flag if it was set
+                  << "x > " << storageBudget << "x). Skipping sidecar." << std::endl;
         header.flags &= ~erwt3d::FLAG_HAS_XP_SIDECAR;
         header.reserved[21] = 0;
         pwrite(fdErwt, &header, sizeof(header), 0);
@@ -194,7 +220,7 @@ static int runSidecar(const std::string& rawPath, const std::string& erwtPath,
         return 0;
     }
 
-    // Honor user-requested stride if it's larger (more conservative)
+    // Honor user-requested stride if it's larger
     if (requestedStride > stride) {
         stride = requestedStride;
         projS = ratio * rawBytes / stride;
@@ -203,41 +229,21 @@ static int runSidecar(const std::string& rawPath, const std::string& erwtPath,
     }
 
     uint32_t planeCount = (nx + stride - 1) / stride;
+    uint32_t chunksPerPlane = (nz + chunkZRows - 1) / chunkZRows;
     uint64_t totalChunks = static_cast<uint64_t>(planeCount) * chunksPerPlane;
+    uint64_t chunkRawBytes = ny * static_cast<uint64_t>(chunkZRows) * sizeof(float);
 
     std::cout << "Creating sidecar: " << xpPath << std::endl;
     std::cout << "  Stride: " << stride << ", Planes: " << planeCount
               << ", Chunks/plane: " << chunksPerPlane
               << ", Total chunks: " << totalChunks << std::endl;
 
-    // Extract all planes via sequential scan
-    std::cout << "Scanning raw to extract " << planeCount << " planes..." << std::endl;
-    std::vector<std::vector<float>> planes(planeCount, std::vector<float>(planeFloats));
-    for (uint64_t z = 0; z < nz; ++z) {
-        uint64_t rowOff = z * rowFloats * sizeof(float);
-        ssize_t rd = pread(fdRaw, row.data(), rowFloats * sizeof(float), rowOff);
-        if (rd != static_cast<ssize_t>(rowFloats * sizeof(float))) {
-            std::cerr << "\nError reading raw z-layer " << z << std::endl;
-            close(fdRaw); close(fdErwt); return 1;
-        }
-        for (uint64_t pi = 0; pi < planeCount; ++pi) {
-            uint64_t x = pi * stride;
-            if (x >= nx) x = nx - 1;
-            for (uint64_t y = 0; y < ny; ++y) {
-                planes[pi][z * ny + y] = row[y * nx + x];
-            }
-        }
-        if (z % 100 == 0) {
-            std::cout << "\r  z=" << z << "/" << nz << " (" << (z * 100 / nz) << "%)" << std::flush;
-        }
-    }
-    std::cout << "\r  z=" << nz << "/" << nz << " (100%)" << std::endl;
-
-    close(fdRaw);
+    uint64_t memNeeded = static_cast<uint64_t>(planeCount) * chunkRawBytes;
+    std::cout << "  Streaming memory per z-chunk batch: " << memNeeded / (1024*1024) << " MB" << std::endl;
 
     // Create sidecar file
     int fdXp = open(xpPath.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
-    if (fdXp < 0) { perror("open sidecar"); close(fdErwt); return 1; }
+    if (fdXp < 0) { perror("open sidecar"); close(fdRaw); close(fdErwt); return 1; }
 
     // Write header placeholder
     XPSidecarHeader xpHdr{};
@@ -248,35 +254,61 @@ static int runSidecar(const std::string& rawPath, const std::string& erwtPath,
     xpHdr.chunk_z_rows = chunkZRows;
     xpHdr.chunks_per_plane = chunksPerPlane;
     xpHdr.plane_count = planeCount;
-    xpHdr.plane_floats = planeFloats;
+    xpHdr.plane_floats = ny * nz;
     xpHdr.chunk_raw_bytes = chunkRawBytes;
     xpHdr.total_chunks = totalChunks;
     xpHdr.compression = 1;
     if (pwrite(fdXp, &xpHdr, sizeof(xpHdr), 0) != sizeof(xpHdr)) {
-        perror("write sidecar header"); close(fdXp); close(fdErwt); return 1;
+        perror("write sidecar header"); close(fdXp); close(fdRaw); close(fdErwt); return 1;
     }
 
-    // Compress and write chunks
-    std::vector<XPChunkIndex> index(totalChunks);
-    uint64_t dataOffset = sizeof(xpHdr);
-
-    std::cout << "Compressing and writing chunks..." << std::endl;
-    double totalStorageBytes = compressPlanesToSidecar(
-        fdXp, planes, ny, nz, stride, chunkZRows, index, dataOffset);
-    if (totalStorageBytes < 0) {
-        close(fdXp); close(fdErwt); return 1;
+    // Initialize streaming build state
+    SidecarBuildState s{};
+    s.fdXp = fdXp;
+    s.fdRaw = fdRaw;
+    s.nx = nx; s.ny = ny; s.nz = nz;
+    s.stride = stride;
+    s.chunkZRows = chunkZRows;
+    s.chunksPerPlane = chunksPerPlane;
+    s.planeCount = planeCount;
+    s.totalChunks = totalChunks;
+    s.dataOffset = sizeof(xpHdr);
+    s.index.resize(totalChunks);
+    s.chunkIdx = 0;
+    s.totalStorageBytes = 0;
+    s.compBuf.resize(LZ4_compressBound(static_cast<int>(chunkRawBytes)));
+    s.rawRow.resize(rowFloats);
+    s.planeChunks.resize(planeCount);
+    for (uint32_t pi = 0; pi < planeCount; ++pi) {
+        s.planeChunks[pi].resize(ny * chunkZRows);
     }
+
+    // Process chunk by chunk: for each chunk index, scan the corresponding z-layers
+    // and compress all planes' chunks for that z-range.
+    std::cout << "Streaming build (z-chunk by z-chunk)..." << std::endl;
+    for (uint32_t c = 0; c < chunksPerPlane; ++c) {
+        if (c % 1 == 0) {
+            std::cout << "\r  chunk " << c << "/" << chunksPerPlane
+                      << " (" << (c * 100 / chunksPerPlane) << "%)" << std::flush;
+        }
+        if (!buildChunk(s, c)) {
+            close(fdXp); close(fdRaw); close(fdErwt); return 1;
+        }
+    }
+    std::cout << "\r  chunk " << chunksPerPlane << "/" << chunksPerPlane << " (100%)" << std::endl;
+
+    close(fdRaw);
 
     // Write index at end
-    uint64_t indexOffset = dataOffset + static_cast<uint64_t>(totalStorageBytes);
+    uint64_t indexOffset = s.dataOffset + s.totalStorageBytes;
     ssize_t idxBytes = static_cast<ssize_t>(totalChunks * sizeof(XPChunkIndex));
-    if (pwrite(fdXp, index.data(), idxBytes, indexOffset) != idxBytes) {
+    if (pwrite(fdXp, s.index.data(), idxBytes, indexOffset) != idxBytes) {
         perror("write index"); close(fdXp); close(fdErwt); return 1;
     }
 
-    // Patch header with final offsets
+    // Patch header
     xpHdr.index_offset = indexOffset;
-    xpHdr.total_storage_bytes = static_cast<uint64_t>(totalStorageBytes);
+    xpHdr.total_storage_bytes = s.totalStorageBytes;
     if (pwrite(fdXp, &xpHdr, sizeof(xpHdr), 0) != sizeof(xpHdr)) {
         perror("patch sidecar header"); close(fdXp); close(fdErwt); return 1;
     }
@@ -291,8 +323,8 @@ static int runSidecar(const std::string& rawPath, const std::string& erwtPath,
     close(fdXp);
     close(fdErwt);
 
-    double finalRatio = static_cast<double>(mainBytes + totalStorageBytes) / rawBytes;
-    std::cout << "Done. Sidecar: " << static_cast<uint64_t>(totalStorageBytes) / (1024 * 1024) << " MB compressed"
+    double finalRatio = static_cast<double>(mainBytes + s.totalStorageBytes) / rawBytes;
+    std::cout << "Done. Sidecar: " << s.totalStorageBytes / (1024 * 1024) << " MB compressed"
               << ", total storage ratio: " << finalRatio << "x" << std::endl;
     return 0;
 #endif
@@ -324,44 +356,46 @@ static int runLegacy(const std::string& rawPath, const std::string& erwtPath,
     ERWT3DHeader header;
     pread(fdErwt, &header, sizeof(header), 0);
 
-    // Extract planes via sequential scan of raw (X-Y-Z row-major, X varies fastest)
-    std::vector<std::vector<float>> planes(planeCount, std::vector<float>(planeFloats));
+    posix_fadvise(fdRaw, 0, 0, POSIX_FADV_SEQUENTIAL);
+
+    // Streaming: extract one plane at a time, write immediately
     uint64_t rowFloats = nx * ny;
     std::vector<float> row(rowFloats);
+    std::vector<float> plane(planeFloats);
 
-    std::cout << "Scanning raw to extract " << planeCount << " planes..." << std::endl;
-    for (uint64_t z = 0; z < nz; ++z) {
-        uint64_t rowOff = z * rowFloats * sizeof(float);
-        ssize_t rd = pread(fdRaw, row.data(), rowFloats * sizeof(float), rowOff);
-        if (rd != static_cast<ssize_t>(rowFloats * sizeof(float))) {
-            std::cerr << "\nError reading raw z-layer " << z << std::endl;
+    std::cout << "Streaming extraction (one plane at a time)..." << std::endl;
+    for (uint64_t pi = 0; pi < planeCount; ++pi) {
+        uint64_t x = pi * stride;
+        if (x >= nx) x = nx - 1;
+
+        for (uint64_t z = 0; z < nz; ++z) {
+            uint64_t rowOff = z * rowFloats * sizeof(float);
+            ssize_t rd = pread(fdRaw, row.data(), rowFloats * sizeof(float), rowOff);
+            if (rd != static_cast<ssize_t>(rowFloats * sizeof(float))) {
+                std::cerr << "\nError reading raw z-layer " << z << std::endl;
+                close(fdRaw); close(fdErwt);
+                return 1;
+            }
+            for (uint64_t y = 0; y < ny; ++y) {
+                plane[z * ny + y] = row[y * nx + x];
+            }
+        }
+
+        uint64_t off = xPlaneOffset + pi * planeFloats * sizeof(float);
+        ssize_t wr = pwrite(fdErwt, plane.data(), planeFloats * sizeof(float), off);
+        if (wr != static_cast<ssize_t>(planeFloats * sizeof(float))) {
+            std::cerr << "\nError writing plane " << pi << std::endl;
             close(fdRaw); close(fdErwt);
             return 1;
         }
-        for (uint64_t pi = 0; pi < planeCount; ++pi) {
-            uint64_t x = pi * stride;
-            if (x >= nx) x = nx - 1;
-            for (uint64_t y = 0; y < ny; ++y) {
-                planes[pi][z * ny + y] = row[y * nx + x];
-            }
-        }
-        if (z % 100 == 0) {
-            std::cout << "\r  z=" << z << "/" << nz << " (" << (z * 100 / nz) << "%)" << std::flush;
-        }
-    }
-    std::cout << "\r  z=" << nz << "/" << nz << " (100%)" << std::endl;
-    close(fdRaw);
 
-    // Write planes to erwt3d file
-    for (uint64_t pi = 0; pi < planeCount; ++pi) {
-        uint64_t off = xPlaneOffset + pi * planeFloats * sizeof(float);
-        ssize_t wr = pwrite(fdErwt, planes[pi].data(), planeFloats * sizeof(float), off);
-        if (wr != static_cast<ssize_t>(planeFloats * sizeof(float))) {
-            std::cerr << "\nError writing plane " << pi << std::endl;
-            close(fdErwt);
-            return 1;
+        if (pi % 10 == 0) {
+            std::cout << "\r  plane " << pi << "/" << planeCount
+                      << " (" << (pi * 100 / planeCount) << "%)" << std::flush;
         }
     }
+    std::cout << "\r  plane " << planeCount << "/" << planeCount << " (100%)" << std::endl;
+    close(fdRaw);
 
     header.flags |= (1ULL << 3);
     header.reserved[16] = xPlaneOffset;
@@ -383,6 +417,7 @@ int main(int argc, char* argv[]) {
     uint32_t stride = 0;
     std::string mode = "sidecar";
     uint32_t chunkZRows = 256;
+    double storageBudget = 1.45;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -394,21 +429,22 @@ int main(int argc, char* argv[]) {
         else if (arg == "--stride" && i + 1 < argc) stride = std::stoul(argv[++i]);
         else if (arg == "--mode" && i + 1 < argc) mode = argv[++i];
         else if (arg == "--chunk-z-rows" && i + 1 < argc) chunkZRows = std::stoul(argv[++i]);
+        else if (arg == "--storage-budget" && i + 1 < argc) storageBudget = std::stod(argv[++i]);
     }
 
     if (rawPath.empty() || erwtPath.empty() || nx == 0 || ny == 0 || nz == 0) {
         std::cerr << "Usage: erwt3d_precompute_x --raw data.raw --erwt3d data.erwt3d"
                   << " --nx N --ny N --nz N [options]" << std::endl;
         std::cerr << "  --mode sidecar|legacy (default: sidecar)" << std::endl;
-        std::cerr << "  --stride N (sidecar: auto-decided from 1, legacy: default 1)" << std::endl;
+        std::cerr << "  --stride N (sidecar: auto from 1, legacy: default 1)" << std::endl;
         std::cerr << "  --chunk-z-rows N (sidecar, default: 256)" << std::endl;
+        std::cerr << "  --storage-budget X (sidecar, default: 1.45)" << std::endl;
         return 1;
     }
 
-    // stride=0 means auto-decide for sidecar, default 1 for legacy
     if (mode == "sidecar") {
         uint32_t hintStride = (stride == 0) ? 1 : stride;
-        return runSidecar(rawPath, erwtPath, nx, ny, nz, hintStride, chunkZRows);
+        return runSidecar(rawPath, erwtPath, nx, ny, nz, hintStride, chunkZRows, storageBudget);
     } else {
         if (stride == 0) stride = 1;
         if (stride < 1) stride = 1;
