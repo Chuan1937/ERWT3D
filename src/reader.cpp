@@ -18,6 +18,30 @@
 
 namespace erwt3d {
 
+namespace {
+
+inline void adviseSequential(int fd, uint64_t offset = 0, uint64_t bytes = 0) {
+#if defined(POSIX_FADV_SEQUENTIAL)
+    posix_fadvise(fd, static_cast<off_t>(offset), static_cast<off_t>(bytes), POSIX_FADV_SEQUENTIAL);
+#else
+    (void)fd;
+    (void)offset;
+    (void)bytes;
+#endif
+}
+
+inline void adviseWillNeed(int fd, uint64_t offset, uint64_t bytes) {
+#if defined(POSIX_FADV_WILLNEED)
+    posix_fadvise(fd, static_cast<off_t>(offset), static_cast<off_t>(bytes), POSIX_FADV_WILLNEED);
+#else
+    (void)fd;
+    (void)offset;
+    (void)bytes;
+#endif
+}
+
+} // namespace
+
 ERWT3DReader::ERWT3DReader(const std::string& path, size_t cacheMB, bool useMmap)
     : path_(path), fd_(-1), cacheMB_(cacheMB), useMmap_(useMmap) {
     fd_ = open(path.c_str(), O_RDONLY);
@@ -587,14 +611,14 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
     if (axis == SliceAxis::X && hasXPlanes(header_)) {
         uint32_t stride = getXPlaneStride(header_);
         if (index % stride == 0) {
-            uint64_t planeIdx = index / stride;
-            uint64_t planeCount = getXPlaneCount(header_);
-            if (planeIdx < planeCount) {
-                uint64_t planeBytes = header_.ny * header_.nz * sizeof(float);
-                uint64_t off = getXPlaneOffset(header_) + planeIdx * planeBytes;
-                posix_fadvise(fd_, off, planeBytes, POSIX_FADV_WILLNEED);
-                auto readStart = std::chrono::high_resolution_clock::now();
-                ssize_t n = pread(fd_, output, planeBytes, off);
+                uint64_t planeIdx = index / stride;
+                uint64_t planeCount = getXPlaneCount(header_);
+                if (planeIdx < planeCount) {
+                    uint64_t planeBytes = header_.ny * header_.nz * sizeof(float);
+                    uint64_t off = getXPlaneOffset(header_) + planeIdx * planeBytes;
+                    adviseWillNeed(fd_, off, planeBytes);
+                    auto readStart = std::chrono::high_resolution_clock::now();
+                    ssize_t n = pread(fd_, output, planeBytes, off);
                 auto readEnd = std::chrono::high_resolution_clock::now();
                 if (n == static_cast<ssize_t>(planeBytes)) {
                     auto planEnd = std::chrono::high_resolution_clock::now();
@@ -619,7 +643,7 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
 
     // Try X-panel fast path
     if (axis == SliceAxis::X && hasXPanels(header_)) {
-        posix_fadvise(fd_, 0, 0, POSIX_FADV_SEQUENTIAL);
+        adviseSequential(fd_);
         auto readStart = std::chrono::high_resolution_clock::now();
         bool panelOk = tryReadSliceXPanels(fd_, header_, index, output,
                                            profileIO_ ? &lastProfile_ : nullptr);
@@ -663,7 +687,7 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
         // Compressed path: sort tasks by physical file offset for HDD
         const uint64_t sbBV = getSuperblockBytes(header_);
         std::vector<uint8_t> sbBuf(sbBV);
-        posix_fadvise(fd_, 0, 0, POSIX_FADV_SEQUENTIAL);
+        adviseSequential(fd_);
 
         std::vector<size_t> taskOrder(plan.tasks.size());
         for (size_t i = 0; i < plan.tasks.size(); ++i) taskOrder[i] = i;
@@ -776,7 +800,7 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
             return batch.batch_tasks[a].file_offset < batch.batch_tasks[b].file_offset;
         });
 
-        posix_fadvise(fd_, 0, 0, POSIX_FADV_SEQUENTIAL);
+        adviseSequential(fd_);
 
         uint64_t lastSbIdx = UINT64_MAX;
         for (size_t ti = 0; ti < taskOrder.size(); ++ti) {

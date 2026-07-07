@@ -13,6 +13,49 @@ namespace erwt3d {
 
 using namespace detail;
 
+namespace {
+
+std::vector<uint32_t> buildMortonTableXY(uint64_t lpx, uint64_t lpy, uint64_t leafZ) {
+    std::vector<uint32_t> table(lpx * lpy);
+    for (uint64_t lyi = 0; lyi < lpy; ++lyi) {
+        for (uint64_t lxi = 0; lxi < lpx; ++lxi) {
+            table[lyi * lpx + lxi] = static_cast<uint32_t>(
+                morton3D(static_cast<uint32_t>(lxi),
+                         static_cast<uint32_t>(lyi),
+                         static_cast<uint32_t>(leafZ)));
+        }
+    }
+    return table;
+}
+
+std::vector<uint32_t> buildMortonTableXZ(uint64_t lpx, uint64_t lpz, uint64_t leafY) {
+    std::vector<uint32_t> table(lpx * lpz);
+    for (uint64_t lzi = 0; lzi < lpz; ++lzi) {
+        for (uint64_t lxi = 0; lxi < lpx; ++lxi) {
+            table[lzi * lpx + lxi] = static_cast<uint32_t>(
+                morton3D(static_cast<uint32_t>(lxi),
+                         static_cast<uint32_t>(leafY),
+                         static_cast<uint32_t>(lzi)));
+        }
+    }
+    return table;
+}
+
+std::vector<uint32_t> buildMortonTableYZ(uint64_t lpy, uint64_t lpz, uint64_t leafX) {
+    std::vector<uint32_t> table(lpy * lpz);
+    for (uint64_t lzi = 0; lzi < lpz; ++lzi) {
+        for (uint64_t lyi = 0; lyi < lpy; ++lyi) {
+            table[lzi * lpy + lyi] = static_cast<uint32_t>(
+                morton3D(static_cast<uint32_t>(leafX),
+                         static_cast<uint32_t>(lyi),
+                         static_cast<uint32_t>(lzi)));
+        }
+    }
+    return table;
+}
+
+} // namespace
+
 // ============================================================================
 // Plan Builders
 // ============================================================================
@@ -32,6 +75,7 @@ SBTaskPlan buildSBPlanZ(const ERWT3DHeader& hdr, uint64_t z) {
     plan.tasks.reserve(maxTasks);
     plan.leaf_data.reserve(maxLeaves * 4);
     plan.leaf_out.reserve(maxLeaves * 4);
+    const auto mortonXY = buildMortonTableXY(lpx, lpy, leafZ);
 
     for (uint64_t syi = 0; syi < sgY; ++syi) {
         for (uint64_t sxi = 0; sxi < sgX; ++sxi) {
@@ -50,9 +94,7 @@ SBTaskPlan buildSBPlanZ(const ERWT3DHeader& hdr, uint64_t z) {
                     uint64_t vy = std::min(ly, dy < ny ? ny - dy : uint64_t(0));
                     if (vx == 0 || vy == 0) continue;
 
-                    uint64_t mortar = morton3D(static_cast<uint32_t>(lxi),
-                                               static_cast<uint32_t>(lyi),
-                                               static_cast<uint32_t>(leafZ));
+                    uint64_t mortar = mortonXY[lyi * lpx + lxi];
                     plan.leaf_data.push_back(mortar);  // 0: mortar
                     plan.leaf_data.push_back(0);        // 1: unused
                     plan.leaf_data.push_back(0);        // 2: unused
@@ -93,6 +135,7 @@ SBTaskPlan buildSBPlanY(const ERWT3DHeader& hdr, uint64_t y) {
     plan.tasks.reserve(maxTasks);
     plan.leaf_data.reserve(maxLeaves * 4);
     plan.leaf_out.reserve(maxLeaves * 4);
+    const auto mortonXZ = buildMortonTableXZ(lpx, lpz, leafY);
 
     for (uint64_t szi = 0; szi < sgZ; ++szi) {
         for (uint64_t sxi = 0; sxi < sgX; ++sxi) {
@@ -111,9 +154,7 @@ SBTaskPlan buildSBPlanY(const ERWT3DHeader& hdr, uint64_t y) {
                     uint64_t vz = std::min(lz, dz < nz ? nz - dz : uint64_t(0));
                     if (vx == 0 || vz == 0) continue;
 
-                    uint64_t mortar = morton3D(static_cast<uint32_t>(lxi),
-                                               static_cast<uint32_t>(leafY),
-                                               static_cast<uint32_t>(lzi));
+                    uint64_t mortar = mortonXZ[lzi * lpx + lxi];
                     plan.leaf_data.push_back(mortar);
                     plan.leaf_data.push_back(0);
                     plan.leaf_data.push_back(0);
@@ -154,6 +195,7 @@ SBTaskPlan buildSBPlanX(const ERWT3DHeader& hdr, uint64_t x) {
     plan.tasks.reserve(maxTasks);
     plan.leaf_data.reserve(maxLeaves * 4);
     plan.leaf_out.reserve(maxLeaves * 4);
+    const auto mortonYZ = buildMortonTableYZ(lpy, lpz, leafX);
 
     for (uint64_t szi = 0; szi < sgZ; ++szi) {
         for (uint64_t syi = 0; syi < sgY; ++syi) {
@@ -172,9 +214,7 @@ SBTaskPlan buildSBPlanX(const ERWT3DHeader& hdr, uint64_t x) {
                     uint64_t vz = std::min(lz, dz < nz ? nz - dz : uint64_t(0));
                     if (vy == 0 || vz == 0) continue;
 
-                    uint64_t mortar = morton3D(static_cast<uint32_t>(leafX),
-                                               static_cast<uint32_t>(lyi),
-                                               static_cast<uint32_t>(lzi));
+                    uint64_t mortar = mortonYZ[lzi * lpy + lyi];
                     plan.leaf_data.push_back(mortar);
                     plan.leaf_data.push_back(0);
                     plan.leaf_data.push_back(0);
