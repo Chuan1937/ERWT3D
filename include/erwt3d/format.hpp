@@ -17,6 +17,7 @@ constexpr uint64_t FLAG_HAS_Z_PANELS = 1ULL << 2;
 constexpr uint64_t FLAG_HAS_X_PLANES = 1ULL << 3;
 constexpr uint64_t FLAG_COMPRESSED  = 1ULL << 4;
 constexpr uint64_t FLAG_HAS_XP_SIDECAR = 1ULL << 5;
+constexpr uint64_t FLAG_HAS_XBAND_SIDECAR = 1ULL << 6;
 
 // Default block sizes
 constexpr uint32_t DEFAULT_SUPER_X = 64;
@@ -194,5 +195,50 @@ struct XPChunkIndex {
 };
 #pragma pack(pop)
 static_assert(sizeof(XPChunkIndex) == 16, "XPChunkIndex must be 16 bytes");
+
+// X-band sidecar: budgeted replication of selected X-slice bands
+inline bool hasXBandSidecar(const ERWT3DHeader& h) {
+    return (h.flags & FLAG_HAS_XBAND_SIDECAR) != 0;
+}
+
+constexpr char XBAND_MAGIC[8] = {'E','R','W','T','3','D','X','B'};
+constexpr uint32_t XBAND_VERSION = 1;
+
+#pragma pack(push, 1)
+struct XBandSidecarHeader {
+    char     magic[8];            // "ERWT3DXB"
+    uint32_t version;             // 1
+    uint64_t nx, ny, nz;          // must match main header
+    uint32_t band_size;           // slices per band
+    uint32_t selected_band_count; // number of bands actually replicated
+    uint32_t chunk_z_rows;        // Z-chunk size for compression (default 256)
+    uint32_t chunks_per_slice;    // = ceil(nz / chunk_z_rows)
+    uint64_t plane_floats;        // ny * nz (one X slice)
+    uint64_t chunk_raw_bytes;     // ny * chunk_z_rows * sizeof(float)
+    uint8_t  compression;         // 1 = LZ4, 0 = raw
+    uint8_t  padding1[3];
+    uint32_t slice_count;         // total X slices replicated across all bands
+    uint64_t band_table_offset;   // offset to XBandEntry[selected_band_count]
+    uint64_t chunk_index_offset;  // offset to XPChunkIndex[total_chunks]
+    uint64_t total_chunks;        // = slice_count * chunks_per_slice
+    uint64_t total_storage_bytes; // compressed data bytes (excludes header+index)
+    uint8_t  padding2[20];
+};
+#pragma pack(pop)
+static_assert(sizeof(XBandSidecarHeader) == 128, "XBandSidecarHeader must be 128 bytes");
+
+#pragma pack(push, 1)
+struct XBandEntry {
+    uint32_t band_id;             // which band (0..band_count-1)
+    uint32_t slice_start;         // first X slice in band = band_id * band_size
+    uint32_t slice_count;         // actual slices in this band (<= band_size)
+    uint32_t data_bytes;          // total compressed bytes for this band
+    uint64_t data_offset;         // offset in sidecar file where this band's data starts
+    uint64_t chunk_index_base;    // index into the global XPChunkIndex array
+                                 //   chunk for slice s (local idx si), chunk c:
+                                 //   xpIndex[chunk_index_base + si * chunks_per_slice + c]
+};
+#pragma pack(pop)
+static_assert(sizeof(XBandEntry) == 32, "XBandEntry must be 32 bytes");
 
 } // namespace erwt3d

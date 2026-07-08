@@ -194,7 +194,7 @@ ContestResult benchmarkContest(const BenchConfig& cfg) {
     struct stat st;
     if (stat(cfg.input.c_str(), &st) == 0) {
         uint64_t fileBytes = st.st_size;
-        if (hasXPSidecar(header)) {
+        if (hasXPSidecar(header) || hasXBandSidecar(header)) {
             std::string xpPath = cfg.input + ".xp";
             struct stat xpStat;
             if (stat(xpPath.c_str(), &xpStat) == 0) fileBytes += xpStat.st_size;

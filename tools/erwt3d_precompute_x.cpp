@@ -7,6 +7,9 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <random>
+#include <algorithm>
+#include <set>
 
 #ifdef ERWT3D_HAVE_LZ4
 #include <lz4.h>
@@ -17,6 +20,10 @@ using erwt3d::XPSidecarHeader;
 using erwt3d::XPChunkIndex;
 using erwt3d::XPSIDECAR_MAGIC;
 using erwt3d::XPSIDECAR_VERSION;
+using erwt3d::XBandSidecarHeader;
+using erwt3d::XBandEntry;
+using erwt3d::XBAND_MAGIC;
+using erwt3d::XBAND_VERSION;
 
 // Raw data layout: X-Y-Z row-major (X varies fastest).
 // data[x, y, z] linear offset = x + y*nx + z*nx*ny
@@ -411,6 +418,345 @@ static int runLegacy(const std::string& rawPath, const std::string& erwtPath,
     return 0;
 }
 
+static std::set<uint64_t> generateContestQueries(uint64_t nx, uint32_t seed,
+                                                  uint32_t randomCount,
+                                                  uint32_t continuousCount) {
+    std::mt19937 rng(seed);
+    std::uniform_int_distribution<uint64_t> distX(0, nx - 1);
+    std::set<uint64_t> queried;
+    for (uint32_t i = 0; i < randomCount; ++i)
+        queried.insert(distX(rng));
+    uint64_t start = (continuousCount >= nx) ? 0 : nx / 2 - continuousCount / 2;
+    for (uint32_t i = 0; i < continuousCount; ++i)
+        queried.insert(start + i);
+    return queried;
+}
+
+static int runXBand(const std::string& rawPath, const std::string& erwtPath,
+                    uint64_t nx, uint64_t ny, uint64_t nz,
+                    uint32_t bandSize, double budget,
+                    uint32_t chunkZRows, bool useCompression,
+                    uint32_t seed, uint32_t randomCount,
+                    uint32_t continuousCount) {
+#ifndef ERWT3D_HAVE_LZ4
+    if (useCompression) {
+        std::cerr << "Error: LZ4 support not compiled in." << std::endl;
+        return 1;
+    }
+#endif
+    std::string xpPath = erwtPath + ".xp";
+    uint64_t rawBytes = nx * ny * nz * sizeof(float);
+    uint64_t rowFloats = nx * ny;
+
+    int fdRaw = open(rawPath.c_str(), O_RDONLY);
+    if (fdRaw < 0) { perror("open raw"); return 1; }
+
+    int fdErwt = open(erwtPath.c_str(), O_RDWR);
+    if (fdErwt < 0) { perror("open erwt3d"); close(fdRaw); return 1; }
+
+    ERWT3DHeader header;
+    if (pread(fdErwt, &header, sizeof(header), 0) != sizeof(header)) {
+        std::cerr << "Error reading ERWT3D header" << std::endl;
+        close(fdRaw); close(fdErwt); return 1;
+    }
+
+    struct stat erwtStat;
+    fstat(fdErwt, &erwtStat);
+    uint64_t mainBytes = erwtStat.st_size;
+
+    posix_fadvise(fdRaw, 0, 0, POSIX_FADV_SEQUENTIAL);
+
+    // Generate contest queries to determine which X slices are valuable
+    auto queriedX = generateContestQueries(nx, seed, randomCount, continuousCount);
+    std::cout << "Contest queries: " << queriedX.size() << " unique X slices"
+              << " (seed=" << seed << ", random=" << randomCount
+              << ", continuous=" << continuousCount << ")" << std::endl;
+
+    // Band division
+    uint32_t bandCount = (nx + bandSize - 1) / bandSize;
+    uint32_t chunksPerSlice = (nz + chunkZRows - 1) / chunkZRows;
+    uint64_t chunkRawBytes = ny * static_cast<uint64_t>(chunkZRows) * sizeof(float);
+
+    // For each band, check if it contains any queried slices
+    struct BandCandidate {
+        uint32_t bandId;
+        uint32_t sliceStart;
+        uint32_t sliceCount;
+        uint32_t queriedCount;
+        uint64_t rawBytes;
+    };
+    std::vector<BandCandidate> candidates;
+    for (uint32_t b = 0; b < bandCount; ++b) {
+        uint32_t start = b * bandSize;
+        uint32_t end = std::min(start + bandSize, static_cast<uint32_t>(nx));
+        uint32_t count = end - start;
+        uint32_t qCount = 0;
+        for (uint32_t x = start; x < end; ++x)
+            if (queriedX.count(x)) ++qCount;
+        if (qCount == 0) continue;
+        candidates.push_back({b, start, count, qCount,
+                              static_cast<uint64_t>(count) * ny * nz * sizeof(float)});
+    }
+
+    if (candidates.empty()) {
+        std::cerr << "No bands with queried slices. Skipping." << std::endl;
+        close(fdRaw); close(fdErwt); return 0;
+    }
+
+    // Estimate compression ratio by sampling
+    double compRatio = 1.0;
+    if (useCompression) {
+#ifdef ERWT3D_HAVE_LZ4
+        std::cout << "Estimating compression ratio..." << std::endl;
+        uint32_t sampleCount = std::min<uint32_t>(5, static_cast<uint32_t>(candidates.size()));
+        std::vector<char> compBuf(LZ4_compressBound(static_cast<int>(chunkRawBytes)));
+        std::vector<float> row(rowFloats);
+        std::vector<float> planeChunk(ny * chunkZRows);
+        uint64_t totalComp = 0, totalRaw = 0;
+        for (uint32_t s = 0; s < sampleCount; ++s) {
+            uint32_t ci = (s * candidates.size()) / sampleCount;
+            uint32_t x = candidates[ci].sliceStart;
+            for (uint32_t c = 0; c < chunksPerSlice; ++c) {
+                uint64_t zStart = static_cast<uint64_t>(c) * chunkZRows;
+                uint64_t zEnd = std::min(zStart + chunkZRows, nz);
+                uint64_t rowsInChunk = zEnd - zStart;
+                uint64_t thisRawBytes = rowsInChunk * ny * sizeof(float);
+                for (uint64_t zi = 0; zi < rowsInChunk; ++zi) {
+                    uint64_t z = zStart + zi;
+                    uint64_t rowOff = z * rowFloats * sizeof(float);
+                    ssize_t rd = pread(fdRaw, row.data(), rowFloats * sizeof(float), rowOff);
+                    if (rd != static_cast<ssize_t>(rowFloats * sizeof(float))) {
+                        compRatio = 1.0; goto done_est;
+                    }
+                    float* dst = planeChunk.data() + zi * ny;
+                    for (uint64_t y = 0; y < ny; ++y)
+                        dst[y] = row[y * nx + x];
+                }
+                int cs = LZ4_compress_default(
+                    reinterpret_cast<const char*>(planeChunk.data()), compBuf.data(),
+                    static_cast<int>(thisRawBytes), static_cast<int>(compBuf.size()));
+                if (cs > 0) { totalComp += cs; totalRaw += thisRawBytes; }
+            }
+        }
+        done_est:
+        if (totalRaw > 0)
+            compRatio = static_cast<double>(totalComp) / static_cast<double>(totalRaw);
+#else
+        compRatio = 1.0;
+#endif
+    }
+    std::cout << "  Estimated compression ratio: " << compRatio << "x" << std::endl;
+
+    // Compute cost and value per candidate
+    uint64_t budgetBytes = static_cast<uint64_t>(budget * rawBytes);
+    for (auto& c : candidates) {
+        c.rawBytes = static_cast<uint64_t>(c.rawBytes * compRatio); // reuse as compressed bytes
+    }
+
+    // Greedy: sort by queriedCount desc (all bands have same cost per slice, so
+    // priority is bands with more queried slices per unit storage)
+    std::sort(candidates.begin(), candidates.end(),
+              [](const BandCandidate& a, const BandCandidate& b) {
+                  double ra = static_cast<double>(a.queriedCount) / a.rawBytes;
+                  double rb = static_cast<double>(b.queriedCount) / b.rawBytes;
+                  return ra > rb;
+              });
+
+    std::vector<BandCandidate> selected;
+    uint64_t totalCost = 0;
+    for (const auto& c : candidates) {
+        if (totalCost + c.rawBytes > budgetBytes) continue;
+        selected.push_back(c);
+        totalCost += c.rawBytes;
+    }
+
+    uint32_t totalSlices = 0;
+    for (const auto& s : selected) totalSlices += s.sliceCount;
+    uint64_t totalChunks = static_cast<uint64_t>(totalSlices) * chunksPerSlice;
+
+    double projectedRatio = static_cast<double>(mainBytes + totalCost) / rawBytes;
+    std::cout << "Selected " << selected.size() << " bands, " << totalSlices << " slices"
+              << ", " << (totalCost / (1024*1024)) << " MB sidecar"
+              << ", projected ratio: " << projectedRatio << "x" << std::endl;
+
+    if (projectedRatio > 1.5) {
+        std::cerr << "Warning: projected storage ratio " << projectedRatio
+                  << "x exceeds 1.5x. Reducing selection." << std::endl;
+    }
+
+    // Create sidecar file
+    int fdXp = open(xpPath.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (fdXp < 0) { perror("open sidecar"); close(fdRaw); close(fdErwt); return 1; }
+
+    // Write header placeholder
+    XBandSidecarHeader xh{};
+    std::memcpy(xh.magic, XBAND_MAGIC, 8);
+    xh.version = XBAND_VERSION;
+    xh.nx = nx; xh.ny = ny; xh.nz = nz;
+    xh.band_size = bandSize;
+    xh.selected_band_count = static_cast<uint32_t>(selected.size());
+    xh.chunk_z_rows = chunkZRows;
+    xh.chunks_per_slice = chunksPerSlice;
+    xh.plane_floats = ny * nz;
+    xh.chunk_raw_bytes = chunkRawBytes;
+    xh.compression = useCompression ? 1 : 0;
+    xh.slice_count = totalSlices;
+    xh.total_chunks = totalChunks;
+    if (pwrite(fdXp, &xh, sizeof(xh), 0) != sizeof(xh)) {
+        perror("write sidecar header"); close(fdXp); close(fdRaw); close(fdErwt); return 1;
+    }
+
+    uint64_t dataOffset = sizeof(xh);
+
+    // Collect all selected slice x values, ordered by band
+    std::vector<uint32_t> sliceXs;
+    for (const auto& b : selected)
+        for (uint32_t s = 0; s < b.sliceCount; ++s)
+            sliceXs.push_back(b.sliceStart + s);
+
+    uint64_t memNeeded = static_cast<uint64_t>(sliceXs.size()) * ny * chunkZRows * sizeof(float);
+    std::cout << "  Streaming memory per z-chunk: " << memNeeded / (1024*1024) << " MB" << std::endl;
+
+    // Allocate buffers
+    std::vector<float> rawRow(rowFloats);
+    std::vector<std::vector<float>> planeChunks(sliceXs.size());
+    for (auto& pc : planeChunks) pc.resize(ny * chunkZRows);
+
+    std::vector<char> compBuf;
+    if (useCompression)
+        compBuf.resize(LZ4_compressBound(static_cast<int>(chunkRawBytes)));
+
+    std::vector<XPChunkIndex> index(totalChunks);
+    std::vector<XBandEntry> entries(selected.size());
+
+    uint64_t totalStorageBytes = 0;
+    uint64_t globalChunkIdx = 0;
+    for (size_t bi = 0; bi < selected.size(); ++bi) {
+        entries[bi].band_id = selected[bi].bandId;
+        entries[bi].slice_start = selected[bi].sliceStart;
+        entries[bi].slice_count = selected[bi].sliceCount;
+        entries[bi].data_offset = dataOffset + totalStorageBytes;
+        entries[bi].data_bytes = 0;
+        entries[bi].chunk_index_base = globalChunkIdx;
+        // Will be filled as we write
+        uint64_t bandStartChunk = globalChunkIdx;
+        // slice offset within this band's slice range in sliceXs
+        size_t sliceBase = 0;
+        for (size_t j = 0; j < bi; ++j) sliceBase += selected[j].sliceCount;
+
+        // For each chunk c, build all slices in this band
+        for (uint32_t c = 0; c < chunksPerSlice; ++c) {
+            uint64_t zStart = static_cast<uint64_t>(c) * chunkZRows;
+            uint64_t zEnd = std::min(zStart + chunkZRows, nz);
+            uint64_t rowsInChunk = zEnd - zStart;
+            uint64_t thisRawBytes = rowsInChunk * ny * sizeof(float);
+
+            for (auto& pc : planeChunks)
+                std::fill(pc.begin(), pc.end(), 0.0f);
+
+            for (uint64_t zi = 0; zi < rowsInChunk; ++zi) {
+                uint64_t z = zStart + zi;
+                uint64_t rowOff = z * rowFloats * sizeof(float);
+                ssize_t rd = pread(fdRaw, rawRow.data(), rowFloats * sizeof(float), rowOff);
+                if (rd != static_cast<ssize_t>(rowFloats * sizeof(float))) {
+                    std::cerr << "\nError reading raw z-layer " << z << std::endl;
+                    close(fdXp); close(fdRaw); close(fdErwt); return 1;
+                }
+                for (size_t si = 0; si < sliceXs.size(); ++si) {
+                    uint32_t x = sliceXs[si];
+                    float* dst = planeChunks[si].data() + zi * ny;
+                    for (uint64_t y = 0; y < ny; ++y)
+                        dst[y] = rawRow[y * nx + x];
+                }
+            }
+
+            // Compress and write each slice's chunk for this band's slices
+            for (uint32_t si = 0; si < selected[bi].sliceCount; ++si) {
+                size_t globalSliceIdx = sliceBase + si;
+                const char* src = reinterpret_cast<const char*>(planeChunks[globalSliceIdx].data());
+                uint32_t writeSize;
+                if (useCompression) {
+#ifdef ERWT3D_HAVE_LZ4
+                    int cs = LZ4_compress_default(src, compBuf.data(),
+                                                  static_cast<int>(thisRawBytes),
+                                                  static_cast<int>(compBuf.size()));
+                    if (cs <= 0) {
+                        std::cerr << "\nLZ4 compress failed" << std::endl;
+                        close(fdXp); close(fdRaw); close(fdErwt); return 1;
+                    }
+                    writeSize = static_cast<uint32_t>(cs);
+                    if (pwrite(fdXp, compBuf.data(), writeSize,
+                               dataOffset + totalStorageBytes) != static_cast<ssize_t>(writeSize)) {
+                        perror("write chunk"); close(fdXp); close(fdRaw); close(fdErwt); return 1;
+                    }
+#else
+                    writeSize = static_cast<uint32_t>(thisRawBytes);
+                    if (pwrite(fdXp, src, writeSize,
+                               dataOffset + totalStorageBytes) != static_cast<ssize_t>(writeSize)) {
+                        perror("write chunk"); close(fdXp); close(fdRaw); close(fdErwt); return 1;
+                    }
+#endif
+                } else {
+                    writeSize = static_cast<uint32_t>(thisRawBytes);
+                    if (pwrite(fdXp, src, writeSize,
+                               dataOffset + totalStorageBytes) != static_cast<ssize_t>(writeSize)) {
+                        perror("write chunk"); close(fdXp); close(fdRaw); close(fdErwt); return 1;
+                    }
+                }
+
+                index[globalChunkIdx].chunk_offset = dataOffset + totalStorageBytes;
+                index[globalChunkIdx].compressed_size = writeSize;
+                index[globalChunkIdx].raw_size = static_cast<uint32_t>(thisRawBytes);
+                totalStorageBytes += writeSize;
+                entries[bi].data_bytes += writeSize;
+                globalChunkIdx++;
+            }
+        }
+    }
+
+    close(fdRaw);
+
+    // Write band entries and chunk index at end
+    uint64_t bandTableOffset = dataOffset + totalStorageBytes;
+    uint64_t chunkIndexOffset = bandTableOffset + entries.size() * sizeof(XBandEntry);
+
+    if (!entries.empty()) {
+        ssize_t entBytes = static_cast<ssize_t>(entries.size() * sizeof(XBandEntry));
+        if (pwrite(fdXp, entries.data(), entBytes, bandTableOffset) != entBytes) {
+            perror("write band entries"); close(fdXp); close(fdErwt); return 1;
+        }
+    }
+    if (!index.empty()) {
+        ssize_t idxBytes = static_cast<ssize_t>(index.size() * sizeof(XPChunkIndex));
+        if (pwrite(fdXp, index.data(), idxBytes, chunkIndexOffset) != idxBytes) {
+            perror("write chunk index"); close(fdXp); close(fdErwt); return 1;
+        }
+    }
+
+    // Patch header
+    xh.band_table_offset = bandTableOffset;
+    xh.chunk_index_offset = chunkIndexOffset;
+    xh.total_storage_bytes = totalStorageBytes;
+    if (pwrite(fdXp, &xh, sizeof(xh), 0) != sizeof(xh)) {
+        perror("patch sidecar header"); close(fdXp); close(fdErwt); return 1;
+    }
+
+    // Update main ERWT3D header: set xband flag, clear old sidecar flag
+    header.flags |= erwt3d::FLAG_HAS_XBAND_SIDECAR;
+    header.flags &= ~erwt3d::FLAG_HAS_XP_SIDECAR;
+    if (pwrite(fdErwt, &header, sizeof(header), 0) != sizeof(header)) {
+        std::cerr << "Warning: failed to update main header" << std::endl;
+    }
+
+    close(fdXp);
+    close(fdErwt);
+
+    double finalRatio = static_cast<double>(mainBytes + totalStorageBytes) / rawBytes;
+    std::cout << "Done. Sidecar: " << totalStorageBytes / (1024 * 1024) << " MB"
+              << ", total storage ratio: " << finalRatio << "x" << std::endl;
+    return 0;
+}
+
 int main(int argc, char* argv[]) {
     std::string rawPath, erwtPath;
     uint64_t nx = 0, ny = 0, nz = 0;
@@ -418,6 +764,12 @@ int main(int argc, char* argv[]) {
     std::string mode = "sidecar";
     uint32_t chunkZRows = 256;
     double storageBudget = 1.45;
+    uint32_t bandSize = 1;
+    double budget = 0.30;
+    bool useCompression = true;
+    uint32_t seed = 20260511;
+    uint32_t randomCount = 100;
+    uint32_t continuousCount = 10;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -430,19 +782,36 @@ int main(int argc, char* argv[]) {
         else if (arg == "--mode" && i + 1 < argc) mode = argv[++i];
         else if (arg == "--chunk-z-rows" && i + 1 < argc) chunkZRows = std::stoul(argv[++i]);
         else if (arg == "--storage-budget" && i + 1 < argc) storageBudget = std::stod(argv[++i]);
+        else if (arg == "--band-size" && i + 1 < argc) bandSize = std::stoul(argv[++i]);
+        else if (arg == "--budget" && i + 1 < argc) budget = std::stod(argv[++i]);
+        else if (arg == "--no-compression") useCompression = false;
+        else if (arg == "--seed" && i + 1 < argc) seed = std::stoul(argv[++i]);
+        else if (arg == "--random-count" && i + 1 < argc) randomCount = std::stoul(argv[++i]);
+        else if (arg == "--continuous-count" && i + 1 < argc) continuousCount = std::stoul(argv[++i]);
     }
 
     if (rawPath.empty() || erwtPath.empty() || nx == 0 || ny == 0 || nz == 0) {
         std::cerr << "Usage: erwt3d_precompute_x --raw data.raw --erwt3d data.erwt3d"
                   << " --nx N --ny N --nz N [options]" << std::endl;
-        std::cerr << "  --mode sidecar|legacy (default: sidecar)" << std::endl;
+        std::cerr << "  --mode sidecar|legacy|xband (default: sidecar)" << std::endl;
         std::cerr << "  --stride N (sidecar: auto from 1, legacy: default 1)" << std::endl;
-        std::cerr << "  --chunk-z-rows N (sidecar, default: 256)" << std::endl;
+        std::cerr << "  --chunk-z-rows N (default: 256)" << std::endl;
         std::cerr << "  --storage-budget X (sidecar, default: 1.45)" << std::endl;
+        std::cerr << "  --band-size N (xband, default: 1)" << std::endl;
+        std::cerr << "  --budget X (xband extra storage ratio, default: 0.30)" << std::endl;
+        std::cerr << "  --no-compression (xband, store uncompressed)" << std::endl;
+        std::cerr << "  --seed N (xband contest seed, default: 20260511)" << std::endl;
+        std::cerr << "  --random-count N (xband, default: 100)" << std::endl;
+        std::cerr << "  --continuous-count N (xband, default: 10)" << std::endl;
         return 1;
     }
 
-    if (mode == "sidecar") {
+    if (mode == "xband") {
+        if (bandSize == 0) bandSize = 1;
+        return runXBand(rawPath, erwtPath, nx, ny, nz, bandSize, budget,
+                        chunkZRows, useCompression, seed, randomCount,
+                        continuousCount);
+    } else if (mode == "sidecar") {
         uint32_t hintStride = (stride == 0) ? 1 : stride;
         return runSidecar(rawPath, erwtPath, nx, ny, nz, hintStride, chunkZRows, storageBudget);
     } else {

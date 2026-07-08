@@ -294,7 +294,7 @@ int main(int argc, char* argv[]) {
     struct stat fileStat;
     uint64_t fileBytes = 0;
     if (stat(inputPath.c_str(), &fileStat) == 0) fileBytes = fileStat.st_size;
-    if (erwt3d::hasXPSidecar(header)) {
+    if (erwt3d::hasXPSidecar(header) || erwt3d::hasXBandSidecar(header)) {
         std::string xpPath = inputPath + ".xp";
         struct stat xpStat;
         if (stat(xpPath.c_str(), &xpStat) == 0) fileBytes += xpStat.st_size;

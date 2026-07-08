@@ -114,6 +114,17 @@ private:
     bool tryReadSliceXPSidecar_(uint64_t x, float* output, IOProfile* profile);
     bool tryReadBatchXPSidecar_(const std::vector<SliceBatchRequest>& requests,
                                 std::vector<bool>& handled);
+
+    bool xbandAvailable_ = false;
+    XBandSidecarHeader xbandHeader_{};
+    std::vector<XBandEntry> bandEntries_;
+    std::vector<XPChunkIndex> xbandIndex_;
+    std::vector<int32_t> route_;
+    uint32_t xbandChunksPerSlice_ = 0;
+    void loadXBandSidecar_();
+    bool tryReadSliceXBand_(uint64_t x, float* output, IOProfile* profile);
+    bool tryReadBatchXBand_(const std::vector<SliceBatchRequest>& requests,
+                             std::vector<bool>& handled);
     
     bool readExtents(const std::vector<Extent>& extents, void* buffer);
     bool readExtentsThreaded(const std::vector<Extent>& extents, void* buffer, int numThreads);

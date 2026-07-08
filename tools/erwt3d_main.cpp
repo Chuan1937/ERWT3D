@@ -34,6 +34,14 @@ static std::string resolveBinary(const std::string& cmd) {
         return "erwt3d_bench_line";
     if (cmd == "precompute-x" || cmd == "precompute_x")
         return "erwt3d_precompute_x";
+    if (cmd == "scan-zfp-rates" || cmd == "scan_zfp_rates")
+        return "erwt3d_scan_zfp_rates";
+    if (cmd == "convert-tri" || cmd == "convert_tri")
+        return "erwt3d_convert_tri";
+    if (cmd == "verify-tri" || cmd == "verify_tri")
+        return "erwt3d_verify_tri";
+    if (cmd == "bench-tri" || cmd == "bench_tri")
+        return "erwt3d_bench_tri";
     if (cmd == "benchmark" || cmd == "bench")
         return "erwt3d_bench";
     if (cmd == "gen-test-data" || cmd == "gen_test_data")
@@ -47,6 +55,10 @@ static bool isKnownCommand(const std::string& s) {
         "bench", "benchmark", "bench-contest", "bench_contest", "contest",
         "bench-line", "bench_line",
         "precompute-x", "precompute_x",
+        "scan-zfp-rates", "scan_zfp_rates",
+        "convert-tri", "convert_tri",
+        "verify-tri", "verify_tri",
+        "bench-tri", "bench_tri",
         "gen-test-data", "gen_test_data",
         // also accept prefixed names
         "erwt3d_convert", "erwt3d_verify", "erwt3d_slice",

@@ -99,6 +99,9 @@ ERWT3DReader::ERWT3DReader(const std::string& path, size_t cacheMB, bool useMmap
     if (hasXPSidecar(header_)) {
         loadSidecar_();
     }
+    if (hasXBandSidecar(header_)) {
+        loadXBandSidecar_();
+    }
 }
 
 ERWT3DReader::~ERWT3DReader() {
@@ -632,6 +635,216 @@ void ERWT3DReader::loadSidecar_() {
     xpAvailable_ = true;
 }
 
+void ERWT3DReader::loadXBandSidecar_() {
+    std::string xpPath = path_ + ".xp";
+    xpFd_ = open(xpPath.c_str(), O_RDONLY);
+    if (xpFd_ < 0) return;
+
+    if (pread(xpFd_, &xbandHeader_, sizeof(xbandHeader_), 0) != sizeof(xbandHeader_)) {
+        close(xpFd_); xpFd_ = -1; return;
+    }
+    if (std::memcmp(xbandHeader_.magic, XBAND_MAGIC, 8) != 0 ||
+        xbandHeader_.version != XBAND_VERSION ||
+        xbandHeader_.nx != header_.nx || xbandHeader_.ny != header_.ny ||
+        xbandHeader_.nz != header_.nz) {
+        close(xpFd_); xpFd_ = -1; return;
+    }
+
+    xbandChunksPerSlice_ = xbandHeader_.chunks_per_slice;
+
+    if (xbandHeader_.selected_band_count > 0) {
+        bandEntries_.resize(xbandHeader_.selected_band_count);
+        uint64_t entryBytes = xbandHeader_.selected_band_count * sizeof(XBandEntry);
+        if (pread(xpFd_, bandEntries_.data(), entryBytes,
+                  xbandHeader_.band_table_offset) != static_cast<ssize_t>(entryBytes)) {
+            close(xpFd_); xpFd_ = -1; return;
+        }
+    }
+
+    if (xbandHeader_.total_chunks > 0) {
+        xbandIndex_.resize(xbandHeader_.total_chunks);
+        uint64_t idxBytes = xbandHeader_.total_chunks * sizeof(XPChunkIndex);
+        if (pread(xpFd_, xbandIndex_.data(), idxBytes,
+                  xbandHeader_.chunk_index_offset) != static_cast<ssize_t>(idxBytes)) {
+            close(xpFd_); xpFd_ = -1; return;
+        }
+    }
+
+    route_.assign(header_.nx, -1);
+    for (uint32_t bi = 0; bi < bandEntries_.size(); ++bi) {
+        const auto& be = bandEntries_[bi];
+        for (uint32_t s = 0; s < be.slice_count; ++s) {
+            uint32_t x = be.slice_start + s;
+            if (x < route_.size()) route_[x] = static_cast<int32_t>(bi);
+        }
+    }
+
+    xbandAvailable_ = true;
+}
+
+bool ERWT3DReader::tryReadSliceXBand_(uint64_t x, float* output, IOProfile* profile) {
+    if (x >= route_.size() || route_[x] < 0) return false;
+
+    uint32_t bandIdx = static_cast<uint32_t>(route_[x]);
+    const XBandEntry& be = bandEntries_[bandIdx];
+    uint32_t sliceLocal = static_cast<uint32_t>(x) - be.slice_start;
+    uint32_t cpp = xbandChunksPerSlice_;
+    uint64_t ny = xbandHeader_.ny;
+    uint8_t compression = xbandHeader_.compression;
+
+    adviseSequential(xpFd_);
+
+    uint64_t totalRead = 0;
+
+    for (uint32_t c = 0; c < cpp; ++c) {
+        uint64_t globalIdx = be.chunk_index_base + sliceLocal * cpp + c;
+        if (globalIdx >= xbandIndex_.size()) return false;
+        const XPChunkIndex& ci = xbandIndex_[globalIdx];
+        if (ci.compressed_size == 0) continue;
+
+        if (xpCompBuf_.size() < ci.compressed_size)
+            xpCompBuf_.resize(ci.compressed_size);
+        ssize_t n = pread(xpFd_, xpCompBuf_.data(), ci.compressed_size, ci.chunk_offset);
+        if (n != static_cast<ssize_t>(ci.compressed_size)) return false;
+        totalRead += ci.compressed_size;
+
+        if (xpRawBuf_.size() < ci.raw_size)
+            xpRawBuf_.resize(ci.raw_size);
+        if (compression == 1) {
+#ifdef ERWT3D_HAVE_LZ4
+            int dec = LZ4_decompress_safe(
+                reinterpret_cast<const char*>(xpCompBuf_.data()),
+                reinterpret_cast<char*>(xpRawBuf_.data()),
+                static_cast<int>(ci.compressed_size),
+                static_cast<int>(ci.raw_size));
+            if (dec != static_cast<int>(ci.raw_size)) return false;
+#else
+            return false;
+#endif
+        } else {
+            std::memcpy(xpRawBuf_.data(), xpCompBuf_.data(), ci.raw_size);
+        }
+
+        uint64_t zStart = static_cast<uint64_t>(c) * xbandHeader_.chunk_z_rows;
+        std::memcpy(output + zStart * ny, xpRawBuf_.data(), ci.raw_size);
+    }
+
+    if (profile) {
+        profile->panel_hit = true;
+        profile->pread_calls = cpp;
+        profile->bytes_read = totalRead;
+        profile->output_bytes = ny * xbandHeader_.nz * sizeof(float);
+        profile->superblocks_touched = 1;
+    }
+    return true;
+}
+
+bool ERWT3DReader::tryReadBatchXBand_(const std::vector<SliceBatchRequest>& requests,
+                                        std::vector<bool>& handled) {
+    if (!xbandAvailable_ || requests.empty()) return false;
+
+    uint32_t cpp = xbandChunksPerSlice_;
+    uint64_t ny = xbandHeader_.ny;
+    uint8_t compression = xbandHeader_.compression;
+
+    struct ChunkTask {
+        uint64_t chunk_offset;
+        uint32_t compressed_size;
+        uint32_t raw_size;
+        uint32_t chunk_idx_in_slice;
+        size_t request_idx;
+    };
+    std::vector<ChunkTask> tasks;
+    bool anyHit = false;
+
+    for (size_t i = 0; i < requests.size(); ++i) {
+        handled[i] = false;
+        if (requests[i].axis != SliceAxis::X) continue;
+        uint64_t x = requests[i].index;
+        if (x >= route_.size() || route_[x] < 0) continue;
+
+        anyHit = true;
+        uint32_t bandIdx = static_cast<uint32_t>(route_[x]);
+        const XBandEntry& be = bandEntries_[bandIdx];
+        uint32_t sliceLocal = static_cast<uint32_t>(x) - be.slice_start;
+
+        for (uint32_t c = 0; c < cpp; ++c) {
+            uint64_t globalIdx = be.chunk_index_base + sliceLocal * cpp + c;
+            if (globalIdx >= xbandIndex_.size()) continue;
+            const XPChunkIndex& ci = xbandIndex_[globalIdx];
+            if (ci.compressed_size == 0) continue;
+            tasks.push_back({ci.chunk_offset, ci.compressed_size, ci.raw_size, c, i});
+        }
+    }
+
+    if (!anyHit) return false;
+    if (tasks.empty()) {
+        for (size_t i = 0; i < requests.size(); ++i) {
+            if (requests[i].axis == SliceAxis::X &&
+                requests[i].index < route_.size() && route_[requests[i].index] >= 0) {
+                handled[i] = true;
+            }
+        }
+        return true;
+    }
+
+    std::sort(tasks.begin(), tasks.end(), [](const ChunkTask& a, const ChunkTask& b) {
+        return a.chunk_offset < b.chunk_offset;
+    });
+
+    adviseSequential(xpFd_);
+
+    uint64_t totalRead = 0;
+    size_t i = 0;
+    while (i < tasks.size()) {
+        size_t j = i;
+        uint64_t runOff = tasks[i].chunk_offset;
+        uint64_t runEnd = runOff + tasks[i].compressed_size;
+        while (j + 1 < tasks.size() &&
+               tasks[j + 1].chunk_offset <= runEnd + 4096) {
+            runEnd = tasks[j + 1].chunk_offset + tasks[j + 1].compressed_size;
+            j++;
+        }
+
+        uint64_t runSize = runEnd - runOff;
+        if (xpCompBuf_.size() < runSize) xpCompBuf_.resize(runSize);
+        ssize_t n = pread(xpFd_, xpCompBuf_.data(), runSize, runOff);
+        if (n != static_cast<ssize_t>(runSize)) return false;
+        totalRead += runSize;
+
+        for (size_t k = i; k <= j; ++k) {
+            const auto& t = tasks[k];
+            uint64_t bufOff = t.chunk_offset - runOff;
+            const uint8_t* compData = xpCompBuf_.data() + bufOff;
+
+            if (xpRawBuf_.size() < t.raw_size) xpRawBuf_.resize(t.raw_size);
+            if (compression == 1) {
+#ifdef ERWT3D_HAVE_LZ4
+                int dec = LZ4_decompress_safe(
+                    reinterpret_cast<const char*>(compData),
+                    reinterpret_cast<char*>(xpRawBuf_.data()),
+                    static_cast<int>(t.compressed_size),
+                    static_cast<int>(t.raw_size));
+                if (dec != static_cast<int>(t.raw_size)) return false;
+#else
+                return false;
+#endif
+            } else {
+                std::memcpy(xpRawBuf_.data(), compData, t.raw_size);
+            }
+
+            float* out = requests[t.request_idx].output;
+            uint64_t zStart = static_cast<uint64_t>(t.chunk_idx_in_slice) * xbandHeader_.chunk_z_rows;
+            std::memcpy(out + zStart * ny, xpRawBuf_.data(), t.raw_size);
+            handled[t.request_idx] = true;
+        }
+
+        i = j + 1;
+    }
+
+    return true;
+}
+
 bool ERWT3DReader::tryReadSliceXPSidecar_(uint64_t x, float* output, IOProfile* profile) {
     uint32_t stride = xpHeader_.stride;
     uint64_t planeIdx = x / stride;
@@ -805,6 +1018,24 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
     if (required > maxBytes) return false;
 
     auto planStart = std::chrono::high_resolution_clock::now();
+
+    // Try X-band sidecar fast path (budgeted band replication)
+    if (axis == SliceAxis::X && xbandAvailable_) {
+        auto readStart = std::chrono::high_resolution_clock::now();
+        bool ok = tryReadSliceXBand_(index, output,
+                                       profileIO_ ? &lastProfile_ : nullptr);
+        auto readEnd = std::chrono::high_resolution_clock::now();
+        if (ok) {
+            auto planEnd = std::chrono::high_resolution_clock::now();
+            double planMs = std::chrono::duration<double, std::milli>(planEnd - planStart).count();
+            double readMs = std::chrono::duration<double, std::milli>(readEnd - readStart).count();
+            if (profileIO_) {
+                lastProfile_.plan_time_ms = planMs - readMs;
+                lastProfile_.read_time_ms = readMs;
+            }
+            return true;
+        }
+    }
 
     // Try X-plane sidecar fast path (compressed sidecar file)
     if (axis == SliceAxis::X && xpAvailable_) {
@@ -1009,7 +1240,27 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
     if (xpAvailable_) {
         std::vector<bool> handled(requests.size(), false);
         if (tryReadBatchXPSidecar_(requests, handled)) {
-            // Rebuild plans/outputs/batchIdx excluding handled requests
+            std::vector<SBTaskPlan> newPlans;
+            std::vector<float*> newOutputs;
+            std::vector<size_t> newBatchIdx;
+            for (size_t bi = 0; bi < batchIdx.size(); ++bi) {
+                size_t reqIdx = batchIdx[bi];
+                if (!handled[reqIdx]) {
+                    newPlans.push_back(std::move(plans[bi]));
+                    newOutputs.push_back(outputs[bi]);
+                    newBatchIdx.push_back(reqIdx);
+                }
+            }
+            plans = std::move(newPlans);
+            outputs = std::move(newOutputs);
+            batchIdx = std::move(newBatchIdx);
+        }
+    }
+
+    // Try batch x-band sidecar read for all X requests at once
+    if (xbandAvailable_) {
+        std::vector<bool> handled(requests.size(), false);
+        if (tryReadBatchXBand_(requests, handled)) {
             std::vector<SBTaskPlan> newPlans;
             std::vector<float*> newOutputs;
             std::vector<size_t> newBatchIdx;

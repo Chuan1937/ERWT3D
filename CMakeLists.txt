@@ -22,6 +22,19 @@ else()
     set(HAVE_LZ4 FALSE)
 endif()
 
+# zfp for fixed-rate compression (tri-axis layout + scanner)
+option(ERWT3D_ENABLE_ZFP "Enable ZFP compression (tri-axis layout + scanner)" OFF)
+if(ERWT3D_ENABLE_ZFP)
+    find_library(ZFP_LIBRARY zfp)
+    find_path(ZFP_INCLUDE_DIR zfp.h)
+    if(ZFP_LIBRARY AND ZFP_INCLUDE_DIR)
+        message(STATUS "Found zfp: ${ZFP_LIBRARY}")
+        set(HAVE_ZFP TRUE)
+    else()
+        message(FATAL_ERROR "ERWT3D_ENABLE_ZFP=ON but zfp not found")
+    endif()
+endif()
+
 # Native optimization (optional, Release only)
 if(ERWT3D_NATIVE_OPT)
     if(NOT CMAKE_BUILD_TYPE MATCHES "Release")
@@ -55,6 +68,8 @@ set(LIB_SOURCES
     src/sb_hdd.cpp
     src/sb_panel.cpp
     src/api.cpp
+    src/tri_writer.cpp
+    src/tri_reader.cpp
 )
 
 # Create library
@@ -65,6 +80,11 @@ if(HAVE_LZ4)
     target_link_libraries(erwt3d PUBLIC ${LZ4_LIBRARY})
     target_include_directories(erwt3d PUBLIC ${LZ4_INCLUDE_DIR})
     target_compile_definitions(erwt3d PUBLIC ERWT3D_HAVE_LZ4=1)
+endif()
+if(HAVE_ZFP)
+    target_link_libraries(erwt3d PUBLIC ${ZFP_LIBRARY})
+    target_include_directories(erwt3d PUBLIC ${ZFP_INCLUDE_DIR})
+    target_compile_definitions(erwt3d PUBLIC ERWT3D_HAVE_ZFP=1)
 endif()
 
 # Tools
@@ -100,6 +120,21 @@ target_link_libraries(erwt3d_bench_contest PRIVATE erwt3d)
 
 add_executable(erwt3d_precompute_x tools/erwt3d_precompute_x.cpp)
 target_link_libraries(erwt3d_precompute_x PRIVATE erwt3d)
+
+if(ERWT3D_ENABLE_ZFP AND HAVE_ZFP)
+    add_executable(erwt3d_scan_zfp_rates tools/erwt3d_scan_zfp_rates.cpp)
+    target_link_libraries(erwt3d_scan_zfp_rates PRIVATE erwt3d)
+    target_include_directories(erwt3d_scan_zfp_rates PRIVATE ${ZFP_INCLUDE_DIR})
+
+    add_executable(erwt3d_convert_tri tools/erwt3d_convert_tri.cpp)
+    target_link_libraries(erwt3d_convert_tri PRIVATE erwt3d)
+
+    add_executable(erwt3d_verify_tri tools/erwt3d_verify_tri.cpp)
+    target_link_libraries(erwt3d_verify_tri PRIVATE erwt3d)
+
+    add_executable(erwt3d_bench_tri tools/erwt3d_bench_tri.cpp)
+    target_link_libraries(erwt3d_bench_tri PRIVATE erwt3d)
+endif()
 
 add_executable(example_api tools/example_api.cpp)
 target_link_libraries(example_api PRIVATE erwt3d)

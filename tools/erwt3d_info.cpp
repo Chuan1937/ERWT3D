@@ -38,6 +38,15 @@ int main(int argc, char* argv[]) {
         uint64_t idxCount = erwt3d::getCompressedBlockCount(header);
         std::cout << "Compression: lz4 (" << idxCount << " blocks, index at " << idxOffset << ")" << std::endl;
     }
+
+    if (erwt3d::hasXBandSidecar(header)) {
+        std::string xpPath = inputPath + ".xp";
+        struct stat xpStat;
+        if (stat(xpPath.c_str(), &xpStat) == 0) {
+            std::cout << "X-band sidecar: " << xpStat.st_size << " bytes ("
+                      << std::fixed << std::setprecision(2) << xpStat.st_size / (1024.0 * 1024.0) << " MB)" << std::endl;
+        }
+    }
     
     uint64_t rawSize = erwt3d::getRawSize(header);
     std::cout << "Estimated raw size: " << rawSize << " bytes (" 
@@ -47,7 +56,7 @@ int main(int argc, char* argv[]) {
     struct stat st;
     if (stat(inputPath.c_str(), &st) == 0) {
         uint64_t fileSize = st.st_size;
-        if (erwt3d::hasXPSidecar(header)) {
+        if (erwt3d::hasXPSidecar(header) || erwt3d::hasXBandSidecar(header)) {
             std::string xpPath = inputPath + ".xp";
             struct stat xpStat;
             if (stat(xpPath.c_str(), &xpStat) == 0) {
