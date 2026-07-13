@@ -17,73 +17,94 @@ static bool estimateCompressionRatio(const std::string& rawPath,
                                       uint64_t nx, uint64_t ny, uint64_t nz,
                                       uint32_t sx, uint32_t sy, uint32_t sz,
                                       uint32_t lx, uint32_t ly, uint32_t lz,
-                                      double& outRatio, int numSamples = 200) {
+                                      double& outRatio, int numSlabs = 4) {
     uint64_t sgX = (nx + sx - 1) / sx;
     uint64_t sgY = (ny + sy - 1) / sy;
     uint64_t sgZ = (nz + sz - 1) / sz;
-    uint64_t totalSB = sgX * sgY * sgZ;
     uint64_t sbFloats = (uint64_t)sx * sy * sz;
     uint64_t sbBytes = sbFloats * sizeof(float);
 
     int fd = open(rawPath.c_str(), O_RDONLY);
     if (fd < 0) return false;
 
-    std::vector<float> sbBuf(sbFloats);
+    uint64_t rawRowBytes = nx * sizeof(float);
+    uint64_t rawSliceBytes = rawRowBytes * ny;
+    std::vector<float> slabBuf(sbFloats * sgX * sgY);
     std::vector<uint8_t> leafBuf(sbBytes);
     int compBufSize = LZ4_compressBound(static_cast<int>(sbBytes));
     std::vector<uint8_t> compBuf(compBufSize);
 
     uint64_t totalRaw = 0, totalComp = 0;
     int actualSamples = 0;
-    uint64_t step = std::max<uint64_t>(1, totalSB / numSamples);
+    int maxPerSlab = 2048 / numSlabs + 1;
 
-    for (uint64_t si = 0; si < totalSB && actualSamples < numSamples; si += step) {
-        uint64_t szi = si / (sgY * sgX);
-        uint64_t rem = si % (sgY * sgX);
-        uint64_t syi = rem / sgX;
-        uint64_t sxi = rem % sgX;
+    std::vector<uint64_t> slabZs;
+    int step = std::max<int>(1, static_cast<int>(sgZ) / numSlabs);
+    for (int i = 0; i < numSlabs && (uint64_t)i * step < sgZ; ++i)
+        slabZs.push_back(i * step);
 
-        // Read raw data for this superblock
-        std::memset(sbBuf.data(), 0, sbBytes);
-        uint64_t startX = sxi * sx, startY = syi * sy, startZ = szi * sz;
-        for (uint64_t z = 0; z < sz; ++z) {
-            uint64_t gz = startZ + z; if (gz >= nz) break;
-            for (uint64_t y = 0; y < sy; ++y) {
-                uint64_t gy = startY + y; if (gy >= ny) break;
-                uint64_t rawOff = ((gz * ny + gy) * nx + startX) * sizeof(float);
-                uint64_t vx = std::min<uint64_t>(sx, nx - startX);
-                ssize_t rd = pread(fd, sbBuf.data() + (z * sy + y) * sx, vx * sizeof(float), rawOff);
-                if (rd < 0) { close(fd); return false; }
+    for (uint64_t szStart : slabZs) {
+        int slabSamples = 0;
+        uint64_t zStart = szStart * sz;
+        uint64_t zEnd = std::min(zStart + sz, nz);
+        uint64_t zRows = zEnd - zStart;
+
+        for (uint64_t z = zStart; z < zEnd; ++z) {
+            if (z >= nz) break;
+            uint64_t rawOff = z * rawSliceBytes;
+            ssize_t rd = pread(fd, slabBuf.data() + (z - zStart) * (nx * ny),
+                               rawSliceBytes, rawOff);
+            if (rd < 0) { close(fd); return false; }
+        }
+
+        for (uint64_t syi = 0; syi < sgY; ++syi) {
+            for (uint64_t sxi = 0; sxi < sgX; ++sxi) {
+                uint64_t startX = sxi * sx, startY = syi * sy;
+                std::vector<float> sbBuf(sbFloats);
+
+                for (uint64_t zz = 0; zz < zRows; ++zz) {
+                    for (uint64_t yy = 0; yy < sy; ++yy) {
+                        uint64_t gy = startY + yy;
+                        if (gy >= ny) break;
+                        uint64_t srcOff = (zz * ny + gy) * nx + startX;
+                        uint64_t vx = std::min<uint64_t>(sx, nx - startX);
+                        const float* src = slabBuf.data() + srcOff;
+                        float* dst = sbBuf.data() + (zz * sy + yy) * sx;
+                        std::memcpy(dst, src, vx * sizeof(float));
+                    }
+                }
+
+                uint64_t totalLeafs = (uint64_t)(sx/lx) * (sy/ly) * (sz/lz);
+                size_t pos = 0;
+                for (uint64_t j = 0; j < totalLeafs; ++j) {
+                    uint32_t plx, ply, plz;
+                    erwt3d::unmorton3D(j, plx, ply, plz);
+                    if (plx >= sx/lx || ply >= sy/ly || plz >= sz/lz) continue;
+                    uint64_t bx = plx*lx, by = ply*ly, bz = plz*lz;
+                    float* leaf = reinterpret_cast<float*>(leafBuf.data() + pos);
+                    for (uint64_t zz = 0; zz < lz; ++zz)
+                        for (uint64_t yy = 0; yy < ly; ++yy)
+                            for (uint64_t xx = 0; xx < lx; ++xx)
+                                leaf[(zz*ly+yy)*lx+xx] = sbBuf[((bz+zz)*sy+(by+yy))*sx+(bx+xx)];
+                    pos += lx*ly*lz*sizeof(float);
+                }
+
+                int compSize = LZ4_compress_default(
+                    reinterpret_cast<const char*>(leafBuf.data()),
+                    reinterpret_cast<char*>(compBuf.data()),
+                    static_cast<int>(sbBytes), compBufSize);
+
+                if (compSize > 0) {
+                    totalRaw += sbBytes;
+                    totalComp += compSize;
+                    actualSamples++;
+                    slabSamples++;
+                }
+                if (slabSamples >= maxPerSlab) break;
             }
+            if (actualSamples >= 2048) break;
         }
-
-        // Convert to leaf order (same as writeLeavesToBuffer)
-        uint64_t totalLeafs = (uint64_t)(sx/lx) * (sy/ly) * (sz/lz);
-        size_t pos = 0;
-        for (uint64_t j = 0; j < totalLeafs; ++j) {
-            uint32_t plx, ply, plz;
-            erwt3d::unmorton3D(j, plx, ply, plz);
-            if (plx >= sx/lx || ply >= sy/ly || plz >= sz/lz) continue;
-            uint64_t bx = plx*lx, by = ply*ly, bz = plz*lz;
-            float* leaf = reinterpret_cast<float*>(leafBuf.data() + pos);
-            for (uint64_t zz = 0; zz < lz; ++zz)
-                for (uint64_t yy = 0; yy < ly; ++yy)
-                    for (uint64_t xx = 0; xx < lx; ++xx)
-                        leaf[(zz*ly+yy)*lx+xx] = sbBuf[((bz+zz)*sy+(by+yy))*sx+(bx+xx)];
-            pos += lx*ly*lz*sizeof(float);
-        }
-
-        // Compress
-        int compSize = LZ4_compress_default(
-            reinterpret_cast<const char*>(leafBuf.data()),
-            reinterpret_cast<char*>(compBuf.data()),
-            static_cast<int>(sbBytes), compBufSize);
-
-        if (compSize > 0) {
-            totalRaw += sbBytes;
-            totalComp += compSize;
-            actualSamples++;
-        }
+        if (actualSamples >= 2048) break;
     }
 
     close(fd);
@@ -114,6 +135,8 @@ void printUsage(const char* progName) {
     std::cerr << "  --x-sidecar         Build compressed X-sidecar during the same raw read pass" << std::endl;
     std::cerr << "  --x-sidecar-stride N Store every Nth X plane (default: 1)" << std::endl;
     std::cerr << "  --x-sidecar-storage-budget X  Keep sidecar only if total ratio <= X (default: 1.45)" << std::endl;
+    std::cerr << "  --compress on|off|auto  Enable lz4 (default: on, auto estimates ratio)" << std::endl;
+    std::cerr << "  --compress-threshold X   Auto skip if ratio >= X (default: 0.95)" << std::endl;
     std::cerr << "  --threads N         Number of threads (default: 1)" << std::endl;
     std::cerr << "  --memory-limit-mb N Memory limit in MB (default: 2048)" << std::endl;
     std::cerr << "  --super-size N      Superblock size (default: 64)" << std::endl;
@@ -134,6 +157,8 @@ int main(int argc, char* argv[]) {
     uint32_t panelAxis = 0;
     uint32_t panelStride = 0;
     bool compress = false;
+    std::string compressMode = "on";
+    double compressThreshold = 0.95;
     std::string converter = "zslab";
     erwt3d::PhysicalOrder physicalOrder = erwt3d::PhysicalOrder::V05_YZX;
     std::string scratchDir;
@@ -175,8 +200,12 @@ int main(int argc, char* argv[]) {
             }
         } else if (std::strcmp(argv[i], "--panel-stride") == 0 && i + 1 < argc) {
             panelStride = std::stoul(argv[++i]);
+        } else if (std::strcmp(argv[i], "--compress") == 0 && i + 1 < argc) {
+            compressMode = argv[++i];
         } else if (std::strcmp(argv[i], "--compress") == 0) {
-            compress = true;
+            compressMode = "on";  // bare --compress = on
+        } else if (std::strcmp(argv[i], "--compress-threshold") == 0 && i + 1 < argc) {
+            compressThreshold = std::stod(argv[++i]);
         } else if (std::strcmp(argv[i], "--layout") == 0 && i + 1 < argc) {
             std::string layout = argv[++i];
             if (layout == "v05" || layout == "v05-yzx" || layout == "xyz") {
@@ -266,9 +295,39 @@ int main(int argc, char* argv[]) {
         }
 
 #ifdef ERWT3D_HAVE_LZ4
-        if (compress) {
-            std::cout << "Compression ratio estimation disabled; each superblock will choose lz4 or raw storage." << std::endl;
+        if (compressMode == "auto") {
+            double estRatio = 1.0;
+            if (estimateCompressionRatio(inputPath, nx, ny, nz,
+                                         superSize, superSize, superSize,
+                                         leafSize, leafSize, leafSize,
+                                         estRatio, 8)) {
+                std::cout << "Compression estimation (up to 2048 superblocks): ratio="
+                          << std::fixed << std::setprecision(3) << estRatio << "x";
+                if (estRatio >= compressThreshold) {
+                    std::cout << " >= " << compressThreshold << " — skipping compression" << std::endl;
+                    compress = false;
+                } else {
+                    std::cout << " < " << compressThreshold << " — enabling compression" << std::endl;
+                    compress = true;
+                }
+            } else {
+                std::cerr << "Compression estimation failed, falling back to compress=on" << std::endl;
+                compress = true;
+            }
+        } else if (compressMode == "on") {
+            compress = true;
+        } else if (compressMode == "off") {
+            compress = false;
+        } else {
+            std::cerr << "Error: --compress must be on, off, or auto" << std::endl;
+            return 1;
         }
+        
+        if (compress) {
+            std::cout << "Compression: enabled (lz4, per-block decision)" << std::endl;
+        }
+#else
+        (void)compressMode; (void)compressThreshold;
 #endif
         
         if (!erwt3d::writeERWT3DFromFile(outputPath, inputPath, nx, ny, nz,
