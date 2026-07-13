@@ -214,6 +214,7 @@ int main(int argc, char* argv[]) {
     bool useBatch = true;
     bool useMmap = false;
     bool hddMode = false;
+    std::string compressedReadModeStr = "v051";
     double baselineMsOverride = 0;
     int repeats = 1;
 
@@ -258,6 +259,9 @@ int main(int argc, char* argv[]) {
             hddMaxGapBytes = 3145728;        // 3MB
             useBatch = true;
         }
+        else if (std::strcmp(argv[i], "--compressed-read-mode") == 0) {
+            compressedReadModeStr = next();
+        }
         else if (std::strcmp(argv[i], "--baseline-ms") == 0) { baselineMsOverride = std::stod(next()); }
         else if (std::strcmp(argv[i], "--baseline-file") == 0) { baselineFile = next(); }
         else if (std::strcmp(argv[i], "--repeats") == 0) { repeats = std::stoi(next()); }
@@ -282,6 +286,10 @@ int main(int argc, char* argv[]) {
     else if (sbReadModeStr == "leaf-index") reader.setSBReadMode(erwt3d::SBReadMode::LeafIndex);
     else if (sbReadModeStr == "hdd-read-window") reader.setSBReadMode(erwt3d::SBReadMode::HDDReadWindow);
     if (sbTaskOrderStr == "file-offset") reader.setSBTaskOrder(erwt3d::SBTaskOrder::FileOffset);
+    if (compressedReadModeStr == "windowed")
+        reader.setCompressedReadMode(erwt3d::CompressedReadMode::Windowed);
+    else
+        reader.setCompressedReadMode(erwt3d::CompressedReadMode::V051);
     if (hddReadWindowBytes > 0 || hddMaxGapBytes > 0) {
         reader.setHDDReadWindowConfig({hddReadWindowBytes, hddMaxGapBytes});
     }

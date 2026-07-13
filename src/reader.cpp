@@ -1040,9 +1040,6 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
     for (auto& p : plans) pp.push_back(&p);
 
     if (compressed_) {
-        // Compressed path: merge physically adjacent blocks into HDD read windows.
-        // Sorting alone is not enough because readSuperblock() would still issue
-        // one pread and one temporary allocation per superblock.
         auto batch = buildSBBatchPlan(pp);
         const uint64_t sbBV = getSuperblockBytes(header_);
         const uint64_t readWindowBytes = wcfg.read_window_bytes > 0
@@ -1064,6 +1061,52 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
 
         adviseSequential(fd_);
 
+        if (compressedReadMode_ == CompressedReadMode::V051) {
+            // v0.5.1: individual reads per compressed block, buffer reuse, file-offset sort
+            std::vector<uint8_t> sbBuf(sbBV);
+            for (size_t ti = 0; ti < taskOrder.size(); ) {
+                const auto& bt = batch.batch_tasks[taskOrder[ti]];
+                if (bt.sb_index >= compIndex_.size()) return false;
+                const auto& entry = compIndex_[bt.sb_index];
+                if (entry.is_compressed) {
+#ifdef ERWT3D_HAVE_LZ4
+                    if (compressedBuffer_.size() < entry.compressed_size)
+                        compressedBuffer_.resize(entry.compressed_size);
+                    if (pread(fd_, compressedBuffer_.data(), entry.compressed_size,
+                              static_cast<off_t>(entry.file_offset)) !=
+                        static_cast<ssize_t>(entry.compressed_size))
+                        return false;
+                    if (LZ4_decompress_safe(
+                            reinterpret_cast<const char*>(compressedBuffer_.data()),
+                            reinterpret_cast<char*>(sbBuf.data()),
+                            static_cast<int>(entry.compressed_size),
+                            static_cast<int>(sbBV)) != static_cast<int>(sbBV))
+                        return false;
+#else
+                    return false;
+#endif
+                } else {
+                    if (pread(fd_, sbBuf.data(), sbBV,
+                              static_cast<off_t>(entry.file_offset)) !=
+                        static_cast<ssize_t>(sbBV))
+                        return false;
+                }
+
+                const uint64_t sbIndex = bt.sb_index;
+                do {
+                    const auto& same = batch.batch_tasks[taskOrder[ti]];
+                    if (same.sb_index != sbIndex) break;
+                    SBTask unpackTask{same.file_offset, same.first_leaf,
+                                      same.leaf_count, same.sb_index};
+                    unpackLeaves(header_, *same.plan, unpackTask,
+                                 sbBuf.data(), outputs[same.output_id]);
+                    ++ti;
+                } while (ti < taskOrder.size());
+            }
+            return true;
+        }
+
+        // Windowed mode: merge adjacent blocks into read windows
         std::vector<uint8_t> readBuf;
         std::vector<uint8_t> sbBuf(sbBV);
         size_t firstTask = 0;

@@ -24,6 +24,11 @@ enum class SBReadMode {
     HDDReadWindow, // HDD-max: large contiguous read windows with configurable gap tolerance
 };
 
+enum class CompressedReadMode {
+    V051,     // v0.5.1: individual pread per compressed block, no window merge
+    Windowed, // PR 49: merge adjacent compressed blocks into read windows
+};
+
 class ERWT3DReader {
 public:
     ERWT3DReader(const std::string& path, size_t cacheMB = 0, bool useMmap = false);
@@ -57,6 +62,9 @@ public:
     
     void setPinThreads(bool enable) { pinThreads_ = enable; }
     bool pinThreads() const { return pinThreads_; }
+
+    void setCompressedReadMode(CompressedReadMode m) { compressedReadMode_ = m; }
+    CompressedReadMode compressedReadMode() const { return compressedReadMode_; }
     
     void setSBReadMode(SBReadMode m) { sbReadMode_ = m; }
     SBReadMode sbReadMode() const { return sbReadMode_; }
@@ -104,6 +112,7 @@ private:
     bool compressed_ = false;
     std::vector<CompressedBlockIndex> compIndex_;
     std::vector<uint8_t> compressedBuffer_;
+    CompressedReadMode compressedReadMode_ = CompressedReadMode::Windowed;
     
     int xpFd_ = -1;
     XPSidecarHeader xpHeader_{};
