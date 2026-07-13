@@ -205,23 +205,7 @@ int main(int argc, char* argv[]) {
 
 #ifdef ERWT3D_HAVE_LZ4
         if (compress) {
-            std::cout << "Estimating compression ratio (sampling superblocks)..." << std::endl;
-            double estRatio = 1.0;
-            if (estimateCompressionRatio(inputPath, nx, ny, nz,
-                                          superSize, superSize, superSize,
-                                          leafSize, leafSize, leafSize,
-                                          estRatio)) {
-                std::cout << "  Estimated compression ratio: " << std::fixed
-                          << std::setprecision(3) << estRatio << "x" << std::endl;
-                if (estRatio > 0.90) {
-                    std::cout << "  Compression ratio too low (>0.90x), skipping compression." << std::endl;
-                    compress = false;
-                } else {
-                    std::cout << "  Compression beneficial, proceeding with lz4." << std::endl;
-                }
-            } else {
-                std::cerr << "  Warning: could not estimate ratio, proceeding with compression." << std::endl;
-            }
+            std::cout << "Compression ratio estimation disabled; each superblock will choose lz4 or raw storage." << std::endl;
         }
 #endif
         
