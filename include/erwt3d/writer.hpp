@@ -35,6 +35,8 @@ bool writeERWT3DFromFile(const std::string& outputPath,
                          size_t memoryLimitMB = 2048,
                          uint32_t panelAxis = 0,
                          uint32_t panelStride = 0,
-                         bool compress = false);
+                         bool compress = false,
+                         PhysicalOrder physicalOrder = PhysicalOrder::V05_YZX,
+                         const std::string& scratchDir = {});
 
 } // namespace erwt3d

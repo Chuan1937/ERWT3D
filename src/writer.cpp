@@ -74,12 +74,71 @@ static bool readFullyAt(int fd, void* buffer, size_t bytes, uint64_t offset) {
     return true;
 }
 
+static bool writeFullyAt(int fd, const void* buffer, size_t bytes, uint64_t offset) {
+    const auto* src = static_cast<const uint8_t*>(buffer);
+    size_t done = 0;
+    while (done < bytes) {
+        ssize_t n = pwrite(fd, src + done, bytes - done,
+                           static_cast<off_t>(offset + done));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
+        if (n == 0) return false;
+        done += static_cast<size_t>(n);
+    }
+    return true;
+}
+
+static void packLeavesFromSlab(uint8_t* out, const ERWT3DHeader& header,
+                               const float* slab, uint64_t nx, uint64_t ny,
+                               uint64_t zStart, uint64_t currentZ,
+                               uint64_t sx, uint64_t sy) {
+    const uint64_t leafBytes = getLeafBytes(header);
+    const uint64_t validX = std::min<uint64_t>(header.super_x, nx - sx * header.super_x);
+    const uint64_t validY = std::min<uint64_t>(header.super_y, ny - sy * header.super_y);
+    const uint64_t validZ = std::min<uint64_t>(header.super_z, currentZ);
+    const bool boundary = validX != header.super_x || validY != header.super_y ||
+                          validZ != header.super_z;
+    if (boundary) std::memset(out, 0, static_cast<size_t>(getSuperblockBytes(header)));
+
+    const uint64_t leafCount = getTotalLeafsPerSuper(header);
+    const uint64_t leafX = header.leaf_x;
+    const uint64_t leafY = header.leaf_y;
+    const uint64_t leafZ = header.leaf_z;
+    for (uint64_t j = 0; j < leafCount; ++j) {
+        uint32_t lx, ly, lz;
+        unmorton3D(j, lx, ly, lz);
+        const uint64_t bx = static_cast<uint64_t>(lx) * leafX;
+        const uint64_t by = static_cast<uint64_t>(ly) * leafY;
+        const uint64_t bz = static_cast<uint64_t>(lz) * leafZ;
+        if (bx >= validX || by >= validY || bz >= validZ) continue;
+
+        const uint64_t copyX = std::min<uint64_t>(leafX, validX - bx);
+        const uint64_t copyY = std::min<uint64_t>(leafY, validY - by);
+        const uint64_t copyZ = std::min<uint64_t>(leafZ, validZ - bz);
+        auto* dst = out + j * leafBytes;
+        for (uint64_t z = 0; z < copyZ; ++z) {
+            for (uint64_t y = 0; y < copyY; ++y) {
+                const uint64_t srcElem = ((zStart + bz + z) * ny + sy * header.super_y + by + y) * nx +
+                                         sx * header.super_x + bx;
+                const uint64_t dstElem = (z * leafY + y) * leafX;
+                std::memcpy(dst + dstElem * sizeof(float),
+                            slab + (srcElem - zStart * ny * nx),
+                            copyX * sizeof(float));
+            }
+        }
+    }
+}
+
 static bool writeERWT3DFromFileZSlab(const std::string& outputPath,
                                      const std::string& inputPath,
                                      uint64_t nx, uint64_t ny, uint64_t nz,
                                      uint32_t superX, uint32_t superY, uint32_t superZ,
                                      uint32_t leafX, uint32_t leafY, uint32_t leafZ,
-                                     size_t memoryLimitMB, bool compress) {
+                                     size_t memoryLimitMB, bool compress,
+                                     PhysicalOrder physicalOrder,
+                                     const std::string& scratchDir) {
     ERWT3DHeader header;
     initHeader(header);
     header.nx = nx; header.ny = ny; header.nz = nz;
@@ -99,15 +158,17 @@ static bool writeERWT3DFromFileZSlab(const std::string& outputPath,
         std::cerr << "Error: Cannot open input file: " << inputPath << std::endl;
         return false;
     }
-    std::ofstream outFile(outputPath, std::ios::binary);
-    if (!outFile) {
+    int outFd = open(outputPath.c_str(), O_CREAT | O_TRUNC | O_RDWR, 0644);
+    if (outFd < 0) {
         std::cerr << "Error: Cannot create output file: " << outputPath << std::endl;
         close(rawFd);
         return false;
     }
-    std::vector<char> outBuf(16 * 1024 * 1024);
-    outFile.rdbuf()->pubsetbuf(outBuf.data(), outBuf.size());
-    outFile.write(reinterpret_cast<const char*>(&header), sizeof(header));
+    if (physicalOrder == PhysicalOrder::V05_YZX)
+        header.flags |= FLAG_PHYSICAL_ORDER_YZX;
+    if (!writeFullyAt(outFd, &header, sizeof(header), 0)) {
+        close(rawFd); close(outFd); return false;
+    }
 
     const uint64_t slabBudget = std::max<uint64_t>(1, memoryLimitMB) * 1024ULL * 1024ULL / 2;
     const uint64_t slabZ = std::min<uint64_t>(superZ, nz);
@@ -117,7 +178,6 @@ static bool writeERWT3DFromFileZSlab(const std::string& outputPath,
     }
     const uint64_t slabBytes = rawSliceBytes * slabZ;
     std::vector<float> slab(static_cast<size_t>(slabBytes / sizeof(float)));
-    std::vector<float> superBuffer(static_cast<size_t>(sbBytes / sizeof(float)), 0.0f);
     std::vector<uint8_t> leafBuffer(static_cast<size_t>(sbBytes));
     std::vector<uint8_t> compBuffer;
     std::vector<CompressedBlockIndex> compIndex;
@@ -136,7 +196,38 @@ static bool writeERWT3DFromFileZSlab(const std::string& outputPath,
 
     std::cout << "Z-slab conversion: slab_z=" << slabZ
               << ", slab_bytes=" << slabBytes / (1024 * 1024) << " MiB"
-              << ", input_reads=" << ((nz + slabZ - 1) / slabZ) << std::endl;
+              << ", input_reads=" << ((nz + slabZ - 1) / slabZ)
+              << ", physical_order="
+              << (physicalOrder == PhysicalOrder::V05_YZX ? "v05-yzx" : "zyx")
+              << std::endl;
+
+    if (!compress && ftruncate(outFd, static_cast<off_t>(header.data_offset + totalSB * sbBytes)) != 0) {
+        std::cerr << "Error: failed to reserve output data area" << std::endl;
+        close(rawFd); close(outFd); return false;
+    }
+
+    struct BucketRecord { uint64_t offset = 0; uint32_t size = 0; uint8_t compressed = 0; };
+    std::vector<int> bucketFds;
+    std::vector<uint64_t> bucketPositions;
+    std::vector<BucketRecord> bucketRecords;
+    std::vector<std::string> bucketPaths;
+    if (compress && physicalOrder == PhysicalOrder::V05_YZX) {
+        bucketFds.resize(sgY, -1);
+        bucketPositions.assign(sgY, 0);
+        bucketRecords.resize(totalSB);
+        bucketPaths.resize(sgY);
+        const std::string prefix = scratchDir.empty() ? outputPath + ".bucket-" : scratchDir + "/erwt3d-bucket-";
+        for (uint64_t sy = 0; sy < sgY; ++sy) {
+            bucketPaths[sy] = prefix + std::to_string(static_cast<unsigned long long>(getpid())) +
+                              "-" + std::to_string(static_cast<unsigned long long>(sy));
+            bucketFds[sy] = open(bucketPaths[sy].c_str(), O_CREAT | O_TRUNC | O_RDWR, 0600);
+            if (bucketFds[sy] < 0) {
+                std::cerr << "Error: cannot create compression bucket: " << bucketPaths[sy] << std::endl;
+                for (int fd : bucketFds) if (fd >= 0) close(fd);
+                close(rawFd); close(outFd); return false;
+            }
+        }
+    }
 
     using Clock = std::chrono::steady_clock;
     const auto totalStart = Clock::now();
@@ -161,24 +252,13 @@ static bool writeERWT3DFromFileZSlab(const std::string& outputPath,
 
         const uint64_t sz = zStart / superZ;
         for (uint64_t sy = 0; sy < sgY; ++sy) {
+            std::vector<uint8_t> writeBatch;
+            if (!compress) writeBatch.resize(static_cast<size_t>(sgX * sbBytes));
             for (uint64_t sx = 0; sx < sgX; ++sx) {
-                std::fill(superBuffer.begin(), superBuffer.end(), 0.0f);
-                const uint64_t startX = sx * superX;
-                const uint64_t startY = sy * superY;
-                const uint64_t validX = std::min<uint64_t>(superX, nx - startX);
-                const uint64_t validY = std::min<uint64_t>(superY, ny - startY);
-                const uint64_t validZ = std::min<uint64_t>(currentZ, superZ);
 
                 t0 = Clock::now();
-                for (uint64_t z = 0; z < validZ; ++z) {
-                    for (uint64_t y = 0; y < validY; ++y) {
-                        const uint64_t src = (z * ny + startY + y) * nx + startX;
-                        const uint64_t dst = (z * superY + y) * superX;
-                        std::memcpy(superBuffer.data() + dst, slab.data() + src,
-                                    validX * sizeof(float));
-                    }
-                }
-                writeLeavesToBuffer(leafBuffer.data(), header, superBuffer);
+                packLeavesFromSlab(leafBuffer.data(), header, slab.data(), nx, ny,
+                                   zStart, currentZ, sx, sy);
                 transformMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 
                 const uint64_t logicalId = (sz * sgY + sy) * sgX + sx;
@@ -192,27 +272,49 @@ static bool writeERWT3DFromFileZSlab(const std::string& outputPath,
                         static_cast<int>(sbBytes), static_cast<int>(compBuffer.size()));
                     const bool useCompressed = compSize > 0 &&
                         static_cast<uint64_t>(compSize) < sbBytes * 95 / 100;
-                    entry.file_offset = static_cast<uint64_t>(outFile.tellp());
-                    entry.compressed_size = useCompressed ? static_cast<uint32_t>(compSize)
-                                                          : static_cast<uint32_t>(sbBytes);
-                    entry.is_compressed = useCompressed ? 1 : 0;
-                    if (useCompressed)
-                        outFile.write(reinterpret_cast<const char*>(compBuffer.data()), compSize);
-                    else
+                    const uint8_t* encoded = useCompressed ? compBuffer.data() : leafBuffer.data();
+                    const uint32_t encodedSize = useCompressed ? static_cast<uint32_t>(compSize) : static_cast<uint32_t>(sbBytes);
+                    if (physicalOrder == PhysicalOrder::V05_YZX) {
+                        const uint64_t bucketOffset = bucketPositions[sy];
+                        if (!writeFullyAt(bucketFds[sy], encoded, encodedSize, bucketOffset)) {
+                            std::cerr << "Error writing compression bucket" << std::endl;
+                            close(rawFd); close(outFd); return false;
+                        }
+                        bucketPositions[sy] += encodedSize;
+                        bucketRecords[logicalId] = {bucketOffset, encodedSize, static_cast<uint8_t>(useCompressed)};
+                    } else {
+                        entry.file_offset = header.data_offset + outputBytesWritten - sizeof(header);
+                        entry.compressed_size = encodedSize;
+                        entry.is_compressed = useCompressed ? 1 : 0;
+                        if (!writeFullyAt(outFd, encoded, encodedSize, entry.file_offset)) {
+                            std::cerr << "Error writing output superblock " << logicalId << std::endl;
+                            close(rawFd); close(outFd); return false;
+                        }
+                        compIndex[logicalId] = entry;
+                        outputBytesWritten += encodedSize;
+                    }
+#else
+                    const uint32_t encodedSize = static_cast<uint32_t>(sbBytes);
+                    if (!writeFullyAt(outFd, leafBuffer.data(), encodedSize,
+                                      header.data_offset + outputBytesWritten - sizeof(header))) {
+                        close(rawFd); close(outFd); return false;
+                    }
+                    compIndex[logicalId] = {header.data_offset + outputBytesWritten - sizeof(header), encodedSize, 0, {0, 0, 0}};
+                    outputBytesWritten += encodedSize;
 #endif
-                        outFile.write(reinterpret_cast<const char*>(leafBuffer.data()), sbBytes);
-                    outputBytesWritten += entry.compressed_size;
-                    compIndex[logicalId] = entry;
                 } else {
-                    outFile.write(reinterpret_cast<const char*>(leafBuffer.data()), sbBytes);
-                    outputBytesWritten += sbBytes;
-                }
-                if (!outFile) {
-                    std::cerr << "Error writing output superblock " << logicalId << std::endl;
-                    close(rawFd);
-                    return false;
+                    std::memcpy(writeBatch.data() + sx * sbBytes, leafBuffer.data(), sbBytes);
                 }
                 writeMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+            }
+            if (!compress) {
+                const uint64_t physicalId = superblockId(header, sz, sy, 0, physicalOrder);
+                if (!writeFullyAt(outFd, writeBatch.data(), writeBatch.size(),
+                                  header.data_offset + physicalId * sbBytes)) {
+                    std::cerr << "Error writing output superblock row sy=" << sy << std::endl;
+                    close(rawFd); close(outFd); return false;
+                }
+                outputBytesWritten += writeBatch.size();
             }
         }
         std::cout << "\rZ-slab progress: " << std::fixed << std::setprecision(1)
@@ -222,18 +324,50 @@ static bool writeERWT3DFromFileZSlab(const std::string& outputPath,
     close(rawFd);
     std::cout << std::endl;
 
+    if (compress && physicalOrder == PhysicalOrder::V05_YZX) {
+        outputBytesWritten = 0;
+        for (uint64_t sy = 0; sy < sgY; ++sy) {
+            for (uint64_t sz = 0; sz < sgZ; ++sz) {
+                for (uint64_t sx = 0; sx < sgX; ++sx) {
+                    const uint64_t logicalId = (sz * sgY + sy) * sgX + sx;
+                    const auto& record = bucketRecords[logicalId];
+                    std::vector<uint8_t> encoded(record.size);
+                    if (!readFullyAt(bucketFds[sy], encoded.data(), record.size, record.offset)) {
+                        std::cerr << "Error reading compression bucket during merge" << std::endl;
+                        close(outFd); return false;
+                    }
+                    const uint64_t fileOffset = header.data_offset + outputBytesWritten;
+                    if (!writeFullyAt(outFd, encoded.data(), record.size, fileOffset)) {
+                        std::cerr << "Error merging compression bucket" << std::endl;
+                        close(outFd); return false;
+                    }
+                    compIndex[logicalId] = {fileOffset, record.size, record.compressed, {0, 0, 0}};
+                    outputBytesWritten += record.size;
+                }
+            }
+        }
+        for (int fd : bucketFds) if (fd >= 0) close(fd);
+        for (const auto& path : bucketPaths) unlink(path.c_str());
+    }
+
     if (compress) {
-        const uint64_t indexOffset = static_cast<uint64_t>(outFile.tellp());
-        outFile.write(reinterpret_cast<const char*>(compIndex.data()),
-                      static_cast<std::streamsize>(compIndex.size() * sizeof(CompressedBlockIndex)));
-        outputBytesWritten += compIndex.size() * sizeof(CompressedBlockIndex);
+        const uint64_t indexOffset = (physicalOrder == PhysicalOrder::V05_YZX ? header.data_offset : 0) + outputBytesWritten;
+        const uint64_t indexBytes = compIndex.size() * sizeof(CompressedBlockIndex);
+        if (!writeFullyAt(outFd, compIndex.data(), static_cast<size_t>(indexBytes), indexOffset)) {
+            close(outFd); return false;
+        }
+        outputBytesWritten += indexBytes;
         header.flags |= FLAG_COMPRESSED;
         header.reserved[19] = indexOffset;
         header.reserved[20] = compIndex.size();
-        outFile.seekp(0);
-        outFile.write(reinterpret_cast<const char*>(&header), sizeof(header));
+        if (!writeFullyAt(outFd, &header, sizeof(header), 0)) {
+            close(outFd); return false;
+        }
     }
-    outFile.close();
+    if (fsync(outFd) != 0) {
+        std::cerr << "Warning: fsync failed for output" << std::endl;
+    }
+    close(outFd);
 
     const double totalMs = std::chrono::duration<double, std::milli>(Clock::now() - totalStart).count();
     std::cout << "Convert profile: raw_read_ms=" << readMs
@@ -241,10 +375,10 @@ static bool writeERWT3DFromFileZSlab(const std::string& outputPath,
               << ", output_write_ms=" << writeMs
               << ", raw_read_calls=" << readCalls
               << ", raw_bytes_read=" << rawBytesRead
-              << ", output_bytes_written=" << outputBytesWritten
+              << ", output_bytes_written=" << (compress ? outputBytesWritten : header.data_offset + totalSB * sbBytes)
               << ", input_MBps=" << (totalMs > 0.0 ? rawBytesRead / (totalMs * 1000.0) : 0.0)
               << ", output_MBps=" << (totalMs > 0.0 ? outputBytesWritten / (totalMs * 1000.0) : 0.0)
-              << ", compression_ratio=" << (rawBytesRead > 0 ? static_cast<double>(outputBytesWritten) / rawBytesRead : 0.0)
+              << ", compression_ratio=" << (rawBytesRead > 0 ? static_cast<double>(compress ? outputBytesWritten : header.data_offset + totalSB * sbBytes) / rawBytesRead : 0.0)
               << ", total_ms=" << totalMs << std::endl;
     return true;
 }
@@ -709,7 +843,8 @@ bool writeERWT3DFromFile(const std::string& outputPath,
                          uint32_t leafX, uint32_t leafY, uint32_t leafZ,
                          int numThreads, size_t memoryLimitMB,
                          uint32_t panelAxis, uint32_t panelStride,
-                         bool compress) {
+                         bool compress, PhysicalOrder physicalOrder,
+                         const std::string& scratchDir) {
     std::cout << "Using sequential read strategy (HDD optimized)" << std::endl;
     if (compress) std::cout << "Compression: enabled (lz4)" << std::endl;
     if (panelAxis == 0 && panelStride > 0) {
@@ -719,7 +854,7 @@ bool writeERWT3DFromFile(const std::string& outputPath,
                                         nx, ny, nz,
                                         superX, superY, superZ,
                                         leafX, leafY, leafZ,
-                                        memoryLimitMB, compress);
+                                        memoryLimitMB, compress, physicalOrder, scratchDir);
     }
     return writeERWT3DFromFileSequential(outputPath, inputPath,
                                           nx, ny, nz,

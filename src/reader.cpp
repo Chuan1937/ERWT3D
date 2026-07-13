@@ -7,6 +7,7 @@
 #include <vector>
 #include <cstring>
 #include <chrono>
+#include <iostream>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -172,7 +173,7 @@ bool ERWT3DReader::readSuperblock(uint64_t sbIdx, void* buffer) {
     }
 
     // Uncompressed: use direct pread
-    uint64_t offset = header_.data_offset + sbIdx * sbBytes;
+    uint64_t offset = superblockFileOffsetFromLogical(header_, sbIdx);
     ssize_t n = pread(fd_, buffer, sbBytes, offset);
     return n == static_cast<ssize_t>(sbBytes);
 }
@@ -235,7 +236,7 @@ bool ERWT3DReader::readLineX(uint64_t y, uint64_t z, float* output,
     
     for (uint64_t superX = 0; superX < getSuperGridX(header_); ++superX) {
         uint64_t superIdx = (superZ * getSuperGridY(header_) + superY) * getSuperGridX(header_) + superX;
-        uint64_t superOffset = header_.data_offset + superIdx * superBytes;
+        uint64_t superOffset = superblockFileOffset(header_, superZ, superY, superX);
         
         for (uint64_t lx2 = 0; lx2 < leafsPerSuperX; ++lx2) {
             uint64_t baseX = superX * sx + lx2 * lx;
@@ -365,7 +366,7 @@ bool ERWT3DReader::readLineY(uint64_t x, uint64_t z, float* output,
 
     for (uint64_t superY = 0; superY < getSuperGridY(header_); ++superY) {
         uint64_t sbIdx = (superZ * getSuperGridY(header_) + superY) * getSuperGridX(header_) + superX;
-        uint64_t sbOff = header_.data_offset + sbIdx * superBytes;
+        uint64_t sbOff = superblockFileOffset(header_, superZ, superY, superX);
         for (uint64_t lyi = 0; lyi < lpsY; ++lyi) {
             uint64_t baseY = superY * sy + lyi * ly;
             if (baseY >= ny) continue;
@@ -403,7 +404,7 @@ bool ERWT3DReader::readLineZ(uint64_t x, uint64_t y, float* output,
 
     for (uint64_t superZ = 0; superZ < getSuperGridZ(header_); ++superZ) {
         uint64_t sbIdx = (superZ * getSuperGridY(header_) + superY) * getSuperGridX(header_) + superX;
-        uint64_t sbOff = header_.data_offset + sbIdx * superBytes;
+        uint64_t sbOff = superblockFileOffset(header_, superZ, superY, superX);
         for (uint64_t lzi = 0; lzi < lpsZ; ++lzi) {
             uint64_t baseZ = superZ * sz + lzi * lz;
             if (baseZ >= nz) continue;
@@ -527,8 +528,10 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
             for (uint64_t syi = 0; syi < getSuperGridY(header_); ++syi) {
                 for (uint64_t sxi = 0; sxi < getSuperGridX(header_); ++sxi) {
                     uint64_t superIdx = (szi * getSuperGridY(header_) + syi) * getSuperGridX(header_) + sxi;
-                    ssize_t rd = pread(fd_, superBuffer.data(), superBytes, header_.data_offset + superIdx * superBytes);
-                    if (rd != static_cast<ssize_t>(superBytes)) { close(outFd); return false; }
+                    if (!readSuperblock(superIdx, superBuffer.data())) {
+                        std::cerr << "Error: failed to read superblock " << superIdx << " during full export fallback" << std::endl;
+                        close(outFd); return false;
+                    }
                     uint64_t startX = sxi * sx, startY = syi * sy, startZ = szi * sz;
                     for (uint64_t lzi = 0; lzi < leafsPerSuperZ; ++lzi) {
                         for (uint64_t lyi = 0; lyi < leafsPerSuperY; ++lyi) {
@@ -536,6 +539,7 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
                                 uint64_t leafMorton = morton3D(lxi, lyi, lzi);
                                 const float* ld = reinterpret_cast<const float*>(superBuffer.data() + leafMorton * leafBytes);
                                 uint64_t bx = startX + lxi * lx, by = startY + lyi * ly, bz = startZ + lzi * lz;
+                                if (bx >= nx || by >= ny || bz >= nz) continue;
                                 uint64_t vx = std::min(lx, nx - bx);
                                 for (uint64_t z = 0; z < lz; ++z) {
                                     uint64_t gz = bz + z; if (gz >= nz) break;
@@ -565,6 +569,7 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
                 uint64_t superIdx = (szi * getSuperGridY(header_) + syi) * getSuperGridX(header_) + sxi;
                 
                 if (!readSuperblock(superIdx, superBuffer.data())) {
+                    std::cerr << "Error: failed to read superblock " << superIdx << " during full export" << std::endl;
                     munmap(outMap, rawSize); close(outFd); return false;
                 }
                 
@@ -580,6 +585,7 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
                             uint64_t baseX = startX + lxi * lx;
                             uint64_t baseY = startY + lyi * ly;
                             uint64_t baseZ = startZ + lzi * lz;
+                            if (baseX >= nx || baseY >= ny || baseZ >= nz) continue;
                             uint64_t validLx = std::min(lx, nx - baseX);
                             
                             for (uint64_t z = 0; z < lz; ++z) {
@@ -915,8 +921,8 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
         std::vector<size_t> taskOrder(plan.tasks.size());
         for (size_t i = 0; i < plan.tasks.size(); ++i) taskOrder[i] = i;
         std::sort(taskOrder.begin(), taskOrder.end(), [&](size_t a, size_t b) {
-            uint64_t sbIdxA = (plan.tasks[a].file_offset - header_.data_offset) / sbBV;
-            uint64_t sbIdxB = (plan.tasks[b].file_offset - header_.data_offset) / sbBV;
+            uint64_t sbIdxA = plan.tasks[a].sb_index;
+            uint64_t sbIdxB = plan.tasks[b].sb_index;
             if (sbIdxA < compIndex_.size() && sbIdxB < compIndex_.size())
                 return compIndex_[sbIdxA].file_offset < compIndex_[sbIdxB].file_offset;
             return plan.tasks[a].file_offset < plan.tasks[b].file_offset;
@@ -926,7 +932,7 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
         uint64_t lastSbIdx = UINT64_MAX;
         for (size_t ti = 0; ti < taskOrder.size(); ++ti) {
             const auto& task = plan.tasks[taskOrder[ti]];
-            uint64_t sbIdx = (task.file_offset - header_.data_offset) / sbBV;
+            uint64_t sbIdx = task.sb_index;
             if (sbIdx != lastSbIdx) {
                 if (!readSuperblock(sbIdx, sbBuf.data())) { ok = false; break; }
                 lastSbIdx = sbIdx;
@@ -1040,8 +1046,8 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
         std::vector<size_t> taskOrder(batch.batch_tasks.size());
         for (size_t i = 0; i < taskOrder.size(); ++i) taskOrder[i] = i;
         std::sort(taskOrder.begin(), taskOrder.end(), [&](size_t a, size_t b) {
-            uint64_t sbIdxA = (batch.batch_tasks[a].file_offset - header_.data_offset) / sbBV;
-            uint64_t sbIdxB = (batch.batch_tasks[b].file_offset - header_.data_offset) / sbBV;
+            uint64_t sbIdxA = batch.batch_tasks[a].sb_index;
+            uint64_t sbIdxB = batch.batch_tasks[b].sb_index;
             if (compressed_ && sbIdxA < compIndex_.size() && sbIdxB < compIndex_.size())
                 return compIndex_[sbIdxA].file_offset < compIndex_[sbIdxB].file_offset;
             return batch.batch_tasks[a].file_offset < batch.batch_tasks[b].file_offset;
@@ -1052,13 +1058,13 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
         uint64_t lastSbIdx = UINT64_MAX;
         for (size_t ti = 0; ti < taskOrder.size(); ++ti) {
             const auto& bt = batch.batch_tasks[taskOrder[ti]];
-            uint64_t sbIdx = (bt.file_offset - header_.data_offset) / sbBV;
+            uint64_t sbIdx = bt.sb_index;
 
             if (sbIdx != lastSbIdx) {
                 if (!readSuperblock(sbIdx, sbBuf.data())) return false;
                 lastSbIdx = sbIdx;
             }
-            SBTask t{bt.file_offset, bt.first_leaf, bt.leaf_count};
+            SBTask t{bt.file_offset, bt.first_leaf, bt.leaf_count, bt.sb_index};
             unpackLeaves(header_, *bt.plan, t, sbBuf.data(), outputs[bt.output_id]);
         }
         return true;

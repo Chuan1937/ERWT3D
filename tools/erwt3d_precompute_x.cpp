@@ -188,7 +188,9 @@ static int runSidecar(const std::string& rawPath, const std::string& erwtPath,
     fstat(fdErwt, &erwtStat);
     uint64_t mainBytes = erwtStat.st_size;
 
+#ifdef POSIX_FADV_SEQUENTIAL
     posix_fadvise(fdRaw, 0, 0, POSIX_FADV_SEQUENTIAL);
+#endif
 
     // Estimate compression ratio
     std::cout << "Estimating sidecar compression ratio..." << std::endl;
@@ -356,7 +358,9 @@ static int runLegacy(const std::string& rawPath, const std::string& erwtPath,
     ERWT3DHeader header;
     pread(fdErwt, &header, sizeof(header), 0);
 
+#ifdef POSIX_FADV_SEQUENTIAL
     posix_fadvise(fdRaw, 0, 0, POSIX_FADV_SEQUENTIAL);
+#endif
 
     // Streaming: extract one plane at a time, write immediately
     uint64_t rowFloats = nx * ny;

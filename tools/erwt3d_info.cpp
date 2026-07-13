@@ -20,6 +20,9 @@ int main(int argc, char* argv[]) {
     std::cout << "Data type: float32" << std::endl;
     std::cout << "Superblock size: " << header.super_x << " x " << header.super_y << " x " << header.super_z << std::endl;
     std::cout << "Leaf block size: " << header.leaf_x << " x " << header.leaf_y << " x " << header.leaf_z << std::endl;
+    std::cout << "Physical order: "
+              << (erwt3d::getPhysicalOrder(header) == erwt3d::PhysicalOrder::V05_YZX ? "v05-yzx" : "zyx")
+              << std::endl;
     std::cout << "Data offset: " << header.data_offset << " bytes" << std::endl;
     
     if (erwt3d::hasAnyPanels(header)) {

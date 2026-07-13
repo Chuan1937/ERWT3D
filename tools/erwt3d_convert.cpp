@@ -108,6 +108,9 @@ void printUsage(const char* progName) {
     std::cerr << "  --nz N              Z dimension (required for raw->erwt3d)" << std::endl;
     std::cerr << "  --dtype TYPE        Data type (default: float32)" << std::endl;
     std::cerr << "  --layout LAYOUT     Input layout (default: xyz)" << std::endl;
+    std::cerr << "  --converter NAME    Conversion engine: zslab (default)" << std::endl;
+    std::cerr << "  --physical-order O  Output order: v05-yzx (default) or zyx" << std::endl;
+    std::cerr << "  --scratch-dir DIR   Temporary bucket directory for compressed v05-yzx output" << std::endl;
     std::cerr << "  --threads N         Number of threads (default: 1)" << std::endl;
     std::cerr << "  --memory-limit-mb N Memory limit in MB (default: 2048)" << std::endl;
     std::cerr << "  --super-size N      Superblock size (default: 64)" << std::endl;
@@ -128,6 +131,9 @@ int main(int argc, char* argv[]) {
     uint32_t panelAxis = 0;
     uint32_t panelStride = 0;
     bool compress = false;
+    std::string converter = "zslab";
+    erwt3d::PhysicalOrder physicalOrder = erwt3d::PhysicalOrder::V05_YZX;
+    std::string scratchDir;
     
     // Parse arguments
     for (int i = 1; i < argc; ++i) {
@@ -165,6 +171,32 @@ int main(int argc, char* argv[]) {
             panelStride = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--compress") == 0) {
             compress = true;
+        } else if (std::strcmp(argv[i], "--layout") == 0 && i + 1 < argc) {
+            std::string layout = argv[++i];
+            if (layout == "v05" || layout == "v05-yzx" || layout == "xyz") {
+                physicalOrder = erwt3d::PhysicalOrder::V05_YZX;
+            } else if (layout == "zyx" || layout == "zyx-experimental") {
+                physicalOrder = erwt3d::PhysicalOrder::ZYX;
+            } else {
+                std::cerr << "Error: unknown layout: " << layout
+                          << " (valid: v05, v05-yzx, zyx-experimental)" << std::endl;
+                return 1;
+            }
+        } else if (std::strcmp(argv[i], "--converter") == 0 && i + 1 < argc) {
+            converter = argv[++i];
+        } else if (std::strcmp(argv[i], "--physical-order") == 0 && i + 1 < argc) {
+            std::string order = argv[++i];
+            if (order == "v05" || order == "v05-yzx" || order == "yzx") {
+                physicalOrder = erwt3d::PhysicalOrder::V05_YZX;
+            } else if (order == "zyx") {
+                physicalOrder = erwt3d::PhysicalOrder::ZYX;
+            } else {
+                std::cerr << "Error: unknown physical order: " << order
+                          << " (valid: v05-yzx, zyx)" << std::endl;
+                return 1;
+            }
+        } else if (std::strcmp(argv[i], "--scratch-dir") == 0 && i + 1 < argc) {
+            scratchDir = argv[++i];
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             printUsage(argv[0]);
             return 0;
@@ -178,6 +210,11 @@ int main(int argc, char* argv[]) {
     if (inputPath.empty() || outputPath.empty()) {
         std::cerr << "Error: --input and --output are required" << std::endl;
         printUsage(argv[0]);
+        return 1;
+    }
+
+    if (converter != "zslab") {
+        std::cerr << "Error: only --converter zslab is available on this branch" << std::endl;
         return 1;
     }
     
@@ -213,7 +250,8 @@ int main(int argc, char* argv[]) {
                                          superSize, superSize, superSize,
                                          leafSize, leafSize, leafSize,
                                          numThreads, memoryLimitMB,
-                                         panelAxis, panelStride, compress)) {
+                                         panelAxis, panelStride, compress,
+                                         physicalOrder, scratchDir)) {
             std::cerr << "Error: Failed to convert raw to ERWT3D" << std::endl;
             return 1;
         }

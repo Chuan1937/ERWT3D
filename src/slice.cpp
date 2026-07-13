@@ -45,7 +45,7 @@ SlicePlan planSlice(const ERWT3DHeader& header, const SliceRequest& request) {
             for (uint64_t szi = 0; szi < getSuperGridZ(header); ++szi) {
                 for (uint64_t syi = 0; syi < getSuperGridY(header); ++syi) {
                     uint64_t superIdx = (szi * getSuperGridY(header) + syi) * getSuperGridX(header) + superX;
-                    uint64_t superOffset = header.data_offset + superIdx * superBytes;
+                    uint64_t superOffset = superblockFileOffset(header, szi, syi, superX);
                     
                     for (uint64_t lz2 = 0; lz2 < leafsPerSuperZ; ++lz2) {
                         for (uint64_t ly2 = 0; ly2 < leafsPerSuperY; ++ly2) {
@@ -91,7 +91,7 @@ SlicePlan planSlice(const ERWT3DHeader& header, const SliceRequest& request) {
             for (uint64_t szi = 0; szi < getSuperGridZ(header); ++szi) {
                 for (uint64_t sxi = 0; sxi < getSuperGridX(header); ++sxi) {
                     uint64_t superIdx = (szi * getSuperGridY(header) + superY) * getSuperGridX(header) + sxi;
-                    uint64_t superOffset = header.data_offset + superIdx * superBytes;
+                    uint64_t superOffset = superblockFileOffset(header, szi, superY, sxi);
                     
                     for (uint64_t lz2 = 0; lz2 < leafsPerSuperZ; ++lz2) {
                         for (uint64_t lx2 = 0; lx2 < leafsPerSuperX; ++lx2) {
@@ -137,7 +137,7 @@ SlicePlan planSlice(const ERWT3DHeader& header, const SliceRequest& request) {
             for (uint64_t syi = 0; syi < getSuperGridY(header); ++syi) {
                 for (uint64_t sxi = 0; sxi < getSuperGridX(header); ++sxi) {
                     uint64_t superIdx = (superZ * getSuperGridY(header) + syi) * getSuperGridX(header) + sxi;
-                    uint64_t superOffset = header.data_offset + superIdx * superBytes;
+                    uint64_t superOffset = superblockFileOffset(header, superZ, syi, sxi);
                     
                     for (uint64_t ly2 = 0; ly2 < leafsPerSuperY; ++ly2) {
                         for (uint64_t lx2 = 0; lx2 < leafsPerSuperX; ++lx2) {

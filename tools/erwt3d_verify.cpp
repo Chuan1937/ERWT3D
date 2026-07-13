@@ -9,8 +9,6 @@
 #include <random>
 #include <vector>
 #include <fcntl.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
 #include <thread>
 #include <unistd.h>
 
@@ -158,7 +156,7 @@ bool compareRawVsErwt3d(const VerifyOptions& opt, VerifyStats& stats) {
         std::sort(samples.begin(), samples.end(),
                   [](const Sample& a, const Sample& b) { return a.linIdx < b.linIdx; });
 
-        std::cout << "Reading raw file (mmap)..." << std::endl;
+        std::cout << "Reading raw samples without pre-populating the raw file..." << std::endl;
         int rawFd = open(opt.rawPath.c_str(), O_RDONLY);
         if (rawFd < 0) {
             std::cerr << "Error: Cannot open raw file" << std::endl;
@@ -166,25 +164,16 @@ bool compareRawVsErwt3d(const VerifyOptions& opt, VerifyStats& stats) {
             return false;
         }
 
-        struct stat rawStat;
-        fstat(rawFd, &rawStat);
-        uint64_t rawSize = static_cast<uint64_t>(rawStat.st_size);
-        void* rawMap = mmap(nullptr, rawSize, PROT_READ, MAP_PRIVATE | MAP_POPULATE, rawFd, 0);
-        if (rawMap == MAP_FAILED) {
-            std::cerr << "Error: mmap raw file failed" << std::endl;
-            close(rawFd);
-            close(erwt3dFd);
-            return false;
-        }
-        madvise(rawMap, rawSize, MADV_SEQUENTIAL);
-        const float* rawFloats = static_cast<const float*>(rawMap);
-
-        uint64_t totalElems = opt.nx * opt.ny * opt.nz;
         for (auto& s : samples) {
-            s.rawVal = rawFloats[s.linIdx];
+            if (pread(rawFd, &s.rawVal, sizeof(s.rawVal),
+                      static_cast<off_t>(s.linIdx * sizeof(float))) != sizeof(s.rawVal)) {
+                std::cerr << "Error: failed to read raw sample " << s.linIdx << std::endl;
+                close(rawFd);
+                close(erwt3dFd);
+                return false;
+            }
         }
 
-        munmap(rawMap, rawSize);
         close(rawFd);
 
         std::sort(samples.begin(), samples.end(),
@@ -243,7 +232,11 @@ bool compareRawVsErwt3d(const VerifyOptions& opt, VerifyStats& stats) {
                         return false;
                     }
                 } else {
-                    uint64_t sbOff = hdr.data_offset + sbIdx * superBytes;
+                    uint64_t sx = sbIdx % erwt3d::getSuperGridX(hdr);
+                    uint64_t rem = sbIdx / erwt3d::getSuperGridX(hdr);
+                    uint64_t sy = rem % erwt3d::getSuperGridY(hdr);
+                    uint64_t sz = rem / erwt3d::getSuperGridY(hdr);
+                    uint64_t sbOff = erwt3d::superblockFileOffset(hdr, sz, sy, sx);
                     if (pread(erwt3dFd, sbBuf.data(), superBytes, sbOff) != static_cast<ssize_t>(superBytes)) {
                         std::cerr << "Error: failed to read superblock " << sbIdx << std::endl;
                         close(erwt3dFd);

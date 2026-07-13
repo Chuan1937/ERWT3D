@@ -79,10 +79,11 @@ SBTaskPlan buildSBPlanZ(const ERWT3DHeader& hdr, uint64_t z) {
     for (uint64_t syi = 0; syi < sgY; ++syi) {
         for (uint64_t sxi = 0; sxi < sgX; ++sxi) {
             uint64_t sbIdx = (superZ * sgY + syi) * sgX + sxi;
-            uint64_t off = hdr.data_offset + sbIdx * sbBV;
+            uint64_t off = superblockFileOffset(hdr, superZ, syi, sxi);
 
             SBTask task;
             task.file_offset = off;
+            task.sb_index = sbIdx;
             task.first_leaf = static_cast<uint32_t>(plan.leaf_ops.size());
 
             uint32_t lcnt = 0;
@@ -137,10 +138,11 @@ SBTaskPlan buildSBPlanY(const ERWT3DHeader& hdr, uint64_t y) {
     for (uint64_t szi = 0; szi < sgZ; ++szi) {
         for (uint64_t sxi = 0; sxi < sgX; ++sxi) {
             uint64_t sbIdx = (szi * sgY + superY) * sgX + sxi;
-            uint64_t off = hdr.data_offset + sbIdx * sbBV;
+            uint64_t off = superblockFileOffset(hdr, szi, superY, sxi);
 
             SBTask task;
             task.file_offset = off;
+            task.sb_index = sbIdx;
             task.first_leaf = static_cast<uint32_t>(plan.leaf_ops.size());
 
             uint32_t lcnt = 0;
@@ -195,10 +197,11 @@ SBTaskPlan buildSBPlanX(const ERWT3DHeader& hdr, uint64_t x) {
     for (uint64_t szi = 0; szi < sgZ; ++szi) {
         for (uint64_t syi = 0; syi < sgY; ++syi) {
             uint64_t sbIdx = (szi * sgY + syi) * sgX + superX;
-            uint64_t off = hdr.data_offset + sbIdx * sbBV;
+            uint64_t off = superblockFileOffset(hdr, szi, syi, superX);
 
             SBTask task;
             task.file_offset = off;
+            task.sb_index = sbIdx;
             task.first_leaf = static_cast<uint32_t>(plan.leaf_ops.size());
 
             uint32_t lcnt = 0;
@@ -306,6 +309,7 @@ void sortTasksByFileOffset(SBTaskPlan& plan) {
         const auto& old = plan.tasks[order[i]];
         SBTask nt;
         nt.file_offset = old.file_offset;
+        nt.sb_index = old.sb_index;
         nt.first_leaf = static_cast<uint32_t>(newOps.size());
         nt.leaf_count = old.leaf_count;
         newOps.insert(newOps.end(),

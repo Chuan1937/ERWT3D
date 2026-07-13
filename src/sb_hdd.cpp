@@ -436,7 +436,7 @@ SBBatchPlan buildSBBatchPlan(const std::vector<const SBTaskPlan*>& plans) {
     for (uint32_t pid = 0; pid < plans.size(); ++pid) {
         bp.total_sb_touched += plans[pid]->tasks.size();
         for (const auto& t : plans[pid]->tasks)
-            bp.batch_tasks.push_back({t.file_offset, t.first_leaf, t.leaf_count, pid, plans[pid]});
+            bp.batch_tasks.push_back({t.file_offset, t.first_leaf, t.leaf_count, t.sb_index, pid, plans[pid]});
     }
     std::sort(bp.batch_tasks.begin(), bp.batch_tasks.end(),
         [](const SBBatchTask& a, const SBBatchTask& b) { return a.file_offset < b.file_offset; });
@@ -496,7 +496,7 @@ bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr
                         return false;
                     for (size_t j = 0; j < ttc; ++j) {
                         const auto& bt = batch.batch_tasks[ti + j];
-                        SBTask t{bt.file_offset, bt.first_leaf, bt.leaf_count};
+                        SBTask t{bt.file_offset, bt.first_leaf, bt.leaf_count, bt.sb_index};
                         unpackLeaves(hdr, *bt.plan, t, buf.data() + j * sbBV, outputs[bt.output_id]);
                     }
                     ti += ttc; rem -= chunk;
@@ -506,7 +506,7 @@ bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr
                 for (size_t j = 0; j < win.task_count; ++j) {
                     const auto& bt = batch.batch_tasks[win.first_task + j];
                     uint64_t toff = bt.file_offset - win.file_offset;
-                    SBTask t{bt.file_offset, bt.first_leaf, bt.leaf_count};
+                    SBTask t{bt.file_offset, bt.first_leaf, bt.leaf_count, bt.sb_index};
                     unpackLeaves(hdr, *bt.plan, t, buf.data() + toff, outputs[bt.output_id]);
                 }
             }

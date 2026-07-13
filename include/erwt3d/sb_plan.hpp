@@ -26,6 +26,7 @@ struct SBTask {
     uint64_t file_offset;
     uint32_t first_leaf;
     uint32_t leaf_count;
+    uint64_t sb_index = 0;
 };
 
 #pragma pack(push, 4)

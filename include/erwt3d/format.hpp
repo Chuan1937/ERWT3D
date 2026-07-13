@@ -17,6 +17,12 @@ constexpr uint64_t FLAG_HAS_Z_PANELS = 1ULL << 2;
 constexpr uint64_t FLAG_HAS_X_PLANES = 1ULL << 3;
 constexpr uint64_t FLAG_COMPRESSED  = 1ULL << 4;
 constexpr uint64_t FLAG_HAS_XP_SIDECAR = 1ULL << 5;
+constexpr uint64_t FLAG_PHYSICAL_ORDER_YZX = 1ULL << 6;
+
+enum class PhysicalOrder : uint8_t {
+    V05_YZX,
+    ZYX,
+};
 
 // Default block sizes
 constexpr uint32_t DEFAULT_SUPER_X = 64;
@@ -149,6 +155,30 @@ inline uint64_t panelBytesPerSuperblock(const ERWT3DHeader& h, uint32_t stride) 
 
 // Compression support
 inline bool isCompressed(const ERWT3DHeader& h) { return (h.flags & FLAG_COMPRESSED) != 0; }
+inline PhysicalOrder getPhysicalOrder(const ERWT3DHeader& h) {
+    return (h.flags & FLAG_PHYSICAL_ORDER_YZX) ? PhysicalOrder::V05_YZX : PhysicalOrder::ZYX;
+}
+inline uint64_t superblockId(const ERWT3DHeader& h, uint64_t sz, uint64_t sy, uint64_t sx,
+                             PhysicalOrder order = PhysicalOrder::ZYX) {
+    const uint64_t sgX = getSuperGridX(h);
+    const uint64_t sgY = getSuperGridY(h);
+    const uint64_t sgZ = getSuperGridZ(h);
+    if (order == PhysicalOrder::V05_YZX)
+        return (sy * sgZ + sz) * sgX + sx;
+    return (sz * sgY + sy) * sgX + sx;
+}
+inline uint64_t superblockFileOffset(const ERWT3DHeader& h, uint64_t sz, uint64_t sy, uint64_t sx) {
+    return h.data_offset + superblockId(h, sz, sy, sx, getPhysicalOrder(h)) * getSuperblockBytes(h);
+}
+inline uint64_t superblockFileOffsetFromLogical(const ERWT3DHeader& h, uint64_t logicalId) {
+    const uint64_t sgX = getSuperGridX(h);
+    const uint64_t sgY = getSuperGridY(h);
+    const uint64_t sx = logicalId % sgX;
+    const uint64_t rem = logicalId / sgX;
+    const uint64_t sy = rem % sgY;
+    const uint64_t sz = rem / sgY;
+    return superblockFileOffset(h, sz, sy, sx);
+}
 inline uint64_t getCompressionIndexOffset(const ERWT3DHeader& h) { return h.reserved[19]; }
 inline uint64_t getCompressedBlockCount(const ERWT3DHeader& h) { return h.reserved[20]; }
 
