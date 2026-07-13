@@ -214,7 +214,7 @@ int main(int argc, char* argv[]) {
     bool useBatch = true;
     bool useMmap = false;
     bool hddMode = false;
-    std::string compressedReadModeStr = "v051";
+    std::string compressedReadModeStr = "windowed";
     double baselineMsOverride = 0;
     int repeats = 1;
 
