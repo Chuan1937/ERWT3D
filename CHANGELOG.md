@@ -2,6 +2,56 @@
 
 本文件记录 ERWT3D 的重要变更。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.6.0] - 2026-07-13
+
+### Added
+
+- **流式 Z-slab 转换**（`tools/erwt3d_convert.cpp`）：
+  - 新转换引擎：按 Z 方向 slab（`slab_z=64` 层）分批读取 raw 文件，在内存中完成 Morton 重排和组装，每 slab 转换完即写出 superblock
+  - 输入 `raw_read_calls` 精确等于 `ceil(nz / slab_z)`，每 slab 一次大块顺序读，最大化 HDD 顺序带宽
+  - 20GB 数据集 `input_reads=40`（=ceil(2501/64)），50GB 数据集 `input_reads=47`（=ceil(3000/64)）
+  - 内存占用由 slab 大小决定，20GB 数据集 slab=470MB，50GB 数据集 slab=1075MB，均在管控范围内
+
+- **per-block lz4 压缩决策**：
+  - 每个 superblock 独立尝试 lz4 压缩，压缩后体积更小则存压缩数据，否则保留原始数据
+  - 20GB 数据集压缩率 0.443x（从 19.3GB → 8.0GB），50GB 数据集接近无压缩 0.996x
+  - 压缩索引存于文件末尾，reader 自动适配压缩/非压缩混合布局
+
+### Changed
+
+- **修复 verify 工具**（`tools/erwt3d_verify.cpp`）：
+  - 采样模式下 raw 文件读取从逐点 `pread`（1M 样本 = 1M 次随机 HDD seek，~数小时）改为 mmap 零拷贝访问
+  - 按 linIdx 排序后顺序访问 mmap 区域，消除 HDD 随机寻道瓶颈
+  - 添加进度输出，显示 verify 进度百分比
+
+- `erwt3d_convert` 新增 `--compress` 选项启用 lz4 压缩
+
+### Performance
+
+D 盘 HDD，`--hdd` 模式，4GB 内存限制，best run（热缓存）：
+
+| 数据集 | 配置 | T_composite | 存储比 | 备注 |
+|--------|------|-------------|--------|------|
+| 20GB | 无压缩 | 45.65s | 1.075x | 新 Z-slab 路径 |
+| 20GB | lz4 压缩 | **30.40s** | 0.443x | 最佳 20GB 结果 |
+| 50GB | 无压缩 | 118.38s | 1.044x | 新 Z-slab 路径 |
+| 50GB | lz4 压缩 | **115.69s** | 0.996x | 最佳 50GB 结果 |
+
+### Conversion stats
+
+| 数据集 | 配置 | slab_z | input_reads | raw_read_bytes | 转换时间 | 峰值内存 |
+|--------|------|--------|-------------|---------------|----------|----------|
+| 20GB | 无压缩 | 64 | 40 | 19,271,755,620 | 381s | ~1097 MB |
+| 20GB | lz4 | 64 | 40 | 19,271,755,620 | 161s | ~1097 MB |
+| 50GB | 无压缩 | 64 | 47 | 52,850,412,000 | 962s | ~1097 MB |
+| 50GB | lz4 | 64 | 47 | 52,850,412,000 | 950s | ~1099 MB |
+
+### Notes
+
+- 新 Z-slab 路径仅用于无 panel 转换；panel 模式自动回退到旧的兼容路径
+- 验证工具 cold cache 下需完整顺序扫描 raw 文件（20GB ~360s + ERWT3D ~200s），热 cache 可加速
+- 20GB 数据集 YZ 平面空间相关性好（lz4 压缩率 0.443x），50GB 数据集几乎不可压缩
+
 ## [0.5.1] - 2026-07-07
 
 ### Changed

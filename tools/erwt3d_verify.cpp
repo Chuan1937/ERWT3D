@@ -6,10 +6,12 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
-#include <map>
 #include <random>
 #include <vector>
 #include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <thread>
 #include <unistd.h>
 
 #ifdef ERWT3D_HAVE_LZ4
@@ -95,12 +97,6 @@ bool compareRawVsErwt3d(const VerifyOptions& opt, VerifyStats& stats) {
         std::cout << "Comparing raw file with ERWT3D..." << std::endl;
         std::cout << "Using streaming sampling mode (" << opt.numSamples << " samples)" << std::endl;
 
-        int rawFd = open(opt.rawPath.c_str(), O_RDONLY);
-        if (rawFd < 0) {
-            std::cerr << "Error: Cannot open raw file" << std::endl;
-            return false;
-        }
-
         erwt3d::ERWT3DReader reader(opt.erwt3dPath);
         const auto& hdr = reader.getHeader();
         uint64_t superBytes = erwt3d::getSuperblockBytes(hdr);
@@ -111,14 +107,22 @@ bool compareRawVsErwt3d(const VerifyOptions& opt, VerifyStats& stats) {
         int erwt3dFd = open(opt.erwt3dPath.c_str(), O_RDONLY);
         if (erwt3dFd < 0) {
             std::cerr << "Error: Cannot open ERWT3D file" << std::endl;
-            close(rawFd);
             return false;
         }
 
         std::mt19937_64 rng(opt.seed);
         std::uniform_int_distribution<uint64_t> dist(0, totalElements - 1);
-        std::map<uint64_t, std::vector<std::pair<uint64_t, uint64_t>>> sbGroups;
         uint64_t nxy = static_cast<uint64_t>(opt.nx) * opt.ny;
+
+        struct Sample {
+            uint64_t linIdx;
+            uint64_t sbIdx;
+            uint64_t byteOffSb;
+            float rawVal;
+        };
+        std::vector<Sample> samples;
+        samples.reserve(opt.numSamples);
+
         for (uint64_t s = 0; s < opt.numSamples; ++s) {
             uint64_t idx = dist(rng);
             uint64_t x = idx % opt.nx;
@@ -148,9 +152,45 @@ bool compareRawVsErwt3d(const VerifyOptions& opt, VerifyStats& stats) {
             uint64_t elemOff = (inLeafZ * hdr.leaf_y + inLeafY) * hdr.leaf_x + inLeafX;
             uint64_t byteOffsetInSb = leafMorton * leafBytes + elemOff * sizeof(float);
 
-            sbGroups[sbIdx].push_back({idx, byteOffsetInSb});
+            samples.push_back({idx, sbIdx, byteOffsetInSb, 0.0f});
         }
 
+        std::sort(samples.begin(), samples.end(),
+                  [](const Sample& a, const Sample& b) { return a.linIdx < b.linIdx; });
+
+        std::cout << "Reading raw file (mmap)..." << std::endl;
+        int rawFd = open(opt.rawPath.c_str(), O_RDONLY);
+        if (rawFd < 0) {
+            std::cerr << "Error: Cannot open raw file" << std::endl;
+            close(erwt3dFd);
+            return false;
+        }
+
+        struct stat rawStat;
+        fstat(rawFd, &rawStat);
+        uint64_t rawSize = static_cast<uint64_t>(rawStat.st_size);
+        void* rawMap = mmap(nullptr, rawSize, PROT_READ, MAP_PRIVATE | MAP_POPULATE, rawFd, 0);
+        if (rawMap == MAP_FAILED) {
+            std::cerr << "Error: mmap raw file failed" << std::endl;
+            close(rawFd);
+            close(erwt3dFd);
+            return false;
+        }
+        madvise(rawMap, rawSize, MADV_SEQUENTIAL);
+        const float* rawFloats = static_cast<const float*>(rawMap);
+
+        uint64_t totalElems = opt.nx * opt.ny * opt.nz;
+        for (auto& s : samples) {
+            s.rawVal = rawFloats[s.linIdx];
+        }
+
+        munmap(rawMap, rawSize);
+        close(rawFd);
+
+        std::sort(samples.begin(), samples.end(),
+                  [](const Sample& a, const Sample& b) { return a.sbIdx < b.sbIdx; });
+
+        std::cout << "Reading ERWT3D superblocks..." << std::endl;
         std::vector<uint8_t> sbBuf(superBytes);
         bool compressed = erwt3d::isCompressed(hdr);
         std::vector<erwt3d::CompressedBlockIndex> compIdx;
@@ -162,69 +202,69 @@ bool compareRawVsErwt3d(const VerifyOptions& opt, VerifyStats& stats) {
         }
         std::vector<uint8_t> compBuf(compressed ? superBytes : 0);
 
-        for (const auto& [sbIdx, samples] : sbGroups) {
-            if (compressed && sbIdx < compIdx.size()) {
-                const auto& entry = compIdx[sbIdx];
-                if (entry.is_compressed) {
+        uint64_t totalSamples = samples.size();
+        uint64_t prevSbIdx = UINT64_MAX;
+        size_t passIdx = 0;
+        while (passIdx < samples.size()) {
+            uint64_t sbIdx = samples[passIdx].sbIdx;
+            bool needReload = (sbIdx != prevSbIdx);
+            if (needReload) {
+                if (compressed && sbIdx < compIdx.size()) {
+                    const auto& entry = compIdx[sbIdx];
+                    if (entry.is_compressed) {
 #ifdef ERWT3D_HAVE_LZ4
-                    if (compBuf.size() < entry.compressed_size) {
-                        compBuf.resize(entry.compressed_size);
-                    }
-                    if (pread(erwt3dFd, compBuf.data(), entry.compressed_size, entry.file_offset) !=
-                        static_cast<ssize_t>(entry.compressed_size)) {
-                        std::cerr << "Error: failed to read compressed block " << sbIdx << std::endl;
-                        close(erwt3dFd);
-                        close(rawFd);
-                        return false;
-                    }
-                    if (LZ4_decompress_safe(
-                            reinterpret_cast<const char*>(compBuf.data()),
-                            reinterpret_cast<char*>(sbBuf.data()),
-                            entry.compressed_size,
-                            superBytes) != static_cast<int>(superBytes)) {
-                        std::cerr << "Error: failed to decompress block " << sbIdx << std::endl;
-                        close(erwt3dFd);
-                        close(rawFd);
-                        return false;
-                    }
+                        if (compBuf.size() < entry.compressed_size) {
+                            compBuf.resize(entry.compressed_size);
+                        }
+                        if (pread(erwt3dFd, compBuf.data(), entry.compressed_size, entry.file_offset) !=
+                            static_cast<ssize_t>(entry.compressed_size)) {
+                            std::cerr << "Error: failed to read compressed block " << sbIdx << std::endl;
+                            close(erwt3dFd);
+                            return false;
+                        }
+                        if (LZ4_decompress_safe(
+                                reinterpret_cast<const char*>(compBuf.data()),
+                                reinterpret_cast<char*>(sbBuf.data()),
+                                entry.compressed_size,
+                                superBytes) != static_cast<int>(superBytes)) {
+                            std::cerr << "Error: failed to decompress block " << sbIdx << std::endl;
+                            close(erwt3dFd);
+                            return false;
+                        }
 #else
-                    std::cerr << "Error: lz4 not available" << std::endl;
-                    close(erwt3dFd);
-                    close(rawFd);
-                    return false;
+                        std::cerr << "Error: lz4 not available" << std::endl;
+                        close(erwt3dFd);
+                        return false;
 #endif
-                } else if (pread(erwt3dFd, sbBuf.data(), superBytes, entry.file_offset) !=
-                           static_cast<ssize_t>(superBytes)) {
-                    std::cerr << "Error: failed to read block " << sbIdx << std::endl;
-                    close(erwt3dFd);
-                    close(rawFd);
-                    return false;
+                    } else if (pread(erwt3dFd, sbBuf.data(), superBytes, entry.file_offset) !=
+                               static_cast<ssize_t>(superBytes)) {
+                        std::cerr << "Error: failed to read block " << sbIdx << std::endl;
+                        close(erwt3dFd);
+                        return false;
+                    }
+                } else {
+                    uint64_t sbOff = hdr.data_offset + sbIdx * superBytes;
+                    if (pread(erwt3dFd, sbBuf.data(), superBytes, sbOff) != static_cast<ssize_t>(superBytes)) {
+                        std::cerr << "Error: failed to read superblock " << sbIdx << std::endl;
+                        close(erwt3dFd);
+                        return false;
+                    }
                 }
-            } else {
-                uint64_t sbOff = hdr.data_offset + sbIdx * superBytes;
-                if (pread(erwt3dFd, sbBuf.data(), superBytes, sbOff) != static_cast<ssize_t>(superBytes)) {
-                    std::cerr << "Error: failed to read superblock " << sbIdx << std::endl;
-                    close(erwt3dFd);
-                    close(rawFd);
-                    return false;
-                }
+                prevSbIdx = sbIdx;
             }
 
-            for (const auto& [linIdx, byteOffSb] : samples) {
-                float rawVal = 0.0f;
-                if (pread(rawFd, &rawVal, sizeof(float), linIdx * sizeof(float)) != sizeof(float)) {
-                    std::cerr << "Error: failed to read raw index " << linIdx << std::endl;
-                    close(erwt3dFd);
-                    close(rawFd);
-                    return false;
-                }
-                float erwt3dVal = *reinterpret_cast<const float*>(sbBuf.data() + byteOffSb);
-                updateStats(stats, rawVal, erwt3dVal, opt);
+            for (; passIdx < samples.size() && samples[passIdx].sbIdx == sbIdx; ++passIdx) {
+                float erwt3dVal = *reinterpret_cast<const float*>(sbBuf.data() + samples[passIdx].byteOffSb);
+                updateStats(stats, samples[passIdx].rawVal, erwt3dVal, opt);
+            }
+
+            if (passIdx % (totalSamples / 40 + 1) < 64) {
+                std::cerr << "\rVerify progress: " << (passIdx * 100 / totalSamples) << "%" << std::flush;
             }
         }
+        std::cerr << "\rVerify progress: 100%" << std::endl;
 
         close(erwt3dFd);
-        close(rawFd);
         return true;
     }
 
