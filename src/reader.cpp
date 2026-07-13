@@ -8,6 +8,7 @@
 #include <cstring>
 #include <chrono>
 #include <iostream>
+#include <limits>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -153,11 +154,13 @@ bool ERWT3DReader::readSuperblock(uint64_t sbIdx, void* buffer) {
         const auto& entry = compIndex_[sbIdx];
         if (entry.is_compressed) {
 #ifdef ERWT3D_HAVE_LZ4
-            std::vector<uint8_t> compBuf(entry.compressed_size);
-            ssize_t n = pread(fd_, compBuf.data(), entry.compressed_size, entry.file_offset);
+            if (compressedBuffer_.size() < entry.compressed_size)
+                compressedBuffer_.resize(entry.compressed_size);
+            ssize_t n = pread(fd_, compressedBuffer_.data(),
+                              entry.compressed_size, entry.file_offset);
             if (n != static_cast<ssize_t>(entry.compressed_size)) return false;
             int decSize = LZ4_decompress_safe(
-                reinterpret_cast<const char*>(compBuf.data()),
+                reinterpret_cast<const char*>(compressedBuffer_.data()),
                 reinterpret_cast<char*>(buffer),
                 static_cast<int>(entry.compressed_size),
                 static_cast<int>(sbBytes));
@@ -1037,35 +1040,93 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
     for (auto& p : plans) pp.push_back(&p);
 
     if (compressed_) {
-        // Compressed path: read each superblock individually via readSuperblock
+        // Compressed path: merge physically adjacent blocks into HDD read windows.
+        // Sorting alone is not enough because readSuperblock() would still issue
+        // one pread and one temporary allocation per superblock.
         auto batch = buildSBBatchPlan(pp);
         const uint64_t sbBV = getSuperblockBytes(header_);
-        std::vector<uint8_t> sbBuf(sbBV);
+        const uint64_t readWindowBytes = wcfg.read_window_bytes > 0
+            ? wcfg.read_window_bytes : 128ULL * 1024ULL * 1024ULL;
+        const uint64_t maxGapBytes = wcfg.max_gap_bytes > 0
+            ? wcfg.max_gap_bytes : 1024ULL * 1024ULL;
 
-        // Sort tasks by compressed file offset for sequential access
         std::vector<size_t> taskOrder(batch.batch_tasks.size());
         for (size_t i = 0; i < taskOrder.size(); ++i) taskOrder[i] = i;
         std::sort(taskOrder.begin(), taskOrder.end(), [&](size_t a, size_t b) {
-            uint64_t sbIdxA = batch.batch_tasks[a].sb_index;
-            uint64_t sbIdxB = batch.batch_tasks[b].sb_index;
-            if (compressed_ && sbIdxA < compIndex_.size() && sbIdxB < compIndex_.size())
-                return compIndex_[sbIdxA].file_offset < compIndex_[sbIdxB].file_offset;
-            return batch.batch_tasks[a].file_offset < batch.batch_tasks[b].file_offset;
+            const uint64_t sbIdxA = batch.batch_tasks[a].sb_index;
+            const uint64_t sbIdxB = batch.batch_tasks[b].sb_index;
+            const uint64_t offA = sbIdxA < compIndex_.size()
+                ? compIndex_[sbIdxA].file_offset : batch.batch_tasks[a].file_offset;
+            const uint64_t offB = sbIdxB < compIndex_.size()
+                ? compIndex_[sbIdxB].file_offset : batch.batch_tasks[b].file_offset;
+            return offA < offB;
         });
 
         adviseSequential(fd_);
 
-        uint64_t lastSbIdx = UINT64_MAX;
-        for (size_t ti = 0; ti < taskOrder.size(); ++ti) {
-            const auto& bt = batch.batch_tasks[taskOrder[ti]];
-            uint64_t sbIdx = bt.sb_index;
+        std::vector<uint8_t> readBuf;
+        std::vector<uint8_t> sbBuf(sbBV);
+        size_t firstTask = 0;
+        while (firstTask < taskOrder.size()) {
+            const auto& first = batch.batch_tasks[taskOrder[firstTask]];
+            if (first.sb_index >= compIndex_.size()) return false;
+            uint64_t windowOffset = compIndex_[first.sb_index].file_offset;
+            uint64_t windowEnd = windowOffset + compIndex_[first.sb_index].compressed_size;
+            size_t endTask = firstTask + 1;
 
-            if (sbIdx != lastSbIdx) {
-                if (!readSuperblock(sbIdx, sbBuf.data())) return false;
-                lastSbIdx = sbIdx;
+            while (endTask < taskOrder.size()) {
+                const auto& next = batch.batch_tasks[taskOrder[endTask]];
+                if (next.sb_index >= compIndex_.size()) return false;
+                const auto& entry = compIndex_[next.sb_index];
+                const uint64_t nextEnd = entry.file_offset + entry.compressed_size;
+                if (entry.file_offset > windowEnd + maxGapBytes ||
+                    nextEnd - windowOffset > readWindowBytes) {
+                    break;
+                }
+                windowEnd = std::max(windowEnd, nextEnd);
+                ++endTask;
             }
-            SBTask t{bt.file_offset, bt.first_leaf, bt.leaf_count, bt.sb_index};
-            unpackLeaves(header_, *bt.plan, t, sbBuf.data(), outputs[bt.output_id]);
+
+            const uint64_t windowBytes = windowEnd - windowOffset;
+            if (windowBytes > static_cast<uint64_t>(std::numeric_limits<ssize_t>::max())) return false;
+            if (readBuf.size() < windowBytes) readBuf.resize(static_cast<size_t>(windowBytes));
+            if (pread(fd_, readBuf.data(), static_cast<size_t>(windowBytes),
+                      static_cast<off_t>(windowOffset)) != static_cast<ssize_t>(windowBytes)) {
+                return false;
+            }
+
+            size_t task = firstTask;
+            while (task < endTask) {
+                const auto& bt = batch.batch_tasks[taskOrder[task]];
+                const auto& entry = compIndex_[bt.sb_index];
+                const uint8_t* encoded = readBuf.data() + (entry.file_offset - windowOffset);
+                if (entry.is_compressed) {
+#ifdef ERWT3D_HAVE_LZ4
+                    const int decoded = LZ4_decompress_safe(
+                        reinterpret_cast<const char*>(encoded),
+                        reinterpret_cast<char*>(sbBuf.data()),
+                        static_cast<int>(entry.compressed_size),
+                        static_cast<int>(sbBV));
+                    if (decoded != static_cast<int>(sbBV)) return false;
+#else
+                    return false;
+#endif
+                } else {
+                    std::memcpy(sbBuf.data(), encoded, static_cast<size_t>(sbBV));
+                }
+
+                const uint64_t sbIndex = bt.sb_index;
+                do {
+                    const auto& same = batch.batch_tasks[taskOrder[task]];
+                    if (same.sb_index != sbIndex) break;
+                    SBTask unpackTask{same.file_offset, same.first_leaf,
+                                      same.leaf_count, same.sb_index};
+                    unpackLeaves(header_, *same.plan, unpackTask,
+                                 sbBuf.data(), outputs[same.output_id]);
+                    ++task;
+                } while (task < endTask);
+            }
+            firstTask = endTask;
         }
         return true;
     }

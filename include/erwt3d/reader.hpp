@@ -103,6 +103,7 @@ private:
     IOProfile lastProfile_;
     bool compressed_ = false;
     std::vector<CompressedBlockIndex> compIndex_;
+    std::vector<uint8_t> compressedBuffer_;
     
     int xpFd_ = -1;
     XPSidecarHeader xpHeader_{};

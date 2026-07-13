@@ -37,6 +37,9 @@ bool writeERWT3DFromFile(const std::string& outputPath,
                          uint32_t panelStride = 0,
                          bool compress = false,
                          PhysicalOrder physicalOrder = PhysicalOrder::V05_YZX,
-                         const std::string& scratchDir = {});
+                         const std::string& scratchDir = {},
+                         bool xSidecar = false,
+                         uint32_t xSidecarStride = 1,
+                         double xSidecarStorageBudget = 1.45);
 
 } // namespace erwt3d

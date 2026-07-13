@@ -152,7 +152,9 @@ stride=4: 增加 16 × 16KB = 256KB/superblock → 存储增加 ~27%
 
 ## 可选扩展：X-Plane
 
-使用 `erwt3d_precompute_x` 工具，在文件末尾追加连续 X 切片平面数据：
+推荐在 raw → ERWT3D 的 Z-slab 转换中使用 `--x-sidecar` 同步生成；它会复用同一遍 raw 读取。独立的 `erwt3d_precompute_x` 仍用于已有 ERWT3D 文件或兼容旧流程。
+
+sidecar 文件在文件名后追加 `.xp`，每个 X 平面按 Z 分块压缩：
 
 ```
 每个 X 平面: ny × nz × 4B（20GB 数据集约 23MB/平面）

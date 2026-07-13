@@ -8,6 +8,7 @@
 #include <chrono>
 #include <iomanip>
 #include <cerrno>
+#include <limits>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -138,7 +139,10 @@ static bool writeERWT3DFromFileZSlab(const std::string& outputPath,
                                      uint32_t leafX, uint32_t leafY, uint32_t leafZ,
                                      size_t memoryLimitMB, bool compress,
                                      PhysicalOrder physicalOrder,
-                                     const std::string& scratchDir) {
+                                     const std::string& scratchDir,
+                                     bool xSidecar,
+                                     uint32_t xSidecarStride,
+                                     double xSidecarStorageBudget) {
     ERWT3DHeader header;
     initHeader(header);
     header.nx = nx; header.ny = ny; header.nz = nz;
@@ -194,6 +198,21 @@ static bool writeERWT3DFromFileZSlab(const std::string& outputPath,
     }
 #endif
 
+#ifdef ERWT3D_HAVE_LZ4
+    if (xSidecar) {
+        if (xSidecarStride == 0 || xSidecarStride > nx || xSidecarStorageBudget <= 0.0) {
+            std::cerr << "Error: invalid integrated X-sidecar options" << std::endl;
+            close(rawFd); close(outFd);
+            return false;
+        }
+    }
+#else
+    if (xSidecar) {
+        std::cerr << "Warning: lz4 not available, disabling integrated X-sidecar" << std::endl;
+        xSidecar = false;
+    }
+#endif
+
     std::cout << "Z-slab conversion: slab_z=" << slabZ
               << ", slab_bytes=" << slabBytes / (1024 * 1024) << " MiB"
               << ", input_reads=" << ((nz + slabZ - 1) / slabZ)
@@ -229,6 +248,63 @@ static bool writeERWT3DFromFileZSlab(const std::string& outputPath,
         }
     }
 
+    int xpFd = -1;
+    std::string xpPath;
+    XPSidecarHeader xpHeader{};
+    std::vector<XPChunkIndex> xpIndex;
+    std::vector<float> xpPlaneChunk;
+    std::vector<uint8_t> xpCompBuffer;
+    uint64_t xpDataBytes = 0;
+    uint64_t xpIndexOffset = 0;
+    uint32_t xpPlaneCount = 0;
+    uint32_t xpChunksPerPlane = 0;
+    uint64_t xpChunkRawBytes = 0;
+    uint64_t xpPlanesDone = 0;
+    bool xpKept = false;
+
+#ifdef ERWT3D_HAVE_LZ4
+    if (xSidecar) {
+        xpPath = outputPath + ".xp";
+        xpPlaneCount = static_cast<uint32_t>((nx + xSidecarStride - 1) / xSidecarStride);
+        xpChunksPerPlane = static_cast<uint32_t>((nz + slabZ - 1) / slabZ);
+        xpChunkRawBytes = ny * slabZ * sizeof(float);
+        if (xpChunkRawBytes > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
+            std::cerr << "Error: integrated X-sidecar chunk is too large for LZ4" << std::endl;
+            close(rawFd); close(outFd);
+            return false;
+        }
+
+        const uint64_t totalXpChunks = static_cast<uint64_t>(xpPlaneCount) * xpChunksPerPlane;
+        xpIndex.resize(static_cast<size_t>(totalXpChunks));
+        xpPlaneChunk.resize(static_cast<size_t>(ny * slabZ));
+        xpCompBuffer.resize(static_cast<size_t>(LZ4_compressBound(static_cast<int>(xpChunkRawBytes))));
+
+        std::memcpy(xpHeader.magic, XPSIDECAR_MAGIC, sizeof(xpHeader.magic));
+        xpHeader.version = XPSIDECAR_VERSION;
+        xpHeader.nx = nx; xpHeader.ny = ny; xpHeader.nz = nz;
+        xpHeader.stride = xSidecarStride;
+        xpHeader.chunk_z_rows = static_cast<uint32_t>(slabZ);
+        xpHeader.chunks_per_plane = xpChunksPerPlane;
+        xpHeader.plane_count = xpPlaneCount;
+        xpHeader.plane_floats = ny * nz;
+        xpHeader.chunk_raw_bytes = xpChunkRawBytes;
+        xpHeader.total_chunks = totalXpChunks;
+        xpHeader.compression = 1;
+
+        xpFd = open(xpPath.c_str(), O_CREAT | O_TRUNC | O_RDWR, 0644);
+        if (xpFd < 0 || !writeFullyAt(xpFd, &xpHeader, sizeof(xpHeader), 0)) {
+            std::cerr << "Error: cannot create integrated X-sidecar: " << xpPath << std::endl;
+            if (xpFd >= 0) close(xpFd);
+            unlink(xpPath.c_str());
+            close(rawFd); close(outFd);
+            return false;
+        }
+        std::cout << "Integrated X-sidecar: chunk_z_rows=" << slabZ
+                  << ", planes=" << xpPlaneCount
+                  << ", chunks=" << totalXpChunks << std::endl;
+    }
+#endif
+
     using Clock = std::chrono::steady_clock;
     const auto totalStart = Clock::now();
     double readMs = 0.0, transformMs = 0.0, writeMs = 0.0;
@@ -249,6 +325,48 @@ static bool writeERWT3DFromFileZSlab(const std::string& outputPath,
         readMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
         ++readCalls;
         rawBytesRead += currentBytes;
+
+#ifdef ERWT3D_HAVE_LZ4
+        if (xSidecar) {
+            const uint64_t chunkIndex = zStart / slabZ;
+            const uint64_t rawChunkBytes = currentZ * ny * sizeof(float);
+            for (uint32_t plane = 0, x = 0; x < nx; x += xSidecarStride, ++plane) {
+                for (uint64_t z = 0; z < currentZ; ++z) {
+                    for (uint64_t y = 0; y < ny; ++y) {
+                        xpPlaneChunk[z * ny + y] = slab[(z * ny + y) * nx + x];
+                    }
+                }
+                const int compSize = LZ4_compress_default(
+                    reinterpret_cast<const char*>(xpPlaneChunk.data()),
+                    reinterpret_cast<char*>(xpCompBuffer.data()),
+                    static_cast<int>(rawChunkBytes),
+                    static_cast<int>(xpCompBuffer.size()));
+                if (compSize <= 0 || !writeFullyAt(xpFd, xpCompBuffer.data(),
+                                                   static_cast<size_t>(compSize),
+                                                   sizeof(XPSidecarHeader) + xpDataBytes)) {
+                    std::cerr << "Error writing integrated X-sidecar chunk" << std::endl;
+                    close(xpFd); unlink(xpPath.c_str());
+                    close(rawFd); close(outFd);
+                    return false;
+                }
+                const uint64_t logicalChunk = static_cast<uint64_t>(plane) * xpChunksPerPlane + chunkIndex;
+                xpIndex[logicalChunk] = {
+                    sizeof(XPSidecarHeader) + xpDataBytes,
+                    static_cast<uint32_t>(compSize),
+                    static_cast<uint32_t>(rawChunkBytes)
+                };
+                xpDataBytes += static_cast<uint64_t>(compSize);
+                ++xpPlanesDone;
+                if ((plane % 16) == 15 || plane + 1 == xpPlaneCount) {
+                    std::cout << "\rConversion progress: Z "
+                              << (100.0 * std::min<uint64_t>(zStart + currentZ, nz) / nz)
+                              << "% | X-sidecar chunk " << xpPlanesDone << "/"
+                              << static_cast<uint64_t>(xpPlaneCount) * xpChunksPerPlane
+                              << std::flush;
+                }
+            }
+        }
+#endif
 
         const uint64_t sz = zStart / superZ;
         for (uint64_t sy = 0; sy < sgY; ++sy) {
@@ -317,7 +435,7 @@ static bool writeERWT3DFromFileZSlab(const std::string& outputPath,
                 outputBytesWritten += writeBatch.size();
             }
         }
-        std::cout << "\rZ-slab progress: " << std::fixed << std::setprecision(1)
+        std::cout << "\rConversion progress: " << std::fixed << std::setprecision(1)
                   << (100.0 * std::min<uint64_t>(zStart + currentZ, nz) / nz)
                   << "%" << std::flush;
     }
@@ -350,19 +468,67 @@ static bool writeERWT3DFromFileZSlab(const std::string& outputPath,
         for (const auto& path : bucketPaths) unlink(path.c_str());
     }
 
+    uint64_t mainFileBytes = header.data_offset + totalSB * sbBytes;
     if (compress) {
-        const uint64_t indexOffset = (physicalOrder == PhysicalOrder::V05_YZX ? header.data_offset : 0) + outputBytesWritten;
+        const uint64_t dataBytes = physicalOrder == PhysicalOrder::V05_YZX
+            ? outputBytesWritten
+            : outputBytesWritten - header.data_offset;
+        const uint64_t indexOffset = header.data_offset + dataBytes;
         const uint64_t indexBytes = compIndex.size() * sizeof(CompressedBlockIndex);
         if (!writeFullyAt(outFd, compIndex.data(), static_cast<size_t>(indexBytes), indexOffset)) {
             close(outFd); return false;
         }
-        outputBytesWritten += indexBytes;
         header.flags |= FLAG_COMPRESSED;
         header.reserved[19] = indexOffset;
         header.reserved[20] = compIndex.size();
-        if (!writeFullyAt(outFd, &header, sizeof(header), 0)) {
-            close(outFd); return false;
+        mainFileBytes = indexOffset + indexBytes;
+    }
+
+#ifdef ERWT3D_HAVE_LZ4
+    if (xSidecar) {
+        xpIndexOffset = sizeof(XPSidecarHeader) + xpDataBytes;
+        const uint64_t xpIndexBytes = xpIndex.size() * sizeof(XPChunkIndex);
+        xpHeader.index_offset = xpIndexOffset;
+        xpHeader.total_storage_bytes = xpDataBytes;
+        if (!writeFullyAt(xpFd, xpIndex.data(), static_cast<size_t>(xpIndexBytes), xpIndexOffset) ||
+            !writeFullyAt(xpFd, &xpHeader, sizeof(xpHeader), 0)) {
+            std::cerr << "Error finalizing integrated X-sidecar" << std::endl;
+            close(xpFd); unlink(xpPath.c_str());
+            close(outFd);
+            return false;
         }
+
+        const uint64_t xpFileBytes = xpIndexOffset + xpIndexBytes;
+        const uint64_t rawFileBytes = nx * ny * nz * sizeof(float);
+        const double totalRatio = rawFileBytes == 0
+            ? 0.0
+            : static_cast<double>(mainFileBytes + xpFileBytes) / rawFileBytes;
+        if (totalRatio <= xSidecarStorageBudget) {
+            header.flags |= FLAG_HAS_XP_SIDECAR;
+            header.reserved[21] = 1;
+            if (fsync(xpFd) != 0) {
+                std::cerr << "Warning: fsync failed for integrated X-sidecar" << std::endl;
+            }
+            close(xpFd);
+            xpFd = -1;
+            xpKept = true;
+            std::cout << "X-sidecar kept: " << xpFileBytes / (1024 * 1024)
+                      << " MiB, total storage ratio=" << totalRatio << "x" << std::endl;
+        } else {
+            close(xpFd);
+            xpFd = -1;
+            unlink(xpPath.c_str());
+            std::cout << "X-sidecar skipped: total storage ratio=" << totalRatio
+                      << "x exceeds budget=" << xSidecarStorageBudget << "x" << std::endl;
+        }
+    }
+#endif
+
+    outputBytesWritten = mainFileBytes;
+    if (!writeFullyAt(outFd, &header, sizeof(header), 0)) {
+        if (xpFd >= 0) { close(xpFd); unlink(xpPath.c_str()); }
+        if (xpKept) unlink(xpPath.c_str());
+        close(outFd); return false;
     }
     if (fsync(outFd) != 0) {
         std::cerr << "Warning: fsync failed for output" << std::endl;
@@ -375,10 +541,10 @@ static bool writeERWT3DFromFileZSlab(const std::string& outputPath,
               << ", output_write_ms=" << writeMs
               << ", raw_read_calls=" << readCalls
               << ", raw_bytes_read=" << rawBytesRead
-              << ", output_bytes_written=" << (compress ? outputBytesWritten : header.data_offset + totalSB * sbBytes)
+              << ", output_bytes_written=" << outputBytesWritten
               << ", input_MBps=" << (totalMs > 0.0 ? rawBytesRead / (totalMs * 1000.0) : 0.0)
               << ", output_MBps=" << (totalMs > 0.0 ? outputBytesWritten / (totalMs * 1000.0) : 0.0)
-              << ", compression_ratio=" << (rawBytesRead > 0 ? static_cast<double>(compress ? outputBytesWritten : header.data_offset + totalSB * sbBytes) / rawBytesRead : 0.0)
+              << ", compression_ratio=" << (rawBytesRead > 0 ? static_cast<double>(outputBytesWritten) / rawBytesRead : 0.0)
               << ", total_ms=" << totalMs << std::endl;
     return true;
 }
@@ -844,9 +1010,17 @@ bool writeERWT3DFromFile(const std::string& outputPath,
                          int numThreads, size_t memoryLimitMB,
                          uint32_t panelAxis, uint32_t panelStride,
                          bool compress, PhysicalOrder physicalOrder,
-                         const std::string& scratchDir) {
+                         const std::string& scratchDir,
+                         bool xSidecar,
+                         uint32_t xSidecarStride,
+                         double xSidecarStorageBudget) {
     std::cout << "Using sequential read strategy (HDD optimized)" << std::endl;
     if (compress) std::cout << "Compression: enabled (lz4)" << std::endl;
+    if (xSidecar && panelAxis == 0 && panelStride > 0) {
+        std::cerr << "Error: integrated X-sidecar is only supported by the Z-slab path;"
+                  << " remove --panel-stride" << std::endl;
+        return false;
+    }
     if (panelAxis == 0 && panelStride > 0) {
         std::cout << "X-panels requested; using panel-compatible conversion path" << std::endl;
     } else {
@@ -854,7 +1028,8 @@ bool writeERWT3DFromFile(const std::string& outputPath,
                                         nx, ny, nz,
                                         superX, superY, superZ,
                                         leafX, leafY, leafZ,
-                                        memoryLimitMB, compress, physicalOrder, scratchDir);
+                                        memoryLimitMB, compress, physicalOrder, scratchDir,
+                                        xSidecar, xSidecarStride, xSidecarStorageBudget);
     }
     return writeERWT3DFromFileSequential(outputPath, inputPath,
                                           nx, ny, nz,

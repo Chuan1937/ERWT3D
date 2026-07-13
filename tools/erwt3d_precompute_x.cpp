@@ -127,33 +127,55 @@ static double estimateCompressionRatio(int fdRaw, uint64_t nx, uint64_t ny, uint
 
     uint64_t rowFloats = nx * ny;
     std::vector<float> row(rowFloats);
-    std::vector<float> planeChunk(ny * chunkZRows);
+    std::vector<float> planeChunks(static_cast<size_t>(sampleCount) * ny * chunkZRows);
+
+    const uint32_t sampleChunkCount = std::min<uint32_t>(chunksPerPlane, 4);
+    std::vector<uint32_t> sampleChunks;
+    sampleChunks.reserve(sampleChunkCount);
+    for (uint32_t i = 0; i < sampleChunkCount; ++i) {
+        uint32_t c = static_cast<uint32_t>((static_cast<uint64_t>(i) * chunksPerPlane) /
+                                           sampleChunkCount);
+        if (c >= chunksPerPlane) c = chunksPerPlane - 1;
+        sampleChunks.push_back(c);
+    }
 
     uint64_t totalComp = 0, totalRaw = 0;
-    for (uint32_t s = 0; s < sampleCount; ++s) {
-        for (uint32_t c = 0; c < chunksPerPlane; ++c) {
-            uint64_t zStart = static_cast<uint64_t>(c) * chunkZRows;
-            uint64_t zEnd = std::min(zStart + chunkZRows, nz);
-            uint64_t rowsInChunk = zEnd - zStart;
-            uint64_t thisRawBytes = rowsInChunk * ny * sizeof(float);
+    for (uint32_t ci = 0; ci < sampleChunkCount; ++ci) {
+        uint32_t c = sampleChunks[ci];
+        uint64_t zStart = static_cast<uint64_t>(c) * chunkZRows;
+        uint64_t zEnd = std::min(zStart + chunkZRows, nz);
+        uint64_t rowsInChunk = zEnd - zStart;
+        uint64_t thisRawBytes = rowsInChunk * ny * sizeof(float);
 
-            for (uint64_t zi = 0; zi < rowsInChunk; ++zi) {
-                uint64_t z = zStart + zi;
-                uint64_t rowOff = z * rowFloats * sizeof(float);
-                ssize_t rd = pread(fdRaw, row.data(), rowFloats * sizeof(float), rowOff);
-                if (rd != static_cast<ssize_t>(rowFloats * sizeof(float))) return 1.0;
+        for (uint64_t zi = 0; zi < rowsInChunk; ++zi) {
+            uint64_t z = zStart + zi;
+            uint64_t rowOff = z * rowFloats * sizeof(float);
+            ssize_t rd = pread(fdRaw, row.data(), rowFloats * sizeof(float), rowOff);
+            if (rd != static_cast<ssize_t>(rowFloats * sizeof(float))) return 1.0;
+            for (uint32_t s = 0; s < sampleCount; ++s) {
                 uint64_t x = sampleXs[s];
-                float* dst = planeChunk.data() + zi * ny;
+                float* dst = planeChunks.data() +
+                    (static_cast<uint64_t>(s) * chunkZRows + zi) * ny;
                 for (uint64_t y = 0; y < ny; ++y)
                     dst[y] = row[y * nx + x];
             }
+        }
 
+        for (uint32_t s = 0; s < sampleCount; ++s) {
+            const float* planeChunk = planeChunks.data() +
+                static_cast<uint64_t>(s) * ny * chunkZRows;
             int cs = LZ4_compress_default(
-                reinterpret_cast<const char*>(planeChunk.data()), compBuf.data(),
+                reinterpret_cast<const char*>(planeChunk), compBuf.data(),
                 static_cast<int>(thisRawBytes), static_cast<int>(compBuf.size()));
             if (cs > 0) { totalComp += cs; totalRaw += thisRawBytes; }
         }
+
+        uint64_t done = ci + 1;
+        std::cout << "\r  estimate z-chunk " << done << "/" << sampleChunkCount
+                  << " (" << (done * 100 / sampleChunkCount) << "%)"
+                  << std::flush;
     }
+    std::cout << std::endl;
     if (totalRaw == 0) return 1.0;
     return static_cast<double>(totalComp) / static_cast<double>(totalRaw);
 }

@@ -45,7 +45,7 @@ T_composite = (T_x_random + T_y_random + T_z_random + T_x_continuous + T_y_conti
 
 | 二进制 | 用途 |
 |--------|------|
-| `erwt3d_convert` | Raw ↔ ERWT3D 转换 |
+| `erwt3d_convert` | Raw ↔ ERWT3D 转换；raw 转换可用 `--x-sidecar` 同步生成 X-sidecar |
 | `erwt3d_bench_contest` | 赛题2 六组 benchmark |
 | `erwt3d_bench` | 通用 benchmark |
 | `erwt3d_verify` | 正确性验证，默认按相对误差判定 |

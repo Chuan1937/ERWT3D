@@ -207,13 +207,12 @@ v0.3 结果不含文件写出，不可与 v0.4+ 直接对比。
 
 ```bash
 # === 20GB 数据 ===
-# 数据转换（lz4 压缩）
+# 数据转换（lz4 压缩 + 同一遍读取生成 X-sidecar）
 ./build/erwt3d convert input=cup_3d_small.dat output=cup_3d_small_lz4.erwt3d \
-    nx=801 ny=2405 nz=2501 threads=8 memory-limit-mb=4096 compress=true
+    nx=801 ny=2405 nz=2501 threads=8 memory-limit-mb=4096 \
+    compress=true x-sidecar=true x-sidecar-stride=1 x-sidecar-storage-budget=1.45
 
-# 生成 sidecar（stride=1，自动决策存储比）
-./build/erwt3d precompute-x raw=cup_3d_small.dat erwt3d=cup_3d_small_lz4.erwt3d \
-    nx=801 ny=2405 nz=2501 mode=sidecar
+# 转换过程会同时显示 Z-slab 与 X-sidecar chunk 进度；不再需要额外的 Step 3。
 
 # === 50GB 数据 ===
 # 数据转换（lz4 压缩，不生成 sidecar）

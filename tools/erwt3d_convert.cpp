@@ -111,6 +111,9 @@ void printUsage(const char* progName) {
     std::cerr << "  --converter NAME    Conversion engine: zslab (default)" << std::endl;
     std::cerr << "  --physical-order O  Output order: v05-yzx (default) or zyx" << std::endl;
     std::cerr << "  --scratch-dir DIR   Temporary bucket directory for compressed v05-yzx output" << std::endl;
+    std::cerr << "  --x-sidecar         Build compressed X-sidecar during the same raw read pass" << std::endl;
+    std::cerr << "  --x-sidecar-stride N Store every Nth X plane (default: 1)" << std::endl;
+    std::cerr << "  --x-sidecar-storage-budget X  Keep sidecar only if total ratio <= X (default: 1.45)" << std::endl;
     std::cerr << "  --threads N         Number of threads (default: 1)" << std::endl;
     std::cerr << "  --memory-limit-mb N Memory limit in MB (default: 2048)" << std::endl;
     std::cerr << "  --super-size N      Superblock size (default: 64)" << std::endl;
@@ -134,6 +137,9 @@ int main(int argc, char* argv[]) {
     std::string converter = "zslab";
     erwt3d::PhysicalOrder physicalOrder = erwt3d::PhysicalOrder::V05_YZX;
     std::string scratchDir;
+    bool xSidecar = false;
+    uint32_t xSidecarStride = 1;
+    double xSidecarStorageBudget = 1.45;
     
     // Parse arguments
     for (int i = 1; i < argc; ++i) {
@@ -197,6 +203,12 @@ int main(int argc, char* argv[]) {
             }
         } else if (std::strcmp(argv[i], "--scratch-dir") == 0 && i + 1 < argc) {
             scratchDir = argv[++i];
+        } else if (std::strcmp(argv[i], "--x-sidecar") == 0) {
+            xSidecar = true;
+        } else if (std::strcmp(argv[i], "--x-sidecar-stride") == 0 && i + 1 < argc) {
+            xSidecarStride = std::stoul(argv[++i]);
+        } else if (std::strcmp(argv[i], "--x-sidecar-storage-budget") == 0 && i + 1 < argc) {
+            xSidecarStorageBudget = std::stod(argv[++i]);
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             printUsage(argv[0]);
             return 0;
@@ -240,6 +252,19 @@ int main(int argc, char* argv[]) {
         std::cout << "Converting raw to ERWT3D..." << std::endl;
         std::cout << "Dimensions: " << nx << " x " << ny << " x " << nz << std::endl;
 
+        if (xSidecar) {
+            if (xSidecarStride == 0) {
+                std::cerr << "Error: --x-sidecar-stride must be greater than zero" << std::endl;
+                return 1;
+            }
+            if (xSidecarStorageBudget <= 0.0) {
+                std::cerr << "Error: --x-sidecar-storage-budget must be greater than zero" << std::endl;
+                return 1;
+            }
+            std::cout << "X-sidecar: integrated single-pass build, stride=" << xSidecarStride
+                      << ", storage budget=" << xSidecarStorageBudget << "x" << std::endl;
+        }
+
 #ifdef ERWT3D_HAVE_LZ4
         if (compress) {
             std::cout << "Compression ratio estimation disabled; each superblock will choose lz4 or raw storage." << std::endl;
@@ -251,7 +276,8 @@ int main(int argc, char* argv[]) {
                                          leafSize, leafSize, leafSize,
                                          numThreads, memoryLimitMB,
                                          panelAxis, panelStride, compress,
-                                         physicalOrder, scratchDir)) {
+                                         physicalOrder, scratchDir,
+                                         xSidecar, xSidecarStride, xSidecarStorageBudget)) {
             std::cerr << "Error: Failed to convert raw to ERWT3D" << std::endl;
             return 1;
         }
