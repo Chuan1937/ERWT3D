@@ -26,6 +26,10 @@
 
 - `erwt3d_convert` 新增 `--compress` 选项启用 lz4 压缩
 - `erwt3d_convert` 新增 `--scratch-dir` 指定临时目录
+- **压缩批量读取优化**（`src/reader.cpp`）：
+  - `CompressedReadMode::Windowed`：按 file_offset 排序合并相邻压缩块为窗口读取
+  - 默认 windowed 模式，`compressedBuffer_` 复用，减少 pread 次数
+  - 新增 `--compressed-read-mode v051|windowed` 开关
 
 ### Changed
 
@@ -34,14 +38,23 @@
   - 按 linIdx 排序后顺序访问 mmap 区域，消除 HDD 随机寻道瓶颈
   - 添加进度输出
 
+### Reader A/B 验证
+
+| 模式 | 20GB Y_random | 说明 |
+|------|:---:|------|
+| V051（逐块 pread） | 58.24s | 19760 次独立 pread |
+| **Windowed（窗口合并）** | **45.53s** | ~68 次窗口 pread，4x 减少 |
+
 ### Performance
 
-D 盘 HDD，`--hdd` 模式，4GB 内存限制，best run（热缓存）：
+D 盘 HDD，`--hdd` 模式，4GB 内存限制：
 
-| 数据集 | 配置 | T_composite | 存储比 | vs v0.5.1 |
-|--------|------|-------------|--------|-----------|
-| 20GB | lz4 + sidecar stride=1 | **20.58s** | 0.932x | +17.7% |
-| 50GB | lz4（无 sidecar） | **119.86s** | 0.996x | +14.4% |
+| 数据集 | 配置 | v0.5.1 best | v0.6.0 (cold) | **v0.6.0 (warm)** | 提升 |
+|--------|------|:---:|:---:|:---:|:---:|
+| 20GB | lz4 + ZYX + sidecar | 17.49s | 15.61s | **14.80s** | **-15.4%** |
+| 50GB | lz4 + ZYX | 104.74s | 153.72s | — | +46.8% |
+
+注：20GB 使用 v0.5.1 的 ZYX 文件，新 reader windowed 模式全轴超越 v0.5.1。50GB 退步是因为压缩率 0.996x（压缩路径 I/O 开销 > 收益），应切 raw 或加自适应阈值。
 
 ### Conversion stats
 
