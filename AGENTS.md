@@ -85,24 +85,30 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 
 D 盘 HDD，`--hdd` 模式，4GB 内存限制：
 
-| 数据集 | T_composite | 存储比 | 备注 |
-|--------|------------|--------|------|
-| 20GB | 17.49s | 0.932x | S=64, lz4压缩 + sidecar stride=1, best run |
-| 50GB | 104.74s | 0.996x | S=64, lz4压缩, LeafOp紧凑化, best run |
+| 版本 | 数据集 | T_composite | 存储比 | 配置 |
+|------|--------|------------|--------|------|
+| v0.5.1 | 20GB | **17.49s** | 0.932x | lz4 + ZYX + sidecar stride=1 |
+| **v0.6.0** | 20GB | 20.58s | 0.932x | lz4 + v05-yzx + sidecar stride=1 |
+| v0.5.1 | 50GB | **104.74s** | 0.996x | lz4 + ZYX + LeafOp |
+| **v0.6.0** | 50GB | 119.86s | 0.996x | lz4 + v05-yzx |
 
 4GB 是内存拐点，≥4GB 后性能稳定。
 
+### v0.6.0 更新
+
+- **Z-slab 流式转换**：按 Z 方向 64 层为一批，每批一次大块顺序 pread，`raw_read_calls = ceil(nz/64)`
+- **v05-yzx 物理布局**：Y-major 优先，Y 切片跨步从 1120 MB 降至 32 MB（50GB Y_random 253s→93s, -63%）
+- **per-block lz4**：每个 superblock 独立决策压缩，20GB 压缩率 0.443x
+- **转换命令**：新增 `--converter zslab`、`--physical-order v05-yzx`、`--scratch-dir`
+- **Smoke test 方法论**：先跑 10r/3c 筛选，确认优势后才跑完整 100/10
+
 ### 关键发现
 
-- **X-plane sidecar 是 X random 的最大收益点**：stride=1 全覆盖时 X random 从 63s 降到 15s（-76%），因为只需读压缩 chunk（~11MB/plane）而非扫描整个文件
+- **X-plane sidecar 是 X random 的最大收益点**：stride=1 全覆盖时 X random 只需读压缩 chunk（~11MB/plane）而非扫描整个文件
+- **v05-yzx 物理布局优于 ZYX**：Y 切片跨步从 1120 MB 降至 32 MB，50GB smoke test Y_random 253s→93s (-63%)，Z 未退化
 - **sidecar 压缩率取决于 YZ 平面空间相关性**：20GB 数据集 0.489x（可行），50GB 0.979x（sidecar 16GB 导致 page cache 干扰，净效果为负，不应使用）
-- **sidecar 生成需按 raw 的 X-Y-Z row-major 布局正确提取**：固定 x 的 YZ 平面在 raw 中是 strided 的，必须顺序扫描按 z 层读取后抽取 x 列
-- **流式 sidecar writer**：按 z-chunk 分批处理，内存从 18GB 降至 1.9GB（20G stride=1）
-- **sidecar batch reader**：chunk task 全局排序 + 4KB gap 合并，减少 HDD 寻道
-- **LeafOp 紧凑化**（48B→16B/leaf）改善 cache 局部性，50GB T_composite 改善 6%
 - **I/O 带宽仍是根本瓶颈**：磁盘顺序读 ~300 MB/s，非 sidecar 路径的随机访问仍需读取几乎整个文件
-- **压缩效果因数据集而异**：20GB lz4 压缩率 2.26x (0.443x)，50GB 仅 1.004x (0.996x)
-- **参数扫描结论**：chunk_z_rows 64-1024 压缩率差异 <0.2%，256 是合理默认
+- **压缩效果因数据集而异**：20GB lz4 压缩率 0.443x，50GB 仅 0.996x
 - **Page cache 对重复运行有帮助**：第二轮比第一轮快 ~3-5s
 
 ## 常用命令
