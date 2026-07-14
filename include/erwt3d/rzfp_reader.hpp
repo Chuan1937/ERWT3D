@@ -10,6 +10,39 @@
 
 namespace erwt3d {
 
+enum class RzfpReadStrategy {
+    Auto = 0,
+    SelectiveLeaf,
+    WholeSuperblock,
+    FullPayloadScan,
+};
+
+struct RzfpReadProfile {
+    uint64_t unique_superblocks = 0;
+    uint64_t unique_leaves = 0;
+    uint64_t requested_record_bytes = 0;
+    uint64_t actual_read_bytes = 0;
+    uint64_t pread_calls = 0;
+    double plan_time_ms = 0.0;
+    double prefix_time_ms = 0.0;
+    double io_time_ms = 0.0;
+    double decode_time_ms = 0.0;
+    double scatter_time_ms = 0.0;
+
+    double readAmplification() const {
+        return requested_record_bytes > 0
+                   ? static_cast<double>(actual_read_bytes) / static_cast<double>(requested_record_bytes)
+                   : 1.0;
+    }
+};
+
+struct RzfpReaderConfig {
+    HDDReadWindowConfig hdd;
+    RzfpReadStrategy strategy = RzfpReadStrategy::Auto;
+    int decode_threads = 1;
+    RzfpReadProfile* profile = nullptr;
+};
+
 class RzfpReader {
 public:
     explicit RzfpReader(const std::string& path);
@@ -31,6 +64,9 @@ public:
     bool readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
                          int numThreads = 1, size_t memoryLimitMB = 4096,
                          const HDDReadWindowConfig& wcfg = {});
+
+    bool readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
+                         const RzfpReaderConfig& config);
 
 private:
     std::string path_;

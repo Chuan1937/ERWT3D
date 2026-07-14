@@ -96,6 +96,13 @@ public:
         float output[RZFP_LEAF_VALUES]
     );
 
+    bool decodeRecord(
+        RzfpLeafCodec codec,
+        const uint8_t* data,
+        size_t size,
+        float output[RZFP_LEAF_VALUES]
+    );
+
 private:
     struct Impl;
     Impl* impl_;

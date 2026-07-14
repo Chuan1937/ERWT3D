@@ -458,11 +458,20 @@ bool RzfpCodec::decode(
     const RzfpCandidate& encoded,
     float output[64]
 ) {
+    return decodeRecord(encoded.codec, encoded.payload.data(), encoded.payload.size(), output);
+}
+
+bool RzfpCodec::decodeRecord(
+    RzfpLeafCodec codec,
+    const uint8_t* data,
+    size_t size,
+    float output[64]
+) {
 #ifdef ERWT3D_HAVE_RZFP
-    switch (encoded.codec) {
+    switch (codec) {
         case RzfpLeafCodec::RawFloat32: {
-            if (encoded.payload.size() != 256) return false;
-            std::memcpy(output, encoded.payload.data(), 256);
+            if (size != 256) return false;
+            std::memcpy(output, data, 256);
             return true;
         }
         case RzfpLeafCodec::ConstantZero: {
@@ -470,34 +479,34 @@ bool RzfpCodec::decode(
             return true;
         }
         case RzfpLeafCodec::ConstantValue: {
-            if (encoded.payload.size() != sizeof(float)) return false;
+            if (size != sizeof(float)) return false;
             float v = 0.0f;
-            std::memcpy(&v, encoded.payload.data(), sizeof(float));
+            std::memcpy(&v, data, sizeof(float));
             std::fill(output, output + 64, v);
             return true;
         }
         case RzfpLeafCodec::ZfpAccuracy:
         case RzfpLeafCodec::ZfpAccuracyExceptions: {
-            if (encoded.payload.size() < 1) return false;
-            const int8_t min_exp = static_cast<int8_t>(encoded.payload[0]);
+            if (size < 1) return false;
+            const int8_t min_exp = static_cast<int8_t>(data[0]);
 
             uint64_t exception_mask = 0;
             std::vector<float> exception_values;
             size_t zfp_offset = 1;
-            size_t zfp_size = encoded.payload.size() - 1;
-            if (encoded.codec == RzfpLeafCodec::ZfpAccuracyExceptions) {
-                if (encoded.payload.size() < 2) return false;
-                const uint8_t exc_count = encoded.payload[1];
+            size_t zfp_size = size - 1;
+            if (codec == RzfpLeafCodec::ZfpAccuracyExceptions) {
+                if (size < 2) return false;
+                const uint8_t exc_count = data[1];
                 const size_t header_size = 2 + sizeof(uint64_t);
                 const size_t exc_bytes = exc_count * sizeof(float);
-                if (encoded.payload.size() < header_size + exc_bytes) return false;
-                std::memcpy(&exception_mask, encoded.payload.data() + 2, sizeof(uint64_t));
+                if (size < header_size + exc_bytes) return false;
+                std::memcpy(&exception_mask, data + 2, sizeof(uint64_t));
                 zfp_offset = header_size;
-                zfp_size = encoded.payload.size() - header_size - exc_bytes;
+                zfp_size = size - header_size - exc_bytes;
                 exception_values.resize(exc_count);
                 std::memcpy(
                     exception_values.data(),
-                    encoded.payload.data() + zfp_offset + zfp_size,
+                    data + zfp_offset + zfp_size,
                     exc_bytes
                 );
             }
@@ -508,7 +517,7 @@ bool RzfpCodec::decode(
             zfp_stream_set_accuracy(impl_->stream, tolerance);
 
             impl_->ensureBuffer(zfp_size);
-            std::memcpy(impl_->buffer.data(), encoded.payload.data() + zfp_offset, zfp_size);
+            std::memcpy(impl_->buffer.data(), data + zfp_offset, zfp_size);
             impl_->rewind();
 
             if (!zfp_decompress(impl_->stream, impl_->output_field)) {
@@ -520,14 +529,14 @@ bool RzfpCodec::decode(
             return true;
         }
         case RzfpLeafCodec::ZfpPrecision: {
-            if (encoded.payload.size() < 1) return false;
-            const uint8_t precision = encoded.payload[0];
-            const size_t zfp_size = encoded.payload.size() - 1;
+            if (size < 1) return false;
+            const uint8_t precision = data[0];
+            const size_t zfp_size = size - 1;
             if (zfp_size == 0) return false;
 
             zfp_stream_set_precision(impl_->stream, precision);
             impl_->ensureBuffer(zfp_size);
-            std::memcpy(impl_->buffer.data(), encoded.payload.data() + 1, zfp_size);
+            std::memcpy(impl_->buffer.data(), data + 1, zfp_size);
             impl_->rewind();
 
             if (!zfp_decompress(impl_->stream, impl_->output_field)) {
@@ -539,7 +548,9 @@ bool RzfpCodec::decode(
     }
     return false;
 #else
-    (void)encoded;
+    (void)codec;
+    (void)data;
+    (void)size;
     (void)output;
     return false;
 #endif

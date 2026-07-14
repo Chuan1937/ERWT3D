@@ -28,9 +28,7 @@ struct GroupResult {
     double readTimeMs = 0.0;
     double writeTimeMs = 0.0;
     uint64_t outputBytesPerSlice = 0;
-    uint64_t requestedRecordBytes = 0;
-    uint64_t actualReadBytes = 0;
-    uint64_t preadCalls = 0;
+    erwt3d::RzfpReadProfile profile;
 };
 
 static bool runGroup(erwt3d::RzfpReader& reader,
@@ -39,7 +37,7 @@ static bool runGroup(erwt3d::RzfpReader& reader,
                      const std::vector<uint64_t>& indices, const std::string& mode,
                      int numThreads, size_t memoryLimitMB,
                      const std::string& outputDir,
-                     const erwt3d::HDDReadWindowConfig& wcfg,
+                     const erwt3d::RzfpReaderConfig& rzcfg,
                      GroupResult& result) {
     uint64_t sliceSize;
     switch (axis) {
@@ -74,16 +72,25 @@ static bool runGroup(erwt3d::RzfpReader& reader,
     }
 
     // Compute batch size from memory budget
-    size_t totalReadBufMB = std::max<size_t>(1, memoryLimitMB / 2);
-    size_t outputBudgetMB = (memoryLimitMB > totalReadBufMB + 64)
-                                ? memoryLimitMB - totalReadBufMB - 64
-                                : memoryLimitMB / 2;
-    size_t maxBatch = (outputBudgetMB * 1024 * 1024) / (outBytes + 1);
-    if (maxBatch < 1) maxBatch = 1;
+    const size_t totalOutputBytes = indices.size() * outBytes;
+    const size_t memoryLimitBytes = memoryLimitMB * 1024 * 1024;
+    size_t maxBatch;
+    if (totalOutputBytes + 128ULL * 1024 * 1024 <= memoryLimitBytes) {
+        maxBatch = indices.size();
+    } else {
+        size_t totalReadBufMB = std::max<size_t>(1, memoryLimitMB / 2);
+        size_t outputBudgetMB = (memoryLimitMB > totalReadBufMB + 64)
+                                    ? memoryLimitMB - totalReadBufMB - 64
+                                    : memoryLimitMB / 2;
+        maxBatch = (outputBudgetMB * 1024 * 1024) / (outBytes + 1);
+        if (maxBatch < 1) maxBatch = 1;
+    }
 
     auto groupStart = std::chrono::high_resolution_clock::now();
     double totalReadMs = 0.0;
     double totalWriteMs = 0.0;
+
+    erwt3d::RzfpReadProfile accumulated;
 
     for (size_t batchStart = 0; batchStart < indices.size(); batchStart += maxBatch) {
         size_t batchEnd = std::min(batchStart + maxBatch, indices.size());
@@ -96,14 +103,29 @@ static bool runGroup(erwt3d::RzfpReader& reader,
             reqs.push_back({axis, indices[batchStart + i], buffers[i].data()});
         }
 
+        erwt3d::RzfpReadProfile batchProfile;
+        erwt3d::RzfpReaderConfig batchCfg = rzcfg;
+        batchCfg.profile = &batchProfile;
+
         auto rStart = std::chrono::high_resolution_clock::now();
-        if (!reader.readSlicesBatch(reqs, numThreads, memoryLimitMB, wcfg)) {
+        if (!reader.readSlicesBatch(reqs, batchCfg)) {
             std::cerr << "\nError: batch read failed for " << axisName << "\n";
             for (int fd : fds) if (fd >= 0) close(fd);
             return false;
         }
         auto rEnd = std::chrono::high_resolution_clock::now();
         totalReadMs += std::chrono::duration<double, std::milli>(rEnd - rStart).count();
+
+        accumulated.unique_superblocks += batchProfile.unique_superblocks;
+        accumulated.unique_leaves += batchProfile.unique_leaves;
+        accumulated.requested_record_bytes += batchProfile.requested_record_bytes;
+        accumulated.actual_read_bytes += batchProfile.actual_read_bytes;
+        accumulated.pread_calls += batchProfile.pread_calls;
+        accumulated.io_time_ms += batchProfile.io_time_ms;
+        accumulated.decode_time_ms += batchProfile.decode_time_ms;
+        accumulated.scatter_time_ms += batchProfile.scatter_time_ms;
+        accumulated.plan_time_ms += batchProfile.plan_time_ms;
+        accumulated.prefix_time_ms += batchProfile.prefix_time_ms;
 
         for (size_t i = 0; i < batchLen; ++i) {
             auto wStart = std::chrono::high_resolution_clock::now();
@@ -124,6 +146,7 @@ static bool runGroup(erwt3d::RzfpReader& reader,
     result.groupTimeMs = std::chrono::duration<double, std::milli>(groupEnd - groupStart).count();
     result.readTimeMs = totalReadMs;
     result.writeTimeMs = totalWriteMs;
+    result.profile = accumulated;
     return true;
 }
 
@@ -134,9 +157,11 @@ static void printUsage(const char* prog) {
         << "  --random-count N       Random slices per axis (default: 100)\n"
         << "  --continuous-count N   Continuous slices per axis (default: 10)\n"
         << "  --threads N            Thread count (default: 1)\n"
+        << "  --decode-threads N     RZFP decode threads (default: 1)\n"
         << "  --memory-limit-mb N    Memory limit (default: 4096)\n"
         << "  --read-window-bytes N  HDD read window (default: 16777216)\n"
         << "  --max-gap-bytes N      HDD max gap (default: 65536)\n"
+        << "  --read-strategy STR    auto|selective|whole|fullscan (default: auto)\n"
         << "  --seed N               Random seed (default: 20260511)\n"
         << "  --hdd                  Enable HDD mode defaults\n";
 }
@@ -146,10 +171,12 @@ int main(int argc, char* argv[]) {
     int randomCount = 100;
     int continuousCount = 10;
     int numThreads = 1;
+    int decodeThreads = 8;
     size_t memoryLimitMB = 4096;
-    uint64_t readWindowBytes = 16ULL * 1024 * 1024;
-    uint64_t maxGapBytes = 64ULL * 1024;
+    uint64_t readWindowBytes = 128ULL * 1024 * 1024;
+    uint64_t maxGapBytes = 2ULL * 1024 * 1024;
     uint32_t seed = 20260511;
+    std::string strategyStr = "auto";
     bool hddMode = false;
 
     for (int i = 1; i < argc; ++i) {
@@ -164,16 +191,19 @@ int main(int argc, char* argv[]) {
         else if (std::strcmp(argv[i], "--random-count") == 0) randomCount = std::stoi(next());
         else if (std::strcmp(argv[i], "--continuous-count") == 0) continuousCount = std::stoi(next());
         else if (std::strcmp(argv[i], "--threads") == 0 || std::strcmp(argv[i], "-t") == 0) numThreads = std::stoi(next());
+        else if (std::strcmp(argv[i], "--decode-threads") == 0) decodeThreads = std::stoi(next());
         else if (std::strcmp(argv[i], "--memory-limit-mb") == 0 || std::strcmp(argv[i], "-m") == 0) memoryLimitMB = std::stoul(next());
+        else if (std::strcmp(argv[i], "--read-strategy") == 0) strategyStr = next();
         else if (std::strcmp(argv[i], "--read-window-bytes") == 0) readWindowBytes = std::stoull(next());
         else if (std::strcmp(argv[i], "--max-gap-bytes") == 0) maxGapBytes = std::stoull(next());
         else if (std::strcmp(argv[i], "--seed") == 0) seed = static_cast<uint32_t>(std::stoul(next()));
         else if (std::strcmp(argv[i], "--hdd") == 0) {
             hddMode = true;
             numThreads = 1;
+            decodeThreads = 8;
             memoryLimitMB = 4096;
-            readWindowBytes = 16ULL * 1024 * 1024;
-            maxGapBytes = 64ULL * 1024;
+            readWindowBytes = 128ULL * 1024 * 1024;
+            maxGapBytes = 2ULL * 1024 * 1024;
         }
         else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             printUsage(argv[0]); return 0;
@@ -186,6 +216,16 @@ int main(int argc, char* argv[]) {
 
     if (inputPath.empty() || outputDir.empty()) {
         std::cerr << "Error: --input and --output-dir are required\n";
+        printUsage(argv[0]); return 1;
+    }
+
+    erwt3d::RzfpReadStrategy strategy = erwt3d::RzfpReadStrategy::Auto;
+    if (strategyStr == "auto") strategy = erwt3d::RzfpReadStrategy::Auto;
+    else if (strategyStr == "selective") strategy = erwt3d::RzfpReadStrategy::SelectiveLeaf;
+    else if (strategyStr == "whole") strategy = erwt3d::RzfpReadStrategy::WholeSuperblock;
+    else if (strategyStr == "fullscan") strategy = erwt3d::RzfpReadStrategy::FullPayloadScan;
+    else {
+        std::cerr << "Error: unknown --read-strategy: " << strategyStr << "\n";
         printUsage(argv[0]); return 1;
     }
 
@@ -245,7 +285,10 @@ int main(int argc, char* argv[]) {
         {erwt3d::SliceAxis::Z, "z", "continuous", &continuousZ},
     };
 
-    erwt3d::HDDReadWindowConfig wcfg{readWindowBytes, maxGapBytes};
+    erwt3d::RzfpReaderConfig rzcfg;
+    rzcfg.hdd = erwt3d::HDDReadWindowConfig{readWindowBytes, maxGapBytes};
+    rzcfg.strategy = strategy;
+    rzcfg.decode_threads = decodeThreads;
 
     std::vector<GroupResult> results(6);
     double groupTimes[6];
@@ -258,6 +301,8 @@ int main(int argc, char* argv[]) {
               << "  Random:    " << randomCount << " slices/axis\n"
               << "  Continuous:" << continuousCount << " slices/axis\n"
               << "  Threads:   " << numThreads << "\n"
+              << "  DecodeThr: " << decodeThreads << "\n"
+              << "  Strategy:  " << strategyStr << "\n"
               << "  MemLimit:  " << memoryLimitMB << " MB\n"
               << "  HDD mode:  " << (hddMode ? "true" : "false") << "\n"
               << "  Window:    " << readWindowBytes << " bytes\n"
@@ -273,13 +318,23 @@ int main(int argc, char* argv[]) {
 
         GroupResult gr;
         if (!runGroup(reader, header, spec.axis, spec.axisName, *spec.indices, spec.mode,
-                      numThreads, memoryLimitMB, outputDir, wcfg, gr)) {
+                      numThreads, memoryLimitMB, outputDir, rzcfg, gr)) {
             return 1;
         }
 
         std::cout << " " << std::fixed << std::setprecision(4) << gr.groupTimeMs / 1000.0 << "s"
                   << " (r=" << std::setprecision(3) << gr.readTimeMs / 1000.0
                   << "s w=" << gr.writeTimeMs / 1000.0 << "s)\n";
+        const auto& p = gr.profile;
+        std::cout << "       profile: sbs=" << p.unique_superblocks
+                  << " leaves=" << p.unique_leaves
+                  << " req=" << p.requested_record_bytes
+                  << " actual=" << p.actual_read_bytes
+                  << " amp=" << std::fixed << std::setprecision(2) << p.readAmplification()
+                  << " preads=" << p.pread_calls
+                  << " io=" << std::setprecision(1) << p.io_time_ms / 1000.0
+                  << "s dec=" << p.decode_time_ms / 1000.0
+                  << "s scat=" << p.scatter_time_ms / 1000.0 << "s\n";
 
         results[g] = gr;
         groupTimes[g] = gr.groupTimeMs;
@@ -292,13 +347,21 @@ int main(int argc, char* argv[]) {
     std::string summaryPath = outputDir + "/rzfp_contest_summary.csv";
     {
         std::ofstream sf(summaryPath);
-        sf << "group,axis,mode,slice_count,group_time_ms,read_time_ms,write_time_ms,output_bytes_per_slice\n";
+        sf << "group,axis,mode,slice_count,group_time_ms,read_time_ms,write_time_ms,output_bytes_per_slice,"
+              "unique_sbs,unique_leaves,requested_bytes,actual_bytes,read_amp,preads,io_ms,decode_ms,scatter_ms\n";
         for (int g = 0; g < 6; ++g) {
             const auto& r = results[g];
+            const auto& p = r.profile;
             sf << g << "," << r.axis << "," << r.mode << "," << r.sliceCount << ","
                << std::fixed << std::setprecision(3) << r.groupTimeMs << ","
                << r.readTimeMs << "," << r.writeTimeMs << ","
-               << r.outputBytesPerSlice << "\n";
+               << r.outputBytesPerSlice << ","
+               << p.unique_superblocks << "," << p.unique_leaves << ","
+               << p.requested_record_bytes << "," << p.actual_read_bytes << ","
+               << std::setprecision(3) << p.readAmplification() << ","
+               << p.pread_calls << ","
+               << std::setprecision(3) << p.io_time_ms << ","
+               << p.decode_time_ms << "," << p.scatter_time_ms << "\n";
         }
     }
 
@@ -311,6 +374,8 @@ int main(int argc, char* argv[]) {
            << "random_count," << randomCount << "\n"
            << "continuous_count," << continuousCount << "\n"
            << "threads," << numThreads << "\n"
+           << "decode_threads," << decodeThreads << "\n"
+           << "strategy," << strategyStr << "\n"
            << "memory_limit_mb," << memoryLimitMB << "\n"
            << "read_window_bytes," << readWindowBytes << "\n"
            << "max_gap_bytes," << maxGapBytes << "\n"
