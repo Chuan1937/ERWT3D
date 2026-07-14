@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rzfp_format.hpp"
+#include "rzfp_xplane_codec.hpp"
 #include "slice.hpp"
 #include "sb_hdd.hpp"
 
@@ -75,6 +76,15 @@ private:
 
     std::vector<RzfpSuperblockIndex> sb_index_;
     std::vector<RzfpLeafDescriptor> descriptors_;
+
+    // Optional 2D X-plane sidecar.
+    bool has_xplane_ = false;
+    int xplane_fd_ = -1;
+    std::vector<uint64_t> xplane_offsets_;
+    std::vector<uint32_t> xplane_sizes_;
+
+    bool openXPlaneSidecar();
+    bool readXPlaneFromSidecar(uint64_t x, float* output, RzfpReadProfile* profile);
 };
 
 } // namespace erwt3d

@@ -87,6 +87,8 @@ if(ERWT3D_ENABLE_RZFP)
         src/rzfp_codec.cpp
         src/rzfp_writer.cpp
         src/rzfp_reader.cpp
+        src/rzfp_xplane_codec.cpp
+        src/rzfp_xplane_writer.cpp
     )
 endif()
 
@@ -149,6 +151,12 @@ set_target_properties(erwt3d_cli PROPERTIES OUTPUT_NAME erwt3d)
 if(ERWT3D_ENABLE_RZFP)
     add_executable(erwt3d_rzfp_probe tools/erwt3d_rzfp_probe.cpp)
     target_link_libraries(erwt3d_rzfp_probe PRIVATE erwt3d)
+
+    add_executable(erwt3d_rzfp_xplane_probe tools/erwt3d_rzfp_xplane_probe.cpp)
+    target_link_libraries(erwt3d_rzfp_xplane_probe PRIVATE erwt3d)
+
+    add_executable(erwt3d_rzfp_xplane_gen tools/erwt3d_rzfp_xplane_gen.cpp)
+    target_link_libraries(erwt3d_rzfp_xplane_gen PRIVATE erwt3d)
 
     add_executable(erwt3d_convert_rzfp tools/erwt3d_convert_rzfp.cpp)
     target_link_libraries(erwt3d_convert_rzfp PRIVATE erwt3d)

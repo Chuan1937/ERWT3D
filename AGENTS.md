@@ -24,6 +24,10 @@ cmake --build build -j
 | `erwt3d_verify` | 正确性验证 |
 | `erwt3d_info` | 文件信息查看 |
 | `erwt3d_precompute_x` | X-plane 预计算（可选，存储比 >1.5x） |
+| `erwt3d_convert_rzfp` | Raw ↔ RZFP 格式转换 |
+| `erwt3d_verify_rzfp` | RZFP 正确性验证 |
+| `erwt3d_bench_rzfp` | RZFP 基准测试 |
+| `erwt3d_rzfp_xplane_gen` | 生成 RZFP 2D X-plane sidecar |
 
 ## 比赛评分（赛题2）
 
@@ -74,7 +78,7 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 
 - 单线程顺序读取（避免磁头抖动）
 - 文件偏移排序（`--sb-task-order file-offset`）
-- 大读窗口 + gap 容忍（`--hdd-read-window-bytes 134217728 --hdd-max-gap-bytes 3145728`）
+- 大读窗口 + gap 容忍（`--hdd-read-window-bytes 536870912 --hdd-max-gap-bytes 8388608`）
 - 跨切片批量规划（`--hdd` 自动启用 dynamic batch size + 全局排序）
 - posix_fadvise(SEQUENTIAL) + readahead() 内核提示
 - readahead 前瞻 20 个窗口（深度流水线）
@@ -87,8 +91,8 @@ D 盘 HDD，`--hdd` 模式，4GB 内存限制：
 
 | 数据集 | T_composite | 存储比 | 备注 |
 |--------|------------|--------|------|
-| 20GB | 17.49s | 0.932x | S=64, lz4压缩 + sidecar stride=1, best run |
-| 50GB | 104.74s | 0.996x | S=64, lz4压缩, LeafOp紧凑化, best run |
+| 20GB | 23.80s | 1.369x | RZFP + 2D X-plane sidecar, 512MB/8MB 窗口 |
+| 50GB | 83.58s | 0.804x | RZFP, 512MB/8MB 窗口 |
 
 4GB 是内存拐点，≥4GB 后性能稳定。
 
@@ -103,6 +107,9 @@ D 盘 HDD，`--hdd` 模式，4GB 内存限制：
 - **I/O 带宽仍是根本瓶颈**：磁盘顺序读 ~300 MB/s，非 sidecar 路径的随机访问仍需读取几乎整个文件
 - **压缩效果因数据集而异**：20GB lz4 压缩率 2.26x (0.443x)，50GB 仅 1.004x (0.996x)
 - **参数扫描结论**：chunk_z_rows 64-1024 压缩率差异 <0.2%，256 是合理默认
+- **HDD 读窗口是关键**：128MB/2MB 窗口在 50GB 上 T_composite 约 123s，提升到 512MB/8MB 后降至 83.58s（-32%），因为减少了随机读取时的 pread 次数和寻道开销
+- **RZFP 2D X-plane sidecar 对 20GB 收益显著**：X random 从 ~170s 降至 ~17s，sidecar 比率 0.530x，综合存储 1.369x（仍 ≤1.5x）
+- **50GB 无需 sidecar**：RZFP 本身已达 0.804x，叠加 sidecar 会使综合存储逼近 1.5x 且生成成本过高；512MB 窗口已足够突破 104.74s 目标
 - **Page cache 对重复运行有帮助**：第二轮比第一轮快 ~3-5s
 
 ## 常用命令

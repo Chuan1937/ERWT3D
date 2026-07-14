@@ -1,6 +1,8 @@
 #include "erwt3d/rzfp_writer.hpp"
+#include "erwt3d/rzfp_xplane_writer.hpp"
 
 #include <cstring>
+#include <iomanip>
 #include <iostream>
 #include <string>
 
@@ -20,7 +22,8 @@ static void printUsage(const char* prog) {
         << "  --exception-counts LIST e.g. 0,1,2,4,8,16\n"
         << "  --precisions LIST       e.g. 12,14,16,18,20,22,24\n"
         << "  --fill-modes LIST       zero,mean\n"
-        << "  --physical-order zyx|v05-yzx (default: zyx)\n";
+        << "  --physical-order zyx|v05-yzx (default: zyx)\n"
+        << "  --xplane-sidecar        Generate 2D RZFP X-plane sidecar (.xp)\n";
 }
 
 static std::vector<uint8_t> parseExceptionCounts(const std::string& s) {
@@ -75,6 +78,7 @@ int main(int argc, char* argv[]) {
 
     std::string inputPath;
     std::string outputPath;
+    bool xplane_sidecar = false;
 
     for (int i = 1; i < argc; ++i) {
         auto next = [&]() -> const char* {
@@ -103,6 +107,8 @@ int main(int argc, char* argv[]) {
                 std::cerr << "Unknown physical order: " << v << std::endl;
                 return 1;
             }
+        } else if (std::strcmp(argv[i], "--xplane-sidecar") == 0) {
+            xplane_sidecar = true;
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             printUsage(argv[0]);
             return 0;
@@ -125,5 +131,23 @@ int main(int argc, char* argv[]) {
 
     std::cout << "RZFP conversion complete: " << outputPath << std::endl;
     std::cout << "storage_ratio: " << stats.storage_ratio << std::endl;
+
+    if (xplane_sidecar) {
+        erwt3d::RzfpXPlaneCodecConfig xcfg;
+        xcfg.error = cfg.codec.error;
+        xcfg.precisions = cfg.codec.precisions;
+
+        const std::string sidecar_path = outputPath + ".xp";
+        erwt3d::RzfpXPlaneWriterStats xstats{};
+        bool xok = erwt3d::writeXPlaneSidecarFile(
+            inputPath, sidecar_path, xcfg, cfg.nx, cfg.ny, cfg.nz, cfg.threads, &xstats);
+        if (!xok) return 1;
+
+        std::cout << "X-plane sidecar: " << sidecar_path << std::endl;
+        std::cout << "sidecar_ratio: " << std::fixed << std::setprecision(4) << xstats.compression_ratio << std::endl;
+        std::cout << "combined_ratio: " << std::fixed << std::setprecision(4)
+                  << (stats.storage_ratio + xstats.compression_ratio) << std::endl;
+    }
+
     return 0;
 }

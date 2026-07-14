@@ -1,6 +1,7 @@
 #include "erwt3d/rzfp_reader.hpp"
 #include "erwt3d/morton.hpp"
 #include "erwt3d/rzfp_codec.hpp"
+#include "erwt3d/rzfp_xplane_codec.hpp"
 #include "erwt3d/sb_plan.hpp"
 #include "erwt3d/thread_pool.hpp"
 
@@ -248,8 +249,10 @@ static RzfpReadStrategy chooseStrategy(
 
     const uint64_t read_window = config.hdd.read_window_bytes > 0
                                      ? config.hdd.read_window_bytes
-                                     : (16ULL * 1024 * 1024);
-    const uint64_t max_gap = config.hdd.max_gap_bytes;
+                                     : (512ULL * 1024 * 1024);
+    const uint64_t max_gap = config.hdd.max_gap_bytes > 0
+                                 ? config.hdd.max_gap_bytes
+                                 : (8ULL * 1024 * 1024);
 
     uint64_t selective_preads = 0;
     const uint64_t selective_bytes = estimateSelectiveBytes(tasks, read_window, max_gap, selective_preads);
@@ -325,8 +328,8 @@ static bool executeWindowedRead(
     });
 
     const HDDReadWindowConfig& wcfg = config.hdd;
-    const uint64_t read_window = wcfg.read_window_bytes > 0 ? wcfg.read_window_bytes : (16ULL * 1024 * 1024);
-    const uint64_t max_gap = wcfg.max_gap_bytes;
+    const uint64_t read_window = wcfg.read_window_bytes > 0 ? wcfg.read_window_bytes : (512ULL * 1024 * 1024);
+    const uint64_t max_gap = wcfg.max_gap_bytes > 0 ? wcfg.max_gap_bytes : (8ULL * 1024 * 1024);
     const int decode_threads = std::max(1, config.decode_threads);
 
     std::vector<std::unique_ptr<RzfpCodec>> codecs;
@@ -520,6 +523,25 @@ static bool executeFullPayloadScan(
     return executeWindowedRead(fd, intervals, config, decode_cb, profile);
 }
 
+#pragma pack(push, 1)
+struct XPlaneHeader {
+    char magic[8];
+    uint64_t version;
+    uint64_t nx, ny, nz;
+    uint64_t data_offset;
+    uint64_t reserved[26];
+};
+struct XPlaneIndexEntry {
+    uint64_t offset;
+    uint32_t size;
+    uint32_t reserved;
+};
+#pragma pack(pop)
+
+static bool magicMatches(const char* a, const char* b) {
+    return std::memcmp(a, b, 8) == 0;
+}
+
 } // namespace
 
 RzfpReader::RzfpReader(const std::string& path) : path_(path), fd_(-1) {
@@ -556,10 +578,76 @@ RzfpReader::RzfpReader(const std::string& path) : path_(path), fd_(-1) {
         fd_ = -1;
         return;
     }
+
+    openXPlaneSidecar();
 }
 
 RzfpReader::~RzfpReader() {
     if (fd_ >= 0) close(fd_);
+    if (xplane_fd_ >= 0) close(xplane_fd_);
+}
+
+bool RzfpReader::openXPlaneSidecar() {
+    const std::string sidecar_path = path_ + ".xp";
+    int fd = open(sidecar_path.c_str(), O_RDONLY);
+    if (fd < 0) return false;
+
+    XPlaneHeader hdr{};
+    if (pread(fd, &hdr, sizeof(hdr), 0) != sizeof(hdr)) {
+        close(fd);
+        return false;
+    }
+
+    const char expected_magic[8] = {'E', 'R', 'W', 'T', '3', 'D', 'X', ' '};
+    if (!magicMatches(hdr.magic, expected_magic) || hdr.version != 1) {
+        close(fd);
+        return false;
+    }
+
+    if (hdr.nx != header_.nx || hdr.ny != header_.ny || hdr.nz != header_.nz) {
+        close(fd);
+        return false;
+    }
+
+    xplane_offsets_.resize(hdr.nx);
+    xplane_sizes_.resize(hdr.nx);
+    std::vector<XPlaneIndexEntry> entries(hdr.nx);
+    const uint64_t index_bytes = hdr.nx * sizeof(XPlaneIndexEntry);
+    if (!readFullyAt(fd, entries.data(), index_bytes, sizeof(XPlaneHeader))) {
+        close(fd);
+        return false;
+    }
+
+    for (uint64_t i = 0; i < hdr.nx; ++i) {
+        xplane_offsets_[i] = entries[i].offset;
+        xplane_sizes_[i] = entries[i].size;
+    }
+
+    xplane_fd_ = fd;
+    has_xplane_ = true;
+    return true;
+}
+
+bool RzfpReader::readXPlaneFromSidecar(uint64_t x, float* output, RzfpReadProfile* profile) {
+    if (!has_xplane_ || x >= xplane_offsets_.size()) return false;
+
+    const uint64_t offset = xplane_offsets_[x];
+    const uint32_t size = xplane_sizes_[x];
+
+    auto io_t0 = Clock::now();
+    std::vector<uint8_t> record(size);
+    if (!readFullyAt(xplane_fd_, record.data(), size, offset)) return false;
+    if (profile) {
+        profile->io_time_ms += msSince(io_t0);
+        ++profile->pread_calls;
+        profile->actual_read_bytes += size;
+        profile->requested_record_bytes += size;
+    }
+
+    auto dec_t0 = Clock::now();
+    bool ok = decodeXPlane2D(record.data(), size, output, header_.ny, header_.nz);
+    if (profile) profile->decode_time_ms += msSince(dec_t0);
+    return ok;
 }
 
 bool RzfpReader::readSlice(SliceAxis axis, uint64_t index, float* output,
@@ -586,13 +674,39 @@ bool RzfpReader::readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
                                  const RzfpReaderConfig& config) {
     if (fd_ < 0 || requests.empty()) return false;
 
+    RzfpReadProfile local_profile;
+    RzfpReadProfile* profile = config.profile ? config.profile : &local_profile;
+
+    std::vector<SliceBatchRequest> fallback;
+    fallback.reserve(requests.size());
+
     const auto t_start = Clock::now();
+
+    for (const auto& req : requests) {
+        if (has_xplane_ && req.axis == SliceAxis::X) {
+            if (!readXPlaneFromSidecar(req.index, req.output, profile)) {
+                fallback.push_back(req);
+            }
+        } else {
+            fallback.push_back(req);
+        }
+    }
+
+    if (fallback.empty()) {
+        profile->plan_time_ms += msSince(t_start);
+        return true;
+    }
+
     const ERWT3DHeader plan_hdr = planHeaderFromRzfp(header_);
     const uint64_t leavesPerSB = rzfpTotalLeafsPerSuper(header_);
 
     double plan_time_ms = 0.0;
-    auto tasks = buildLeafTasks(plan_hdr, requests, header_, plan_time_ms);
-    if (tasks.empty()) return true;
+    auto tasks = buildLeafTasks(plan_hdr, fallback, header_, plan_time_ms);
+    if (tasks.empty()) {
+        profile->plan_time_ms += msSince(t_start) - profile->io_time_ms - profile->decode_time_ms;
+        if (profile->plan_time_ms < 0.0) profile->plan_time_ms = 0.0;
+        return true;
+    }
 
     double prefix_time_ms = 0.0;
     computeTaskOffsets(tasks, descriptors_, sb_index_, leavesPerSB, prefix_time_ms);
@@ -600,14 +714,12 @@ bool RzfpReader::readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
         return a.file_offset < b.file_offset;
     });
 
-    RzfpReadProfile local_profile;
-    RzfpReadProfile* profile = config.profile ? config.profile : &local_profile;
-    profile->unique_leaves = tasks.size();
+    profile->unique_leaves += tasks.size();
     std::unordered_set<uint64_t> unique_sbs;
     for (const auto& t : tasks) unique_sbs.insert(t.physical_sb_id);
-    profile->unique_superblocks = unique_sbs.size();
-    profile->plan_time_ms = plan_time_ms;
-    profile->prefix_time_ms = prefix_time_ms;
+    profile->unique_superblocks += unique_sbs.size();
+    profile->plan_time_ms += plan_time_ms;
+    profile->prefix_time_ms += prefix_time_ms;
 
     RzfpReadStrategy strategy = config.strategy;
     if (strategy == RzfpReadStrategy::Auto) {

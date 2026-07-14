@@ -173,8 +173,8 @@ int main(int argc, char* argv[]) {
     int numThreads = 1;
     int decodeThreads = 8;
     size_t memoryLimitMB = 4096;
-    uint64_t readWindowBytes = 128ULL * 1024 * 1024;
-    uint64_t maxGapBytes = 2ULL * 1024 * 1024;
+    uint64_t readWindowBytes = 512ULL * 1024 * 1024;
+    uint64_t maxGapBytes = 8ULL * 1024 * 1024;
     uint32_t seed = 20260511;
     std::string strategyStr = "auto";
     bool hddMode = false;
@@ -202,8 +202,8 @@ int main(int argc, char* argv[]) {
             numThreads = 1;
             decodeThreads = 8;
             memoryLimitMB = 4096;
-            readWindowBytes = 128ULL * 1024 * 1024;
-            maxGapBytes = 2ULL * 1024 * 1024;
+            readWindowBytes = 512ULL * 1024 * 1024;
+            maxGapBytes = 8ULL * 1024 * 1024;
         }
         else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             printUsage(argv[0]); return 0;
@@ -241,6 +241,8 @@ int main(int argc, char* argv[]) {
     struct stat st;
     uint64_t fileBytes = 0;
     if (stat(inputPath.c_str(), &st) == 0) fileBytes = st.st_size;
+    const std::string sidecarPath = inputPath + ".xp";
+    if (stat(sidecarPath.c_str(), &st) == 0) fileBytes += st.st_size;
     const uint64_t rawBytes = erwt3d::rzfpRawSize(header);
     const double storageRatio = static_cast<double>(fileBytes) / static_cast<double>(rawBytes);
 
