@@ -661,13 +661,12 @@ bool ERWT3DReader::tryReadSliceXPSidecar_(uint64_t x, float* output, IOProfile* 
         if (n != static_cast<ssize_t>(ci.compressed_size)) return false;
         totalRead += ci.compressed_size;
 
-        if (xpRawBuf_.size() < ci.raw_size)
-            xpRawBuf_.resize(ci.raw_size);
+        uint64_t zStart = static_cast<uint64_t>(c) * xpHeader_.chunk_z_rows;
         if (xpHeader_.compression == 1) {
 #ifdef ERWT3D_HAVE_LZ4
             int dec = LZ4_decompress_safe(
                 reinterpret_cast<const char*>(xpCompBuf_.data()),
-                reinterpret_cast<char*>(xpRawBuf_.data()),
+                reinterpret_cast<char*>(output + zStart * ny),
                 static_cast<int>(ci.compressed_size),
                 static_cast<int>(ci.raw_size));
             if (dec != static_cast<int>(ci.raw_size)) return false;
@@ -675,11 +674,8 @@ bool ERWT3DReader::tryReadSliceXPSidecar_(uint64_t x, float* output, IOProfile* 
             return false;
 #endif
         } else {
-            std::memcpy(xpRawBuf_.data(), xpCompBuf_.data(), ci.raw_size);
+            std::memcpy(output + zStart * ny, xpCompBuf_.data(), ci.raw_size);
         }
-
-        uint64_t zStart = static_cast<uint64_t>(c) * xpHeader_.chunk_z_rows;
-        std::memcpy(output + zStart * ny, xpRawBuf_.data(), ci.raw_size);
     }
 
     if (profile) {
@@ -775,12 +771,13 @@ bool ERWT3DReader::tryReadBatchXPSidecar_(const std::vector<SliceBatchRequest>& 
             uint64_t bufOff = t.chunk_offset - runOff;
             const uint8_t* compData = xpCompBuf_.data() + bufOff;
 
-            if (xpRawBuf_.size() < t.raw_size) xpRawBuf_.resize(t.raw_size);
+            float* output = requests[t.request_idx].output;
+            uint64_t zStart = static_cast<uint64_t>(t.chunk_idx_in_plane) * xpHeader_.chunk_z_rows;
             if (xpHeader_.compression == 1) {
 #ifdef ERWT3D_HAVE_LZ4
                 int dec = LZ4_decompress_safe(
                     reinterpret_cast<const char*>(compData),
-                    reinterpret_cast<char*>(xpRawBuf_.data()),
+                    reinterpret_cast<char*>(output + zStart * ny),
                     static_cast<int>(t.compressed_size),
                     static_cast<int>(t.raw_size));
                 if (dec != static_cast<int>(t.raw_size)) return false;
@@ -788,12 +785,8 @@ bool ERWT3DReader::tryReadBatchXPSidecar_(const std::vector<SliceBatchRequest>& 
                 return false;
 #endif
             } else {
-                std::memcpy(xpRawBuf_.data(), compData, t.raw_size);
+                std::memcpy(output + zStart * ny, compData, t.raw_size);
             }
-
-            float* output = requests[t.request_idx].output;
-            uint64_t zStart = static_cast<uint64_t>(t.chunk_idx_in_plane) * xpHeader_.chunk_z_rows;
-            std::memcpy(output + zStart * ny, xpRawBuf_.data(), t.raw_size);
             handled[t.request_idx] = true;
         }
 
