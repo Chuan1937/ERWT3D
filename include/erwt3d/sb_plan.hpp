@@ -26,6 +26,7 @@ struct SBTask {
     uint64_t file_offset;
     uint32_t first_leaf;
     uint32_t leaf_count;
+    uint64_t sb_index = 0;
 };
 
 #pragma pack(push, 4)
@@ -95,6 +96,9 @@ SBTaskPlan buildSBPlanX(const ERWT3DHeader& hdr, uint64_t x);
 void sortTasksByFileOffset(SBTaskPlan& plan);
 
 // ========== Leaf Unpacking (shared utility) ==========
+
+void scatterDecodedLeaf(const ERWT3DHeader& hdr, const LeafOp& op,
+                        const float decoded_leaf[64], float* output);
 
 void unpackLeaves(const ERWT3DHeader& hdr, const SBTaskPlan& plan,
                   const SBTask& task, const uint8_t* sbBuf, float* output);

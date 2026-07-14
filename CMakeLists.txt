@@ -85,6 +85,8 @@ if(ERWT3D_ENABLE_RZFP)
     list(APPEND LIB_SOURCES
         src/relative_error.cpp
         src/rzfp_codec.cpp
+        src/rzfp_writer.cpp
+        src/rzfp_reader.cpp
     )
 endif()
 
@@ -147,6 +149,15 @@ set_target_properties(erwt3d_cli PROPERTIES OUTPUT_NAME erwt3d)
 if(ERWT3D_ENABLE_RZFP)
     add_executable(erwt3d_rzfp_probe tools/erwt3d_rzfp_probe.cpp)
     target_link_libraries(erwt3d_rzfp_probe PRIVATE erwt3d)
+
+    add_executable(erwt3d_convert_rzfp tools/erwt3d_convert_rzfp.cpp)
+    target_link_libraries(erwt3d_convert_rzfp PRIVATE erwt3d)
+
+    add_executable(erwt3d_verify_rzfp tools/erwt3d_verify_rzfp.cpp)
+    target_link_libraries(erwt3d_verify_rzfp PRIVATE erwt3d)
+
+    add_executable(erwt3d_bench_rzfp tools/erwt3d_bench_rzfp.cpp)
+    target_link_libraries(erwt3d_bench_rzfp PRIVATE erwt3d)
 
     enable_testing()
     add_subdirectory(tests)
