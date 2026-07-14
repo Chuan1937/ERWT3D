@@ -1060,23 +1060,36 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
                 useFullScan = true;
                 adviseSequential(fd_);
                 const uint64_t sbBV = getSuperblockBytes(header_);
-                std::vector<uint8_t> sbBuf(sbBV);
+                const uint64_t windowBytes = 256ULL * 1024ULL * 1024ULL;
+                const uint64_t blocksPerWindow = windowBytes / sbBV;
+                std::vector<uint8_t> winBuf(windowBytes);
                 size_t ti = 0;
-                for (uint64_t sbIdx = 0; sbIdx < totalSB && ti < taskOrder.size(); ++sbIdx) {
-                    uint64_t off = superblockFileOffsetFromLogical(header_, sbIdx);
-                    uint64_t curSB = batch.batch_tasks[taskOrder[ti]].sb_index;
-                    if (curSB != sbIdx) continue;
-                    if (pread(fd_, sbBuf.data(), sbBV, static_cast<off_t>(off)) !=
-                        static_cast<ssize_t>(sbBV))
+
+                for (uint64_t wStart = 0; wStart < totalSB && ti < taskOrder.size(); wStart += blocksPerWindow) {
+                    uint64_t wEnd = std::min(wStart + blocksPerWindow, totalSB);
+                    uint64_t wBlocks = wEnd - wStart;
+                    uint64_t offset = superblockFileOffsetFromLogical(header_, wStart);
+                    uint64_t readBytes = wBlocks * sbBV;
+
+                    if (pread(fd_, winBuf.data(), readBytes, static_cast<off_t>(offset)) !=
+                        static_cast<ssize_t>(readBytes))
                         return false;
-                    while (ti < taskOrder.size() &&
-                           batch.batch_tasks[taskOrder[ti]].sb_index == sbIdx) {
-                        const auto& bt = batch.batch_tasks[taskOrder[ti]];
-                        SBTask unpackTask{bt.file_offset, bt.first_leaf,
-                                          bt.leaf_count, bt.sb_index};
-                        unpackLeaves(header_, *bt.plan, unpackTask,
-                                     sbBuf.data(), outputs[bt.output_id]);
-                        ++ti;
+
+                    for (uint64_t bi = 0; bi < wBlocks && ti < taskOrder.size(); ++bi) {
+                        uint64_t sbIdx = wStart + bi;
+                        uint64_t curSB = batch.batch_tasks[taskOrder[ti]].sb_index;
+                        if (curSB != sbIdx) continue;
+
+                        const uint8_t* sbData = winBuf.data() + bi * sbBV;
+                        while (ti < taskOrder.size() &&
+                               batch.batch_tasks[taskOrder[ti]].sb_index == sbIdx) {
+                            const auto& bt = batch.batch_tasks[taskOrder[ti]];
+                            SBTask unpackTask{bt.file_offset, bt.first_leaf,
+                                              bt.leaf_count, bt.sb_index};
+                            unpackLeaves(header_, *bt.plan, unpackTask,
+                                         sbData, outputs[bt.output_id]);
+                            ++ti;
+                        }
                     }
                 }
                 return true;

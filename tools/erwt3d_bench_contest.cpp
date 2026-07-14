@@ -96,10 +96,13 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
             std::cerr << "\nError: Cannot pre-create " << outPath << "\n";
             return false;
         }
-        if (ftruncate(fd, static_cast<off_t>(outBytes)) != 0) {
-            std::cerr << "\nError: Cannot pre-allocate " << outPath << "\n";
-            close(fd);
-            return false;
+        // Pre-allocate with posix_fallocate (guarantees block allocation), fallback to ftruncate
+        if (posix_fallocate(fd, 0, static_cast<off_t>(outBytes)) != 0) {
+            if (ftruncate(fd, static_cast<off_t>(outBytes)) != 0) {
+                std::cerr << "\nError: Cannot pre-allocate " << outPath << "\n";
+                close(fd);
+                return false;
+            }
         }
         preCreatedFDs[i] = fd;
     }
