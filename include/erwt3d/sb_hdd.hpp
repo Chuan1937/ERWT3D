@@ -24,6 +24,7 @@ bool executeSBPlanLeafIndex(int fd, const SBTaskPlan& plan, const ERWT3DHeader& 
 struct HDDReadWindowConfig {
     uint64_t read_window_bytes = 0;  // 0 = auto (128 MiB)
     uint64_t max_gap_bytes = 0;      // 0 = auto (1 MiB)
+    double full_scan_threshold = 0.0; // 0=disabled, >0=use full scan if unique_SB/total_SB >= threshold
 };
 
 // HDDReadWindow: 大连续读窗口 + gap容忍 (HDD最优)

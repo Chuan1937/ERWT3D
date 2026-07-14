@@ -215,6 +215,7 @@ int main(int argc, char* argv[]) {
     bool useMmap = false;
     bool hddMode = false;
     std::string compressedReadModeStr = "windowed";
+    double fullScanThreshold = 0.0;
     double baselineMsOverride = 0;
     int repeats = 1;
 
@@ -261,6 +262,9 @@ int main(int argc, char* argv[]) {
         }
         else if (std::strcmp(argv[i], "--compressed-read-mode") == 0) {
             compressedReadModeStr = next();
+        }
+        else if (std::strcmp(argv[i], "--full-scan-threshold") == 0) {
+            fullScanThreshold = std::stod(next());
         }
         else if (std::strcmp(argv[i], "--baseline-ms") == 0) { baselineMsOverride = std::stod(next()); }
         else if (std::strcmp(argv[i], "--baseline-file") == 0) { baselineFile = next(); }
@@ -409,7 +413,7 @@ int main(int argc, char* argv[]) {
             if (repeats > 1) std::cout << " rep=" << rep << std::flush;
             std::cout << "..." << std::flush;
 
-            erwt3d::HDDReadWindowConfig wcfg{hddReadWindowBytes, hddMaxGapBytes};
+            erwt3d::HDDReadWindowConfig wcfg{hddReadWindowBytes, hddMaxGapBytes, fullScanThreshold};
             if (!runGroup(reader, spec.axis, spec.axisName, *spec.indices, spec.mode,
                           header, numThreads, memoryLimitMB, repDir, gr, useBatch, wcfg)) {
                 return 1;

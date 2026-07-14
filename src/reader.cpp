@@ -1039,6 +1039,51 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
     if (plans.empty()) return true;
     for (auto& p : plans) pp.push_back(&p);
 
+    bool useFullScan = false;
+    if (!compressed_ && wcfg.full_scan_threshold > 0.0) {
+        auto batch = buildSBBatchPlan(pp);
+        uint64_t totalSB = getTotalSuperblocks(header_);
+        if (totalSB > 0) {
+            std::vector<size_t> taskOrder(batch.batch_tasks.size());
+            for (size_t i = 0; i < taskOrder.size(); ++i) taskOrder[i] = i;
+            std::sort(taskOrder.begin(), taskOrder.end(), [&](size_t a, size_t b) {
+                return batch.batch_tasks[a].sb_index < batch.batch_tasks[b].sb_index;
+            });
+            size_t uniqueSB = 0;
+            uint64_t lastSB = UINT64_MAX;
+            for (size_t ti = 0; ti < taskOrder.size(); ++ti) {
+                uint64_t s = batch.batch_tasks[taskOrder[ti]].sb_index;
+                if (s != lastSB) { ++uniqueSB; lastSB = s; }
+            }
+            double coverage = static_cast<double>(uniqueSB) / totalSB;
+            if (coverage >= wcfg.full_scan_threshold && uniqueSB * 2 > totalSB) {
+                useFullScan = true;
+                adviseSequential(fd_);
+                const uint64_t sbBV = getSuperblockBytes(header_);
+                std::vector<uint8_t> sbBuf(sbBV);
+                size_t ti = 0;
+                for (uint64_t sbIdx = 0; sbIdx < totalSB && ti < taskOrder.size(); ++sbIdx) {
+                    uint64_t off = superblockFileOffsetFromLogical(header_, sbIdx);
+                    uint64_t curSB = batch.batch_tasks[taskOrder[ti]].sb_index;
+                    if (curSB != sbIdx) continue;
+                    if (pread(fd_, sbBuf.data(), sbBV, static_cast<off_t>(off)) !=
+                        static_cast<ssize_t>(sbBV))
+                        return false;
+                    while (ti < taskOrder.size() &&
+                           batch.batch_tasks[taskOrder[ti]].sb_index == sbIdx) {
+                        const auto& bt = batch.batch_tasks[taskOrder[ti]];
+                        SBTask unpackTask{bt.file_offset, bt.first_leaf,
+                                          bt.leaf_count, bt.sb_index};
+                        unpackLeaves(header_, *bt.plan, unpackTask,
+                                     sbBuf.data(), outputs[bt.output_id]);
+                        ++ti;
+                    }
+                }
+                return true;
+            }
+        }
+    }
+
     if (compressed_) {
         auto batch = buildSBBatchPlan(pp);
         const uint64_t sbBV = getSuperblockBytes(header_);
