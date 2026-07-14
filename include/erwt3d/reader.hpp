@@ -82,7 +82,8 @@ public:
     struct SliceBatchRequest { SliceAxis axis; uint64_t index; float* output; };
     bool readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
                          int numThreads, size_t memoryLimitMB,
-                         const HDDReadWindowConfig& wcfg);
+                         const HDDReadWindowConfig& wcfg,
+                         int decodeThreads = 0);
 
     // 一键配置
     void setHDDMode();

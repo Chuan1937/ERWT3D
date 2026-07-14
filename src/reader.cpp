@@ -962,7 +962,9 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
 
 bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
                                     int numThreads, size_t memoryLimitMB,
-                                    const HDDReadWindowConfig& wcfg) {
+                                    const HDDReadWindowConfig& wcfg,
+                                    int decodeThreads) {
+    int dthreads = decodeThreads > 0 ? decodeThreads : numThreads;
     if (fd_ < 0 || requests.empty()) return false;
 
     // Split: X-plane slices read via fast path, rest via batch
@@ -1162,7 +1164,7 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
         std::vector<uint8_t> sbBuf(sbBV);
 
         std::unique_ptr<ThreadPool> pool;
-        if (numThreads > 1) pool = std::make_unique<ThreadPool>(numThreads);
+        if (dthreads > 1) pool = std::make_unique<ThreadPool>(dthreads);
 
         size_t firstTask = 0;
         while (firstTask < taskOrder.size()) {

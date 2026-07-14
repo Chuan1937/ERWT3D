@@ -70,7 +70,8 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
                      GroupResult& result,
                       bool useBatch = false,
                       const erwt3d::HDDReadWindowConfig& wcfg = {},
-                      size_t outputBatchSize = 0) {
+                      size_t outputBatchSize = 0,
+                      int decodeThreads = 0) {
     uint64_t sliceSize;
     switch (axis) {
         case erwt3d::SliceAxis::X: sliceSize = header.ny * header.nz; break;
@@ -142,7 +143,7 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
             }
 
             auto rStart = std::chrono::high_resolution_clock::now();
-            if (!reader.readSlicesBatch(reqs, numThreads, memoryLimitMB, wcfg)) {
+            if (!reader.readSlicesBatch(reqs, numThreads, memoryLimitMB, wcfg, decodeThreads)) {
                 std::cerr << "\nError: batch read failed for " << axisName << "\n";
                 for (auto fd : preCreatedFDs) if (fd >= 0) close(fd);
                 return false;
@@ -222,7 +223,8 @@ int main(int argc, char* argv[]) {
     bool hddMode = false;
     std::string compressedReadModeStr = "windowed";
     double fullScanThreshold = 0.0;
-    size_t outputBatchSize = 0;  // 0 = auto from memory budget
+    size_t outputBatchSize = 0;
+    int decodeThreads = 0;  // 0 = same as numThreads  // 0 = auto from memory budget
     double baselineMsOverride = 0;
     int repeats = 1;
 
@@ -275,6 +277,9 @@ int main(int argc, char* argv[]) {
         }
         else if (std::strcmp(argv[i], "--output-batch-size") == 0) {
             outputBatchSize = std::stoul(next());
+        }
+        else if (std::strcmp(argv[i], "--decode-threads") == 0) {
+            decodeThreads = std::stoi(next());
         }
         else if (std::strcmp(argv[i], "--baseline-ms") == 0) { baselineMsOverride = std::stod(next()); }
         else if (std::strcmp(argv[i], "--baseline-file") == 0) { baselineFile = next(); }
@@ -425,7 +430,7 @@ int main(int argc, char* argv[]) {
 
             erwt3d::HDDReadWindowConfig wcfg{hddReadWindowBytes, hddMaxGapBytes, fullScanThreshold};
             if (!runGroup(reader, spec.axis, spec.axisName, *spec.indices, spec.mode,
-                          header, numThreads, memoryLimitMB, repDir, gr, useBatch, wcfg, outputBatchSize)) {
+                          header, numThreads, memoryLimitMB, repDir, gr, useBatch, wcfg, outputBatchSize, decodeThreads)) {
                 return 1;
             }
 
