@@ -1154,6 +1154,10 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
         // Windowed mode: merge adjacent blocks into read windows
         std::vector<uint8_t> readBuf;
         std::vector<uint8_t> sbBuf(sbBV);
+
+        std::unique_ptr<ThreadPool> pool;
+        if (numThreads > 1) pool = std::make_unique<ThreadPool>(numThreads);
+
         size_t firstTask = 0;
         while (firstTask < taskOrder.size()) {
             const auto& first = batch.batch_tasks[taskOrder[firstTask]];
@@ -1184,6 +1188,53 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
             }
 
             size_t task = firstTask;
+            size_t blockCount = endTask - firstTask;
+
+            if (pool && blockCount > 1) {
+                std::vector<std::vector<uint8_t>> threadBufs(blockCount);
+                for (size_t bi = 0; bi < blockCount; ++bi)
+                    threadBufs[bi].resize(sbBV);
+
+                std::vector<std::future<void>> futures;
+                for (size_t bi = 0; bi < blockCount; ++bi) {
+                    const auto& bt = batch.batch_tasks[taskOrder[firstTask + bi]];
+                    const auto& entry = compIndex_[bt.sb_index];
+                    const uint8_t* encoded = readBuf.data() + (entry.file_offset - windowOffset);
+                    uint8_t* out = threadBufs[bi].data();
+
+                    futures.push_back(pool->submit([encoded, out, &entry, sbBV]() {
+                        if (entry.is_compressed) {
+#ifdef ERWT3D_HAVE_LZ4
+                            LZ4_decompress_safe(
+                                reinterpret_cast<const char*>(encoded),
+                                reinterpret_cast<char*>(out),
+                                static_cast<int>(entry.compressed_size),
+                                static_cast<int>(sbBV));
+#endif
+                        } else {
+                            std::memcpy(out, encoded, static_cast<size_t>(sbBV));
+                        }
+                    }));
+                }
+                for (auto& f : futures) f.wait();
+
+                size_t bi = 0;
+                for (; bi < blockCount; ++bi) {
+                    const auto& bt = batch.batch_tasks[taskOrder[firstTask + bi]];
+                    const uint64_t sbIndex = bt.sb_index;
+                    size_t ti = firstTask + bi;
+                    while (ti < endTask) {
+                        const auto& same = batch.batch_tasks[taskOrder[ti]];
+                        if (same.sb_index != sbIndex) break;
+                        SBTask unpackTask{same.file_offset, same.first_leaf,
+                                          same.leaf_count, same.sb_index};
+                        unpackLeaves(header_, *same.plan, unpackTask,
+                                     threadBufs[bi].data(), outputs[same.output_id]);
+                        ++ti;
+                    }
+                }
+                firstTask = endTask;
+            } else {
             while (task < endTask) {
                 const auto& bt = batch.batch_tasks[taskOrder[task]];
                 const auto& entry = compIndex_[bt.sb_index];
@@ -1215,6 +1266,7 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
                 } while (task < endTask);
             }
             firstTask = endTask;
+            } // end of parallel/sequential branch
         }
         return true;
     }
