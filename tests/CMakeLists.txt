@@ -1,0 +1,9 @@
+add_executable(test_relative_error test_relative_error.cpp)
+target_link_libraries(test_relative_error PRIVATE erwt3d)
+
+add_executable(test_rzfp_codec test_rzfp_codec.cpp)
+target_link_libraries(test_rzfp_codec PRIVATE erwt3d)
+
+add_test(NAME relative_error_strict COMMAND test_relative_error strict)
+add_test(NAME relative_error_legacy COMMAND test_relative_error legacy)
+add_test(NAME rzfp_codec COMMAND test_rzfp_codec)

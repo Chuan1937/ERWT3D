@@ -7,9 +7,33 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Options
 option(ERWT3D_NATIVE_OPT "Use -march=native -mtune=native (Release only)" ON)
+option(ERWT3D_ENABLE_RZFP "Enable experimental ZFP pointwise-relative codec" OFF)
 
 # Thread support
 find_package(Threads REQUIRED)
+
+# Optional ZFP dependency for RZFP codec
+set(ERWT3D_ZFP_TARGET "")
+if(ERWT3D_ENABLE_RZFP)
+    find_package(zfp CONFIG QUIET)
+    if(TARGET zfp::zfp)
+        set(ERWT3D_ZFP_TARGET zfp::zfp)
+        message(STATUS "Found ZFP via CMake package: zfp::zfp")
+    else()
+        find_path(ERWT3D_ZFP_INCLUDE_DIR NAMES zfp.h)
+        find_library(ERWT3D_ZFP_LIBRARY NAMES zfp)
+        if(NOT ERWT3D_ZFP_INCLUDE_DIR OR NOT ERWT3D_ZFP_LIBRARY)
+            message(FATAL_ERROR
+                "ERWT3D_ENABLE_RZFP=ON but ZFP was not found "
+                "(neither CMake package nor headers/library)")
+        endif()
+        add_library(erwt3d_zfp_external INTERFACE)
+        target_include_directories(erwt3d_zfp_external INTERFACE ${ERWT3D_ZFP_INCLUDE_DIR})
+        target_link_libraries(erwt3d_zfp_external INTERFACE ${ERWT3D_ZFP_LIBRARY})
+        set(ERWT3D_ZFP_TARGET erwt3d_zfp_external)
+        message(STATUS "Found ZFP manually: ${ERWT3D_ZFP_LIBRARY}")
+    endif()
+endif()
 
 # lz4 for compression
 find_library(LZ4_LIBRARY lz4)
@@ -57,6 +81,13 @@ set(LIB_SOURCES
     src/api.cpp
 )
 
+if(ERWT3D_ENABLE_RZFP)
+    list(APPEND LIB_SOURCES
+        src/relative_error.cpp
+        src/rzfp_codec.cpp
+    )
+endif()
+
 # Create library
 add_library(erwt3d STATIC ${LIB_SOURCES})
 target_include_directories(erwt3d PUBLIC include)
@@ -65,6 +96,10 @@ if(HAVE_LZ4)
     target_link_libraries(erwt3d PUBLIC ${LZ4_LIBRARY})
     target_include_directories(erwt3d PUBLIC ${LZ4_INCLUDE_DIR})
     target_compile_definitions(erwt3d PUBLIC ERWT3D_HAVE_LZ4=1)
+endif()
+if(ERWT3D_ENABLE_RZFP)
+    target_link_libraries(erwt3d PUBLIC ${ERWT3D_ZFP_TARGET})
+    target_compile_definitions(erwt3d PUBLIC ERWT3D_HAVE_RZFP=1)
 endif()
 
 # Tools
@@ -107,3 +142,12 @@ target_link_libraries(example_api PRIVATE erwt3d)
 # sw4-style single entry point
 add_executable(erwt3d_cli tools/erwt3d_main.cpp)
 set_target_properties(erwt3d_cli PROPERTIES OUTPUT_NAME erwt3d)
+
+# RZFP tools and tests
+if(ERWT3D_ENABLE_RZFP)
+    add_executable(erwt3d_rzfp_probe tools/erwt3d_rzfp_probe.cpp)
+    target_link_libraries(erwt3d_rzfp_probe PRIVATE erwt3d)
+
+    enable_testing()
+    add_subdirectory(tests)
+endif()
