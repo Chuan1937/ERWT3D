@@ -89,6 +89,8 @@ if(ERWT3D_ENABLE_RZFP)
         src/rzfp_reader.cpp
         src/rzfp_xplane_codec.cpp
         src/rzfp_xplane_writer.cpp
+        src/rzfp_raw_sampler.cpp
+        src/rzfp_auto_plan.cpp
     )
 endif()
 

@@ -1,5 +1,6 @@
 #include "erwt3d/relative_error.hpp"
 #include "erwt3d/rzfp_codec.hpp"
+#include "erwt3d/rzfp_raw_sampler.hpp"
 #include "erwt3d/rzfp_xplane_codec.hpp"
 
 #include <algorithm>
@@ -61,16 +62,6 @@ struct ProbeStats {
     uint64_t violation_count = 0;
 };
 
-static bool readRawPlane(int fd, uint64_t x, uint64_t nx, uint64_t ny, uint64_t nz, float* plane) {
-    const uint64_t row_bytes = ny * sizeof(float);
-    for (uint64_t z = 0; z < nz; ++z) {
-        const uint64_t off = (z * ny) * nx + x;
-        if (pread(fd, plane + z * ny, row_bytes, off * sizeof(float)) != static_cast<ssize_t>(row_bytes)) {
-            return false;
-        }
-    }
-    return true;
-}
 
 static uint32_t buildMandatoryExceptionMask2D(const float input[16], uint32_t valid_mask) {
     uint32_t mask = 0;
@@ -479,11 +470,12 @@ static bool probePlane(int fd, uint64_t x, const ProbeOptions& opt,
                        const RzfpXPlaneCodecConfig& cfg, ProbeStats& stats) {
     const uint64_t ny = opt.ny;
     const uint64_t nz = opt.nz;
-    std::vector<float> plane(ny * nz);
-    if (!readRawPlane(fd, x, opt.nx, ny, nz, plane.data())) {
+    std::vector<SampledXPlane> planes;
+    if (!sampleXPlanesFromRaw(fd, opt.nx, ny, nz, {x}, planes) || planes.empty()) {
         std::cerr << "Error: failed to read plane x=" << x << std::endl;
         return false;
     }
+    const SampledXPlane& plane = planes[0];
 
     const uint64_t blocks_y = (ny + 3) / 4;
     const uint64_t blocks_z = (nz + 3) / 4;
@@ -499,7 +491,7 @@ static bool probePlane(int fd, uint64_t x, const ProbeOptions& opt,
                     const uint64_t gz = bz * 4 + lz;
                     if (gy < ny && gz < nz) {
                         valid_mask |= (1u << i);
-                        block[i] = plane[gz * ny + gy];
+                        block[i] = plane.at(gy, gz);
                     } else {
                         block[i] = 0.0f;
                     }
