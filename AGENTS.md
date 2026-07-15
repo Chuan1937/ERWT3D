@@ -50,7 +50,7 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 | big.dat | 2001 × 2201 × 3000 | 50 GB |
 
 - 数据类型：float32
-- 存储顺序：X-Y-Z row-major（X 变化最快）
+- 存储顺序：X-Y-Z row-major（Z 变化最快），即官方数据布局 `offset(x,y,z) = (x*ny + y)*nz + z`
 
 ## 文件格式
 
@@ -100,7 +100,7 @@ D 盘 HDD，`--hdd` 模式，4GB 内存限制：
 
 - **X-plane sidecar 是 X random 的最大收益点**：stride=1 全覆盖时 X random 从 63s 降到 15s（-76%），因为只需读压缩 chunk（~11MB/plane）而非扫描整个文件
 - **sidecar 压缩率取决于 YZ 平面空间相关性**：20GB 数据集 0.489x（可行），50GB 0.979x（sidecar 16GB 导致 page cache 干扰，净效果为负，不应使用）
-- **sidecar 生成需按 raw 的 X-Y-Z row-major 布局正确提取**：固定 x 的 YZ 平面在 raw 中是 strided 的，必须顺序扫描按 z 层读取后抽取 x 列
+- **sidecar 生成按 raw 的 X-Y-Z row-major 布局提取**：在官方 Z-fastest 布局中，固定 x 的 YZ 平面在 raw 文件中连续存储，sidecar writer 直接按 X chunk 顺序读取并转置为 Y-fastest 的 sidecar 平面格式
 - **流式 sidecar writer**：按 z-chunk 分批处理，内存从 18GB 降至 1.9GB（20G stride=1）
 - **sidecar batch reader**：chunk task 全局排序 + 4KB gap 合并，减少 HDD 寻道
 - **LeafOp 紧凑化**（48B→16B/leaf）改善 cache 局部性，50GB T_composite 改善 6%

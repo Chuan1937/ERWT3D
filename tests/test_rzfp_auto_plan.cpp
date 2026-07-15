@@ -1,6 +1,7 @@
 #include "erwt3d/rzfp_auto_plan.hpp"
 
 #include <cstdint>
+#include <cstdlib>
 #include <fcntl.h>
 #include <iostream>
 #include <unistd.h>
@@ -19,10 +20,10 @@ void check(bool condition, const char* msg) {
 
 bool writeRawFile(const std::string& path, uint64_t nx, uint64_t ny, uint64_t nz) {
     std::vector<float> data(nx * ny * nz);
-    for (uint64_t z = 0; z < nz; ++z) {
+    for (uint64_t x = 0; x < nx; ++x) {
         for (uint64_t y = 0; y < ny; ++y) {
-            for (uint64_t x = 0; x < nx; ++x) {
-                data[(z * ny + y) * nx + x] = static_cast<float>(x * 100 + y * 10 + z);
+            for (uint64_t z = 0; z < nz; ++z) {
+                data[(x * ny + y) * nz + z] = static_cast<float>(x * 100 + y * 10 + z);
             }
         }
     }
@@ -45,7 +46,8 @@ bool writeRawFile(const std::string& path, uint64_t nx, uint64_t ny, uint64_t nz
 } // namespace
 
 int main() {
-    const std::string path = "/tmp/test_auto_plan.raw";
+    std::system("mkdir -p /mnt/d/opencode_tests");
+    const std::string path = "/mnt/d/opencode_tests/test_auto_plan.raw";
     const uint64_t nx = 40;
     const uint64_t ny = 48;
     const uint64_t nz = 32;

@@ -18,7 +18,7 @@ using erwt3d::XPChunkIndex;
 using erwt3d::XPSIDECAR_MAGIC;
 using erwt3d::XPSIDECAR_VERSION;
 
-// Raw data layout: X-Y-Z row-major (X varies fastest).
+// Raw data layout: X-Y-Z row-major (Z varies fastest): offset = (x*ny + y)*nz + z.
 // data[x, y, z] linear offset = x + y*nx + z*nx*ny
 //
 // Streaming sidecar build: process one z-chunk at a time.

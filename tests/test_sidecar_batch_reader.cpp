@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <fcntl.h>
 #include <iostream>
 #include <unistd.h>
@@ -22,10 +23,10 @@ void check(bool condition, const char* msg) {
 
 bool writeRawFile(const std::string& path, uint64_t nx, uint64_t ny, uint64_t nz) {
     std::vector<float> data(nx * ny * nz);
-    for (uint64_t z = 0; z < nz; ++z) {
+    for (uint64_t x = 0; x < nx; ++x) {
         for (uint64_t y = 0; y < ny; ++y) {
-            for (uint64_t x = 0; x < nx; ++x) {
-                data[(z * ny + y) * nx + x] = std::sin(x * 0.1f) * std::cos(y * 0.05f) * std::sin(z * 0.07f);
+            for (uint64_t z = 0; z < nz; ++z) {
+                data[(x * ny + y) * nz + z] = std::sin(x * 0.1f) * std::cos(y * 0.05f) * std::sin(z * 0.07f);
             }
         }
     }
@@ -48,8 +49,9 @@ bool writeRawFile(const std::string& path, uint64_t nx, uint64_t ny, uint64_t nz
 } // namespace
 
 int main() {
-    const std::string raw_path = "/tmp/test_batch_raw.raw";
-    const std::string rzfp_path = "/tmp/test_batch_raw.rzfp";
+    std::system("mkdir -p /mnt/d/opencode_tests");
+    const std::string raw_path = "/mnt/d/opencode_tests/test_batch_raw.raw";
+    const std::string rzfp_path = "/mnt/d/opencode_tests/test_batch_raw.rzfp";
     const std::string xp_path = rzfp_path + ".xp";
     const uint64_t nx = 48;
     const uint64_t ny = 40;

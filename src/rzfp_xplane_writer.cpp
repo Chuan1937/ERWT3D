@@ -125,45 +125,38 @@ bool writeXPlaneSidecarFile(
     ThreadPool pool(static_cast<size_t>(std::max(1, threads)));
 
     const uint64_t chunk_x = std::max<uint64_t>(1, std::min<uint64_t>(nx, 32));
-    const uint64_t z_slab = 32;
-    const uint64_t row_bytes = ny * sizeof(float);
-    const uint64_t layer_bytes = nx * row_bytes;
+    const uint64_t plane_floats = ny * nz;
+    const uint64_t plane_bytes = plane_floats * sizeof(float);
 
     uint64_t next_data_offset = data_offset;
 
     for (uint64_t x_start = 0; x_start < nx; x_start += chunk_x) {
         const uint64_t x_end = std::min(x_start + chunk_x, nx);
         const uint64_t current_chunk = x_end - x_start;
+        const uint64_t chunk_floats = current_chunk * plane_floats;
 
-        std::vector<float> chunk_buffer(current_chunk * ny * nz);
-
-        for (uint64_t z_start = 0; z_start < nz; z_start += z_slab) {
-            const uint64_t current_z = std::min<uint64_t>(z_slab, nz - z_start);
-            std::vector<float> slab_buffer(current_z * ny * nx);
-            const uint64_t slab_read_bytes = current_z * layer_bytes;
-            if (!readFullyAt(raw_fd, slab_buffer.data(), slab_read_bytes, z_start * layer_bytes)) {
-                std::cerr << "Error: failed to read raw slab z=" << z_start << std::endl;
-                close(raw_fd); close(out_fd); unlink(tmp_path.c_str());
-                return false;
-            }
-
-            for (uint64_t z = 0; z < current_z; ++z) {
-                for (uint64_t y = 0; y < ny; ++y) {
-                    const uint64_t base = z * ny * nx + y * nx + x_start;
-                    for (uint64_t xi = 0; xi < current_chunk; ++xi) {
-                        const uint64_t plane_idx = xi * ny * nz + (z_start + z) * ny + y;
-                        chunk_buffer[plane_idx] = slab_buffer[base + xi];
-                    }
-                }
-            }
+        std::vector<float> chunk_buffer(chunk_floats);
+        const uint64_t read_offset = x_start * plane_bytes;
+        if (!readFullyAt(raw_fd, chunk_buffer.data(), chunk_floats * sizeof(float), read_offset)) {
+            std::cerr << "Error: failed to read X-plane chunk x=" << x_start << std::endl;
+            close(raw_fd); close(out_fd); unlink(tmp_path.c_str());
+            return false;
         }
 
         std::vector<std::future<std::vector<uint8_t>>> futures;
         futures.reserve(current_chunk);
         for (uint64_t xi = 0; xi < current_chunk; ++xi) {
-            const float* plane = chunk_buffer.data() + xi * ny * nz;
-            futures.push_back(pool.submit([plane, ny, nz, &cfg]() {
-                return encodeXPlane2D(plane, ny, nz, cfg);
+            const float* raw_plane = chunk_buffer.data() + xi * plane_floats;
+            futures.push_back(pool.submit([raw_plane, ny, nz, &cfg]() {
+                // Raw X-plane is Z-fastest (offset = y*nz + z).
+                // Sidecar plane format expects Y-fastest (offset = z*ny + y).
+                std::vector<float> plane(ny * nz);
+                for (uint64_t y = 0; y < ny; ++y) {
+                    for (uint64_t z = 0; z < nz; ++z) {
+                        plane[z * ny + y] = raw_plane[y * nz + z];
+                    }
+                }
+                return encodeXPlane2D(plane.data(), ny, nz, cfg);
             }));
         }
 

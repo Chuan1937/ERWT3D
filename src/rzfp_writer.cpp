@@ -56,14 +56,14 @@ static void packLeavesFromSlab(
     uint8_t* out,
     const RzfpFileHeader& header,
     const float* slab,
-    uint64_t nx, uint64_t ny,
-    uint64_t zStart, uint64_t currentZ,
-    uint64_t sx, uint64_t sy
+    uint64_t nx, uint64_t ny, uint64_t nz,
+    uint64_t xStart, uint64_t currentX,
+    uint64_t sx, uint64_t sy, uint64_t sz
 ) {
     const uint64_t leafBytes = sizeof(float) * header.leaf_x * header.leaf_y * header.leaf_z;
     const uint64_t validX = std::min<uint64_t>(header.super_x, nx - sx * header.super_x);
     const uint64_t validY = std::min<uint64_t>(header.super_y, ny - sy * header.super_y);
-    const uint64_t validZ = std::min<uint64_t>(header.super_z, currentZ);
+    const uint64_t validZ = std::min<uint64_t>(header.super_z, nz - sz * header.super_z);
     const bool boundary = validX != header.super_x || validY != header.super_y || validZ != header.super_z;
     if (boundary) std::memset(out, 0, header.super_x * header.super_y * header.super_z * sizeof(float));
 
@@ -85,15 +85,17 @@ static void packLeavesFromSlab(
         const uint64_t copyX = std::min<uint64_t>(leafX, validX - bx);
         const uint64_t copyY = std::min<uint64_t>(leafY, validY - by);
         const uint64_t copyZ = std::min<uint64_t>(leafZ, validZ - bz);
-        auto* dst = out + j * leafBytes;
+        float* dst = reinterpret_cast<float*>(out + j * leafBytes);
         for (uint64_t z = 0; z < copyZ; ++z) {
             for (uint64_t y = 0; y < copyY; ++y) {
-                const uint64_t srcElem = ((zStart + bz + z) * ny + sy * header.super_y + by + y) * nx +
-                                         sx * header.super_x + bx;
                 const uint64_t dstElem = (z * leafY + y) * leafX;
-                std::memcpy(dst + dstElem * sizeof(float),
-                            slab + (srcElem - zStart * ny * nx),
-                            copyX * sizeof(float));
+                for (uint64_t x = 0; x < copyX; ++x) {
+                    const uint64_t gx_local = bx + x;
+                    const uint64_t gy = sy * header.super_y + by + y;
+                    const uint64_t gz = sz * header.super_z + bz + z;
+                    const uint64_t srcElem = gx_local * ny * nz + gy * nz + gz;
+                    dst[dstElem + x] = slab[srcElem];
+                }
             }
         }
     }
@@ -247,10 +249,10 @@ bool writeRzfpFile(
         return false;
     }
 
-    const uint64_t rawRowBytes = config.nx * sizeof(float);
-    const uint64_t rawSliceBytes = rawRowBytes * config.ny;
-    const uint64_t slabZ = config.super_size;
-    const uint64_t slabBytes = rawSliceBytes * slabZ;
+    const uint64_t rawYZFloats = config.ny * config.nz;
+    const uint64_t rawYZBytes = rawYZFloats * sizeof(float);
+    const uint64_t slabX = config.super_size;
+    const uint64_t slabBytes = rawYZBytes * slabX;
 
     std::vector<float> slab(slabBytes / sizeof(float));
     std::vector<uint8_t> leafBuffer(header.super_x * header.super_y * header.super_z * sizeof(float));
@@ -263,25 +265,25 @@ bool writeRzfpFile(
 
     uint64_t currentPayloadOffset = payloadStart;
 
-    for (uint64_t zStart = 0; zStart < config.nz; zStart += slabZ) {
-        const uint64_t currentZ = std::min<uint64_t>(slabZ, config.nz - zStart);
-        const uint64_t currentBytes = currentZ * rawSliceBytes;
+    for (uint64_t xStart = 0; xStart < config.nx; xStart += slabX) {
+        const uint64_t currentX = std::min<uint64_t>(slabX, config.nx - xStart);
+        const uint64_t currentBytes = currentX * rawYZBytes;
 
         auto t0 = Clock::now();
-        if (!readFullyAt(rawFd, slab.data(), currentBytes, zStart * rawSliceBytes)) {
-            std::cerr << "Error reading raw Z-slab at z=" << zStart << std::endl;
+        if (!readFullyAt(rawFd, slab.data(), currentBytes, xStart * rawYZBytes)) {
+            std::cerr << "Error reading raw X-slab at x=" << xStart << std::endl;
             close(rawFd); close(outFd); unlink(tmpPath.c_str());
             return false;
         }
         auto t1 = Clock::now();
         totalReadMs += std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-        const uint64_t sz = zStart / slabZ;
-        for (uint64_t sy = 0; sy < sgY; ++sy) {
-            for (uint64_t sx = 0; sx < sgX; ++sx) {
+        const uint64_t sx = xStart / slabX;
+        for (uint64_t sz = 0; sz < sgZ; ++sz) {
+            for (uint64_t sy = 0; sy < sgY; ++sy) {
                 packLeavesFromSlab(
-                    leafBuffer.data(), header, slab.data(), config.nx, config.ny,
-                    zStart, currentZ, sx, sy);
+                    leafBuffer.data(), header, slab.data(), config.nx, config.ny, config.nz,
+                    xStart, currentX, sx, sy, sz);
 
                 const uint64_t sbId = rzfpSuperblockId(header, sz, sy, sx, config.physical_order);
                 const uint64_t base_x = sx * header.super_x;
@@ -353,7 +355,7 @@ bool writeRzfpFile(
                 currentPayloadOffset += payload.size();
 
                 std::cout << "\rRZFP write progress: " << std::fixed << std::setprecision(1)
-                          << (100.0 * std::min<uint64_t>(zStart + currentZ, config.nz) / config.nz)
+                          << (100.0 * std::min<uint64_t>(xStart + currentX, config.nx) / config.nx)
                           << "%" << std::flush;
             }
         }

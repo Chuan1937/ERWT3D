@@ -176,14 +176,14 @@ static bool readFullyAt(int fd, void* buffer, size_t bytes, uint64_t offset) {
 
 static void extractLeaf(
     const float* slab,
-    uint64_t slab_z_start,
-    uint64_t slab_z_count,
-    uint64_t nx,
+    uint64_t slab_x_start,
+    uint64_t slab_x_count,
     uint64_t ny,
+    uint64_t nz,
     const LeafSample& sample,
     float leaf[64]
 ) {
-    const uint64_t layer_stride = nx * ny;
+    const uint64_t yz_stride = ny * nz;
     for (uint32_t z = 0; z < 4; ++z) {
         for (uint32_t y = 0; y < 4; ++y) {
             for (uint32_t x = 0; x < 4; ++x) {
@@ -192,15 +192,15 @@ static void extractLeaf(
                     leaf[i] = 0.0f;
                     continue;
                 }
-                const uint64_t gz = sample.start_z + z;
-                const uint64_t gy = sample.start_y + y;
                 const uint64_t gx = sample.start_x + x;
-                const uint64_t slab_z = gz - slab_z_start;
-                if (slab_z >= slab_z_count) {
+                const uint64_t gy = sample.start_y + y;
+                const uint64_t gz = sample.start_z + z;
+                const uint64_t slab_x = gx - slab_x_start;
+                if (slab_x >= slab_x_count) {
                     leaf[i] = 0.0f;
                     continue;
                 }
-                leaf[i] = slab[slab_z * layer_stride + gy * nx + gx];
+                leaf[i] = slab[slab_x * yz_stride + gy * nz + gz];
             }
         }
     }
@@ -391,8 +391,8 @@ int main(int argc, char* argv[]) {
     auto worker = [&](
         const std::vector<LeafSample>& samples,
         const float* slab,
-        uint64_t slab_z_start,
-        uint64_t slab_z_count,
+        uint64_t slab_x_start,
+        uint64_t slab_x_count,
         size_t begin,
         size_t end
     ) {
@@ -400,7 +400,7 @@ int main(int argc, char* argv[]) {
         for (size_t i = begin; i < end; ++i) {
             const auto& s = samples[i];
             float leaf[64];
-            extractLeaf(slab, slab_z_start, slab_z_count, opt.nx, opt.ny, s, leaf);
+            extractLeaf(slab, slab_x_start, slab_x_count, opt.ny, opt.nz, s, leaf);
             LeafResult r = processOneLeaf(leaf, s, codec_cfg);
 
             total_violations.fetch_add(r.violation_count);
@@ -448,36 +448,36 @@ int main(int argc, char* argv[]) {
         size_t region_samples = base_per_region + (ri < remainder ? 1 : 0);
         if (region_samples == 0) continue;
 
-        uint64_t z_center = static_cast<uint64_t>(
-            stratified_percent[ri] * static_cast<long double>(opt.nz) / 100.0L
+        uint64_t x_center = static_cast<uint64_t>(
+            stratified_percent[ri] * static_cast<long double>(opt.nx) / 100.0L
         );
-        uint64_t z_start = z_center;
-        if (opt.nz > opt.slab_z && z_start + opt.slab_z > opt.nz) {
-            z_start = opt.nz - opt.slab_z;
+        uint64_t x_start = x_center;
+        if (opt.nx > opt.slab_z && x_start + opt.slab_z > opt.nx) {
+            x_start = opt.nx - opt.slab_z;
         }
-        uint64_t current_z = std::min<uint64_t>(opt.slab_z, opt.nz - z_start);
-        if (current_z == 0) continue;
+        uint64_t current_x = std::min<uint64_t>(opt.slab_z, opt.nx - x_start);
+        if (current_x == 0) continue;
 
-        const uint64_t layer_floats = opt.nx * opt.ny;
-        const uint64_t slab_floats = layer_floats * current_z;
+        const uint64_t yz_floats = opt.ny * opt.nz;
+        const uint64_t slab_floats = yz_floats * current_x;
         std::vector<float> slab(slab_floats);
-        const uint64_t offset = z_start * layer_floats * sizeof(float);
+        const uint64_t offset = x_start * yz_floats * sizeof(float);
         if (!readFullyAt(raw_fd, slab.data(), slab_floats * sizeof(float), offset)) {
-            std::cerr << "Error reading raw slab at z=" << z_start << std::endl;
+            std::cerr << "Error reading raw X-slab at x=" << x_start << std::endl;
             close(raw_fd);
             return 1;
         }
 
         std::vector<LeafSample> samples;
         samples.reserve(region_samples);
-        std::uniform_int_distribution<uint64_t> dist_x(0, leaf_grid_x > 0 ? leaf_grid_x - 1 : 0);
-        std::uniform_int_distribution<uint64_t> dist_y(0, leaf_grid_y > 0 ? leaf_grid_y - 1 : 0);
-        const uint64_t z_low = z_start / 4;
-        const uint64_t z_high = std::min<uint64_t>((z_start + current_z + 3) / 4, leaf_grid_z);
-        std::uniform_int_distribution<uint64_t> dist_z(
-            z_low,
-            z_high > z_low ? z_high - 1 : z_low
+        const uint64_t x_low = x_start / 4;
+        const uint64_t x_high = std::min<uint64_t>((x_start + current_x + 3) / 4, leaf_grid_x);
+        std::uniform_int_distribution<uint64_t> dist_x(
+            x_low,
+            x_high > x_low ? x_high - 1 : x_low
         );
+        std::uniform_int_distribution<uint64_t> dist_y(0, leaf_grid_y > 0 ? leaf_grid_y - 1 : 0);
+        std::uniform_int_distribution<uint64_t> dist_z(0, leaf_grid_z > 0 ? leaf_grid_z - 1 : 0);
 
         for (size_t s = 0; s < region_samples; ++s) {
             uint64_t lx = dist_x(rng);
@@ -501,7 +501,7 @@ int main(int argc, char* argv[]) {
             size_t b = t * chunk;
             size_t e = std::min(b + chunk, samples.size());
             if (b >= e) continue;
-            workers.emplace_back(worker, std::cref(samples), slab.data(), z_start, current_z, b, e);
+            workers.emplace_back(worker, std::cref(samples), slab.data(), x_start, current_x, b, e);
         }
         for (auto& w : workers) w.join();
 

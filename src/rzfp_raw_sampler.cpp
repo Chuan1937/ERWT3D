@@ -5,6 +5,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <unistd.h>
+#include <vector>
 
 namespace erwt3d {
 
@@ -26,18 +27,6 @@ static bool readFullyAt(int fd, void* buffer, size_t bytes, uint64_t offset) {
 }
 
 } // namespace
-
-bool readRawLayer(
-    int fd,
-    uint64_t nx,
-    uint64_t ny,
-    uint64_t z,
-    std::vector<float>& layer
-) {
-    layer.resize(nx * ny);
-    const uint64_t offset = z * nx * ny * sizeof(float);
-    return readFullyAt(fd, layer.data(), layer.size() * sizeof(float), offset);
-}
 
 bool sampleXPlanesFromRaw(
     int fd,
@@ -68,16 +57,21 @@ bool sampleXPlanesFromRaw(
         }
     }
 
-    std::vector<float> layer;
-    for (const auto& zr : ranges) {
-        for (uint64_t z = zr.z_start; z < zr.z_start + zr.z_count; ++z) {
-            if (!readRawLayer(fd, nx, ny, z, layer)) return false;
-            for (auto& plane : output) {
-                if (plane.z_start > z || z >= plane.z_start + plane.z_count) continue;
+    const uint64_t plane_floats = ny * nz;
+    std::vector<float> full_plane(plane_floats);
+
+    for (uint64_t x : sampled_x) {
+        const uint64_t offset = x * plane_floats * sizeof(float);
+        if (!readFullyAt(fd, full_plane.data(), plane_floats * sizeof(float), offset)) {
+            return false;
+        }
+
+        for (auto& plane : output) {
+            if (plane.x != x) continue;
+            for (uint64_t z = plane.z_start; z < plane.z_start + plane.z_count; ++z) {
                 float* dst = plane.row(z);
-                const uint64_t x = plane.x;
                 for (uint64_t y = 0; y < ny; ++y) {
-                    dst[y] = layer[y * nx + x];
+                    dst[y] = full_plane[y * nz + z];
                 }
             }
         }

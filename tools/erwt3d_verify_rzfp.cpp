@@ -141,21 +141,23 @@ static int runFastFullVerify(const VerifyOptions& opt) {
     const uint64_t totalSuperblocks = sgX * sgY * sgZ;
     const uint64_t progressStep = std::max<uint64_t>(1, totalSuperblocks / 100);
 
-    for (uint64_t sz = 0; sz < sgZ; ++sz) {
-        const uint64_t zStart = sz * superSize;
-        const uint64_t currentZ = std::min<uint64_t>(superSize, opt.nz - zStart);
-        const uint64_t slabFloats = opt.nx * opt.ny * currentZ;
+    const uint64_t yzFloats = opt.ny * opt.nz;
+
+    for (uint64_t sx = 0; sx < sgX; ++sx) {
+        const uint64_t xStart = sx * superSize;
+        const uint64_t currentX = std::min<uint64_t>(superSize, opt.nx - xStart);
+        const uint64_t slabFloats = currentX * yzFloats;
         slab.resize(slabFloats);
         const uint64_t slabBytes = slabFloats * sizeof(float);
-        if (!readFullyAt(rawFd, slab.data(), slabBytes, zStart * opt.nx * opt.ny * sizeof(float))) {
-            std::cerr << "Error: failed to read raw slab z=" << zStart << std::endl;
+        if (!readFullyAt(rawFd, slab.data(), slabBytes, xStart * yzFloats * sizeof(float))) {
+            std::cerr << "Error: failed to read raw X-slab x=" << xStart << std::endl;
             close(rawFd);
             close(rzfpFd);
             return 1;
         }
 
-        for (uint64_t sy = 0; sy < sgY; ++sy) {
-            for (uint64_t sx = 0; sx < sgX; ++sx) {
+        for (uint64_t sz = 0; sz < sgZ; ++sz) {
+            for (uint64_t sy = 0; sy < sgY; ++sy) {
                 const uint64_t logical_id = (sz * sgY + sy) * sgX + sx;
                 const uint64_t phys = physicalSuperblockIdFast(header, logical_id);
                 const uint64_t base_x = sx * superSize;
@@ -209,8 +211,8 @@ static int runFastFullVerify(const VerifyOptions& opt) {
                                 const uint64_t gx = start_x + x;
                                 const uint64_t gy = start_y + y;
                                 const uint64_t gz = start_z + z;
-                                const uint64_t local_z = gz - zStart;
-                                const float raw_val = slab[(local_z * opt.ny + gy) * opt.nx + gx];
+                                const uint64_t local_x = gx - xStart;
+                                const float raw_val = slab[local_x * yzFloats + gy * opt.nz + gz];
                                 const float dec_val = leaf[idx];
                                 auto r = erwt3d::checkPointwiseError(raw_val, dec_val, cfg);
                                 ++checked;
@@ -250,7 +252,6 @@ static int runFullVerify(const VerifyOptions& opt) {
 
     const auto cfg = makeConfig(opt);
     std::vector<float> slice(opt.nx * opt.ny);
-    std::vector<float> raw_layer(opt.nx * opt.ny);
 
     int rawFd = open(opt.raw_path.c_str(), O_RDONLY);
     if (rawFd < 0) {
@@ -258,31 +259,40 @@ static int runFullVerify(const VerifyOptions& opt) {
         return 1;
     }
 
+    const uint64_t totalFloats = opt.nx * opt.ny * opt.nz;
+    std::vector<float> raw_volume;
+    raw_volume.resize(totalFloats);
+    if (!readFullyAt(rawFd, raw_volume.data(), totalFloats * sizeof(float), 0)) {
+        std::cerr << "Error: failed to read whole raw file" << std::endl;
+        close(rawFd);
+        return 1;
+    }
+    close(rawFd);
+
     uint64_t failed = 0;
     double max_abs = 0.0;
     double max_rel = 0.0;
     uint64_t checked = 0;
 
-    const uint64_t layer_bytes = opt.nx * opt.ny * sizeof(float);
+    const uint64_t yzFloats = opt.ny * opt.nz;
 
     for (uint64_t z = 0; z < opt.nz; ++z) {
         if (!reader.readSlice(erwt3d::SliceAxis::Z, z, slice.data())) {
             std::cerr << "Error: failed to read Z slice " << z << std::endl;
-            close(rawFd);
-            return 1;
-        }
-        if (!readFullyAt(rawFd, raw_layer.data(), layer_bytes, z * layer_bytes)) {
-            std::cerr << "Error: failed to read raw layer " << z << std::endl;
-            close(rawFd);
             return 1;
         }
 
-        for (uint64_t i = 0; i < opt.nx * opt.ny; ++i) {
-            auto r = erwt3d::checkPointwiseError(raw_layer[i], slice[i], cfg);
-            ++checked;
-            if (!r.passed) ++failed;
-            max_abs = std::max(max_abs, r.absolute_error);
-            max_rel = std::max(max_rel, r.relative_error);
+        for (uint64_t y = 0; y < opt.ny; ++y) {
+            for (uint64_t x = 0; x < opt.nx; ++x) {
+                const uint64_t raw_idx = x * yzFloats + y * opt.nz + z;
+                const float raw_val = raw_volume[raw_idx];
+                const float dec_val = slice[y * opt.nx + x];
+                auto r = erwt3d::checkPointwiseError(raw_val, dec_val, cfg);
+                ++checked;
+                if (!r.passed) ++failed;
+                max_abs = std::max(max_abs, r.absolute_error);
+                max_rel = std::max(max_rel, r.relative_error);
+            }
         }
 
         if (z % 10 == 0 || z + 1 == opt.nz) {
@@ -290,7 +300,6 @@ static int runFullVerify(const VerifyOptions& opt) {
         }
     }
     std::cerr << std::endl;
-    close(rawFd);
 
     std::cout << "checked: " << checked << std::endl;
     std::cout << "failed: " << failed << std::endl;
@@ -350,7 +359,7 @@ static int runSampleVerify(const VerifyOptions& opt) {
         while (i < samples.size() && samples[i].z == z) {
             const auto& s = samples[i];
             float raw_val = 0.0f;
-            const uint64_t off = (z * opt.ny + s.y) * opt.nx + s.x;
+            const uint64_t off = s.x * opt.ny * opt.nz + s.y * opt.nz + s.z;
             if (!readFullyAt(rawFd, &raw_val, sizeof(float), off * sizeof(float))) {
                 std::cerr << "Error reading raw sample" << std::endl;
                 close(rawFd);

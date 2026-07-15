@@ -84,14 +84,14 @@ struct LeafSample {
 
 static void extractLeafFromSlab(
     const float* slab,
-    uint64_t slab_z_start,
-    uint64_t slab_z_count,
-    uint64_t nx,
+    uint64_t slab_x_start,
+    uint64_t slab_x_count,
     uint64_t ny,
+    uint64_t nz,
     const LeafSample& s,
     float leaf[64]
 ) {
-    const uint64_t layer_stride = nx * ny;
+    const uint64_t yz_stride = ny * nz;
     for (uint32_t z = 0; z < 4; ++z) {
         for (uint32_t y = 0; y < 4; ++y) {
             for (uint32_t x = 0; x < 4; ++x) {
@@ -100,15 +100,15 @@ static void extractLeafFromSlab(
                     leaf[i] = 0.0f;
                     continue;
                 }
-                const uint64_t gz = s.start_z + z;
-                const uint64_t gy = s.start_y + y;
                 const uint64_t gx = s.start_x + x;
-                const uint64_t slab_z = gz - slab_z_start;
-                if (slab_z >= slab_z_count) {
+                const uint64_t gy = s.start_y + y;
+                const uint64_t gz = s.start_z + z;
+                const uint64_t slab_x = gx - slab_x_start;
+                if (slab_x >= slab_x_count) {
                     leaf[i] = 0.0f;
                     continue;
                 }
-                leaf[i] = slab[slab_z * layer_stride + gy * nx + gx];
+                leaf[i] = slab[slab_x * yz_stride + gy * nz + gz];
             }
         }
     }
@@ -138,71 +138,88 @@ static std::vector<MainSample> sampleMainLeaves(
     const uint64_t leaf_grid_y = (ny + 3) / 4;
     const uint64_t leaf_grid_z = (nz + 3) / 4;
 
-    std::uniform_int_distribution<uint64_t> dist_x(0, leaf_grid_x > 0 ? leaf_grid_x - 1 : 0);
-    std::uniform_int_distribution<uint64_t> dist_y(0, leaf_grid_y > 0 ? leaf_grid_y - 1 : 0);
-    std::uniform_int_distribution<uint64_t> dist_z(0, leaf_grid_z > 0 ? leaf_grid_z - 1 : 0);
+    const uint64_t slab_x = 16;
+    const uint64_t yz_floats = ny * nz;
 
-    const uint64_t slab_z = 16;
-    const uint64_t layer_floats = nx * ny;
+    std::vector<uint64_t> slab_starts;
+    const uint64_t num_slabs = (nx + slab_x - 1) / slab_x;
+    // Stratified slab positions covering the volume.
+    const std::vector<double> stratified_frac = {0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0};
+    for (double f : stratified_frac) {
+        uint64_t s = static_cast<uint64_t>(f * (num_slabs > 0 ? num_slabs - 1 : 0)) * slab_x;
+        if (s >= nx) continue;
+        slab_starts.push_back(s);
+    }
+    std::uniform_int_distribution<uint64_t> dist_slab(0, num_slabs > 0 ? num_slabs - 1 : 0);
+    while (slab_starts.size() < 32 && slab_starts.size() < num_slabs) {
+        uint64_t s = dist_slab(rng) * slab_x;
+        if (s >= nx) continue;
+        slab_starts.push_back(s);
+    }
+    std::sort(slab_starts.begin(), slab_starts.end());
+    slab_starts.erase(std::unique(slab_starts.begin(), slab_starts.end()), slab_starts.end());
+
+    const size_t per_slab = std::max<size_t>(1, target_samples / slab_starts.size());
 
     RzfpCodec codec;
     std::vector<float> slab;
-    uint64_t current_slab_start = nz;
-    uint64_t current_slab_count = 0;
 
-    size_t generated = 0;
-    size_t attempts = 0;
-    const size_t max_attempts = target_samples * 10;
+    std::uniform_int_distribution<uint64_t> dist_y(0, leaf_grid_y > 0 ? leaf_grid_y - 1 : 0);
+    std::uniform_int_distribution<uint64_t> dist_z(0, leaf_grid_z > 0 ? leaf_grid_z - 1 : 0);
 
     correlation_values.clear();
     correlation_values.reserve(target_samples * 4);
 
-    while (generated < target_samples && attempts < max_attempts) {
-        ++attempts;
+    for (uint64_t x_start : slab_starts) {
         if (timer.over(time_limit_seconds)) break;
+        if (results.size() >= target_samples) break;
 
-        LeafSample s;
-        s.start_x = dist_x(rng) * 4;
-        s.start_y = dist_y(rng) * 4;
-        s.start_z = dist_z(rng) * 4;
-        s.valid_mask = buildValidMask3D(s.start_x, s.start_y, s.start_z, nx, ny, nz);
-        if (s.valid_mask == 0) continue;
+        const uint64_t current_x = std::min<uint64_t>(slab_x, nx - x_start);
+        const uint64_t x_end = x_start + current_x;
+        const uint64_t lx_start = x_start / 4;
+        const uint64_t lx_end = x_end / 4;
+        if (lx_start >= lx_end) continue;
 
-        if (s.start_z < current_slab_start || s.start_z >= current_slab_start + current_slab_count) {
-            current_slab_start = s.start_z;
-            if (current_slab_start + slab_z > nz) {
-                current_slab_start = nz > slab_z ? nz - slab_z : 0;
-            }
-            current_slab_count = std::min<uint64_t>(slab_z, nz - current_slab_start);
-            slab.resize(current_slab_count * layer_floats);
-            const uint64_t offset = current_slab_start * layer_floats * sizeof(float);
-            if (!readFullyAt(fd, slab.data(), slab.size() * sizeof(float), offset)) {
-                break;
-            }
+        slab.resize(current_x * yz_floats);
+        const uint64_t offset = x_start * yz_floats * sizeof(float);
+        if (!readFullyAt(fd, slab.data(), slab.size() * sizeof(float), offset)) {
+            break;
         }
 
-        float leaf[64];
-        extractLeafFromSlab(slab.data(), current_slab_start, current_slab_count, nx, ny, s, leaf);
+        std::uniform_int_distribution<uint64_t> dist_local_x(lx_start, lx_end - 1);
 
-        RzfpCandidate cand = codec.encodeBest(leaf, s.valid_mask, cfg);
-        MainSample ms;
-        ms.total_bytes = cand.serialized_size;
-        ms.raw_fallback = (cand.codec == RzfpLeafCodec::RawFloat32);
-        results.push_back(ms);
-        ++generated;
+        size_t slab_generated = 0;
+        size_t slab_attempts = 0;
+        const size_t max_slab_attempts = per_slab * 5;
+        while (slab_generated < per_slab && slab_attempts < max_slab_attempts && results.size() < target_samples) {
+            ++slab_attempts;
 
-        if (s.start_x + 1 < nx && s.start_y + 1 < ny && s.start_z + 1 < nz) {
-            const uint64_t ix0 = 0;
-            const uint64_t ix1 = 1;
-            const uint64_t iy0 = 0;
-            const uint64_t iz0 = 0;
-            const uint64_t base = (iz0 * 4 + iy0) * 4;
-            const float v = leaf[base + ix0];
-            if (std::isfinite(v)) {
-                correlation_values.push_back(v);
-                correlation_values.push_back(leaf[base + ix1]);
-                correlation_values.push_back(leaf[base + 4 + ix0]);
-                correlation_values.push_back(leaf[base + 16 + ix0]);
+            LeafSample s;
+            s.start_x = dist_local_x(rng) * 4;
+            s.start_y = dist_y(rng) * 4;
+            s.start_z = dist_z(rng) * 4;
+            s.valid_mask = buildValidMask3D(s.start_x, s.start_y, s.start_z, nx, ny, nz);
+            if (s.valid_mask == 0) continue;
+
+            float leaf[64];
+            extractLeafFromSlab(slab.data(), x_start, current_x, ny, nz, s, leaf);
+
+            RzfpCandidate cand = codec.encodeBest(leaf, s.valid_mask, cfg);
+            MainSample ms;
+            ms.total_bytes = cand.serialized_size;
+            ms.raw_fallback = (cand.codec == RzfpLeafCodec::RawFloat32);
+            results.push_back(ms);
+            ++slab_generated;
+
+            if (s.start_x + 1 < nx && s.start_y + 1 < ny && s.start_z + 1 < nz) {
+                const uint64_t base = 0;
+                const float v = leaf[base];
+                if (std::isfinite(v)) {
+                    correlation_values.push_back(v);
+                    correlation_values.push_back(leaf[base + 1]);
+                    correlation_values.push_back(leaf[base + 4]);
+                    correlation_values.push_back(leaf[base + 16]);
+                }
             }
         }
     }
@@ -347,14 +364,14 @@ static void computeGlobalStats(
 
     if (fd < 0 || nx * ny * nz == 0) return;
 
-    std::uniform_int_distribution<uint64_t> dist_x(0, nx - 1);
     std::uniform_int_distribution<uint64_t> dist_y(0, ny - 1);
+    std::uniform_int_distribution<uint64_t> dist_z(0, nz - 1);
 
     std::vector<float> values;
     values.reserve(point_samples);
 
-    const uint64_t layer_floats = nx * ny;
-    const uint64_t slab_z = std::max<uint64_t>(1, std::min<uint64_t>(nz / 8, 32));
+    const uint64_t yz_floats = ny * nz;
+    const uint64_t slab_x = std::max<uint64_t>(1, std::min<uint64_t>(nx / 4, 32));
     std::vector<float> slab;
 
     size_t zeros = 0;
@@ -363,26 +380,26 @@ static void computeGlobalStats(
 
     const std::vector<uint64_t> slab_starts = {
         0ULL,
-        nz / 4,
-        nz / 2,
-        3 * nz / 4,
-        nz > slab_z ? nz - slab_z : 0
+        nx / 4,
+        nx / 2,
+        3 * nx / 4,
+        nx > slab_x ? nx - slab_x : 0
     };
 
-    for (uint64_t z_start : slab_starts) {
-        if (z_start >= nz) continue;
-        const uint64_t current_z = std::min(slab_z, nz - z_start);
-        slab.resize(current_z * layer_floats);
-        const uint64_t offset = z_start * layer_floats * sizeof(float);
+    for (uint64_t x_start : slab_starts) {
+        if (x_start >= nx) continue;
+        const uint64_t current_x = std::min(slab_x, nx - x_start);
+        slab.resize(current_x * yz_floats);
+        const uint64_t offset = x_start * yz_floats * sizeof(float);
         if (!readFullyAt(fd, slab.data(), slab.size() * sizeof(float), offset)) return;
 
         const size_t per_slab = point_samples / slab_starts.size();
-        std::uniform_int_distribution<uint64_t> dist_z(0, current_z - 1);
+        std::uniform_int_distribution<uint64_t> dist_x(0, current_x - 1);
         for (size_t i = 0; i < per_slab; ++i) {
-            const uint64_t x = dist_x(rng);
+            const uint64_t local_x = dist_x(rng);
             const uint64_t y = dist_y(rng);
-            const uint64_t local_z = dist_z(rng);
-            const float v = slab[local_z * layer_floats + y * nx + x];
+            const uint64_t z = dist_z(rng);
+            const float v = slab[local_x * yz_floats + y * nz + z];
             values.push_back(std::abs(v));
             if (v == 0.0f) ++zeros;
             if (!std::isfinite(v)) ++non_finite;
@@ -482,12 +499,12 @@ bool runRzfpAutoPlan(
     std::vector<double> all_sidecar_ratios;
     std::vector<float> correlation_values;
 
-    const size_t round1_main = 50000;
-    const size_t round2_main = 100000;
-    const size_t round_more = 100000;
+    const size_t round1_main = 20000;
+    const size_t round2_main = 50000;
+    const size_t round_more = 50000;
 
-    const int round1_x_planes = 8;
-    const int round2_x_planes = 16;
+    const int round1_x_planes = 6;
+    const int round2_x_planes = 10;
 
     bool stop = false;
     int round = 0;

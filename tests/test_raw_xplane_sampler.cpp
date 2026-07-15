@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <fcntl.h>
 #include <iostream>
 #include <unistd.h>
@@ -18,12 +19,12 @@ void check(bool condition, const char* msg) {
     }
 }
 
-bool writeXFastestRaw(const std::string& path, uint64_t nx, uint64_t ny, uint64_t nz) {
+bool writeZFastestRaw(const std::string& path, uint64_t nx, uint64_t ny, uint64_t nz) {
     std::vector<float> data(nx * ny * nz);
-    for (uint64_t z = 0; z < nz; ++z) {
+    for (uint64_t x = 0; x < nx; ++x) {
         for (uint64_t y = 0; y < ny; ++y) {
-            for (uint64_t x = 0; x < nx; ++x) {
-                data[(z * ny + y) * nx + x] = static_cast<float>(x * 1000000 + y * 1000 + z);
+            for (uint64_t z = 0; z < nz; ++z) {
+                data[(x * ny + y) * nz + z] = static_cast<float>(x * 1000000 + y * 1000 + z);
             }
         }
     }
@@ -47,12 +48,13 @@ bool writeXFastestRaw(const std::string& path, uint64_t nx, uint64_t ny, uint64_
 } // namespace
 
 int main() {
-    const std::string path = "/tmp/test_sampler.raw";
+    std::system("mkdir -p /mnt/d/opencode_tests");
+    const std::string path = "/mnt/d/opencode_tests/test_sampler.raw";
     const uint64_t nx = 25;
     const uint64_t ny = 31;
     const uint64_t nz = 17;
 
-    check(writeXFastestRaw(path, nx, ny, nz), "write raw file");
+    check(writeZFastestRaw(path, nx, ny, nz), "write raw file");
 
     int fd = open(path.c_str(), O_RDONLY);
     check(fd >= 0, "open raw file");

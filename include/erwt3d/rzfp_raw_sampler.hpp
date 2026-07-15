@@ -5,6 +5,9 @@
 
 namespace erwt3d {
 
+// Samplers for the official Z-fastest raw layout:
+//   offset(x, y, z) = (x * ny + y) * nz + z
+
 struct RawZRange {
     uint64_t z_start = 0;
     uint64_t z_count = 0;
@@ -29,6 +32,8 @@ struct SampledXPlane {
     const float* row(uint64_t z) const { return data.data() + (z - z_start) * ny; }
 };
 
+// Sample fixed-X YZ planes from a Z-fastest raw file.
+// If z_ranges is empty, the full Z range [0, nz) is sampled for each x.
 bool sampleXPlanesFromRaw(
     int fd,
     uint64_t nx,
@@ -46,14 +51,6 @@ bool sampleXPlanesFromRaw(
     uint64_t nz,
     const std::vector<uint64_t>& sampled_x,
     std::vector<SampledXPlane>& output
-);
-
-bool readRawLayer(
-    int fd,
-    uint64_t nx,
-    uint64_t ny,
-    uint64_t z,
-    std::vector<float>& layer
 );
 
 } // namespace erwt3d
