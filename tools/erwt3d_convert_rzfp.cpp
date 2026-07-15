@@ -1,10 +1,13 @@
+#include "erwt3d/rzfp_auto_plan.hpp"
 #include "erwt3d/rzfp_writer.hpp"
 #include "erwt3d/rzfp_xplane_writer.hpp"
 
 #include <cstring>
+#include <fcntl.h>
 #include <iomanip>
 #include <iostream>
 #include <string>
+#include <unistd.h>
 
 static void printUsage(const char* prog) {
     std::cerr
@@ -23,7 +26,10 @@ static void printUsage(const char* prog) {
         << "  --precisions LIST       e.g. 12,14,16,18,20,22,24\n"
         << "  --fill-modes LIST       zero,mean\n"
         << "  --physical-order zyx|v05-yzx (default: zyx)\n"
-        << "  --xplane-sidecar        Generate 2D RZFP X-plane sidecar (.xp)\n";
+        << "  --xplane-sidecar        Generate 2D RZFP X-plane sidecar (.xp)\n"
+        << "  --auto                  Auto-plan sidecar and read window\n"
+        << "  --auto-time-limit N     Hard time limit for auto plan (default: 600)\n"
+        << "  --auto-soft-time-limit N Soft time limit for auto plan (default: 300)\n";
 }
 
 static std::vector<uint8_t> parseExceptionCounts(const std::string& s) {
@@ -79,6 +85,9 @@ int main(int argc, char* argv[]) {
     std::string inputPath;
     std::string outputPath;
     bool xplane_sidecar = false;
+    bool auto_plan = false;
+    uint64_t auto_time_limit = 600;
+    uint64_t auto_soft_time_limit = 300;
 
     for (int i = 1; i < argc; ++i) {
         auto next = [&]() -> const char* {
@@ -109,6 +118,12 @@ int main(int argc, char* argv[]) {
             }
         } else if (std::strcmp(argv[i], "--xplane-sidecar") == 0) {
             xplane_sidecar = true;
+        } else if (std::strcmp(argv[i], "--auto") == 0) {
+            auto_plan = true;
+        } else if (std::strcmp(argv[i], "--auto-time-limit") == 0) {
+            auto_time_limit = std::stoull(next());
+        } else if (std::strcmp(argv[i], "--auto-soft-time-limit") == 0) {
+            auto_soft_time_limit = std::stoull(next());
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             printUsage(argv[0]);
             return 0;
@@ -123,6 +138,31 @@ int main(int argc, char* argv[]) {
         std::cerr << "Error: --input, --output, --nx, --ny, --nz are required\n";
         printUsage(argv[0]);
         return 1;
+    }
+
+    if (auto_plan) {
+        int fd = open(inputPath.c_str(), O_RDONLY);
+        if (fd < 0) {
+            std::cerr << "Error: cannot open raw file for auto plan: " << inputPath << std::endl;
+            return 1;
+        }
+        erwt3d::RzfpAutoPlanConfig plan_cfg;
+        plan_cfg.time_limit_seconds = auto_time_limit;
+        plan_cfg.soft_time_limit_seconds = auto_soft_time_limit;
+        plan_cfg.main_codec_config = cfg.codec;
+        plan_cfg.sidecar_codec_config.error = cfg.codec.error;
+        plan_cfg.sidecar_codec_config.precisions = cfg.codec.precisions;
+
+        erwt3d::RzfpAutoPlanResult result;
+        if (!erwt3d::runRzfpAutoPlan(fd, cfg.nx, cfg.ny, cfg.nz, plan_cfg, result)) {
+            close(fd);
+            std::cerr << "Error: auto plan failed" << std::endl;
+            return 1;
+        }
+        close(fd);
+
+        std::cout << result.toJson() << std::endl;
+        xplane_sidecar = result.enable_x_sidecar;
     }
 
     erwt3d::RzfpWriterStats stats{};

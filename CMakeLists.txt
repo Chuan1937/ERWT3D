@@ -169,6 +169,9 @@ if(ERWT3D_ENABLE_RZFP)
     add_executable(erwt3d_bench_rzfp tools/erwt3d_bench_rzfp.cpp)
     target_link_libraries(erwt3d_bench_rzfp PRIVATE erwt3d)
 
+    add_executable(erwt3d_rzfp_auto tools/erwt3d_rzfp_auto.cpp)
+    target_link_libraries(erwt3d_rzfp_auto PRIVATE erwt3d)
+
     enable_testing()
     add_subdirectory(tests)
 endif()
