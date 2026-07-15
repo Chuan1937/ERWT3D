@@ -85,6 +85,11 @@ private:
 
     bool openXPlaneSidecar();
     bool readXPlaneFromSidecar(uint64_t x, float* output, RzfpReadProfile* profile);
+    bool readXPlanesBatchFromSidecar(
+        const std::vector<SliceBatchRequest>& requests,
+        const RzfpReaderConfig& config,
+        RzfpReadProfile& profile
+    );
 };
 
 } // namespace erwt3d

@@ -650,6 +650,123 @@ bool RzfpReader::readXPlaneFromSidecar(uint64_t x, float* output, RzfpReadProfil
     return ok;
 }
 
+bool RzfpReader::readXPlanesBatchFromSidecar(
+    const std::vector<SliceBatchRequest>& requests,
+    const RzfpReaderConfig& config,
+    RzfpReadProfile& profile
+) {
+    if (xplane_fd_ < 0 || requests.empty()) return false;
+
+    struct XTask {
+        uint64_t x = 0;
+        uint64_t offset = 0;
+        uint32_t size = 0;
+        float* output = nullptr;
+    };
+
+    std::vector<XTask> tasks;
+    tasks.reserve(requests.size());
+    for (const auto& req : requests) {
+        if (req.index >= xplane_offsets_.size()) return false;
+        XTask t;
+        t.x = req.index;
+        t.offset = xplane_offsets_[req.index];
+        t.size = xplane_sizes_[req.index];
+        t.output = req.output;
+        tasks.push_back(t);
+        profile.requested_record_bytes += t.size;
+    }
+
+    std::sort(tasks.begin(), tasks.end(), [](const XTask& a, const XTask& b) {
+        return a.offset < b.offset;
+    });
+
+    const HDDReadWindowConfig& wcfg = config.hdd;
+    const uint64_t read_window = wcfg.read_window_bytes > 0 ? wcfg.read_window_bytes : (512ULL * 1024 * 1024);
+    const uint64_t max_gap = wcfg.max_gap_bytes > 0 ? wcfg.max_gap_bytes : (8ULL * 1024 * 1024);
+    const int decode_threads = std::max(1, config.decode_threads);
+
+    ThreadPool pool(static_cast<size_t>(decode_threads), false);
+    std::vector<std::unique_ptr<RzfpCodec>> codecs;
+    for (int t = 0; t < decode_threads; ++t) {
+        codecs.emplace_back(std::make_unique<RzfpCodec>());
+    }
+
+    std::vector<uint8_t> window_buf;
+
+    size_t i = 0;
+    while (i < tasks.size()) {
+        uint64_t wstart = tasks[i].offset;
+        uint64_t wend = wstart + tasks[i].size;
+        size_t j = i + 1;
+        while (j < tasks.size()) {
+            const uint64_t off = tasks[j].offset;
+            const uint64_t end = off + tasks[j].size;
+            if (off > wend + max_gap) break;
+            if (end - wstart > read_window) break;
+            wend = end;
+            ++j;
+        }
+
+        const uint64_t wsize = wend - wstart;
+        if (window_buf.size() < wsize) window_buf.resize(wsize);
+
+        auto io_t0 = Clock::now();
+        if (!readFullyAt(xplane_fd_, window_buf.data(), wsize, wstart)) {
+            std::cerr << "Error: RZFP sidecar batch read failed at offset " << wstart << std::endl;
+            return false;
+        }
+        profile.io_time_ms += msSince(io_t0);
+        ++profile.pread_calls;
+        profile.actual_read_bytes += wsize;
+
+        auto dec_t0 = Clock::now();
+        const size_t count = j - i;
+        const int threads_to_use = static_cast<int>(std::min<size_t>(decode_threads, count));
+        bool decode_ok = true;
+        if (threads_to_use <= 1) {
+            for (size_t k = i; k < j; ++k) {
+                const auto& task = tasks[k];
+                if (!decodeXPlane2D(window_buf.data() + (task.offset - wstart), task.size,
+                                    task.output, header_.ny, header_.nz)) {
+                    decode_ok = false;
+                    break;
+                }
+            }
+        } else {
+            std::vector<std::future<bool>> futures;
+            const size_t per = (count + threads_to_use - 1) / threads_to_use;
+            for (int t = 0; t < threads_to_use; ++t) {
+                const size_t start = i + static_cast<size_t>(t) * per;
+                const size_t end = std::min(start + per, j);
+                if (start >= end) break;
+                futures.push_back(pool.submit([&, start, end, t]() {
+                    bool ok = true;
+                    for (size_t k = start; k < end && ok; ++k) {
+                        const auto& task = tasks[k];
+                        ok = decodeXPlane2D(window_buf.data() + (task.offset - wstart), task.size,
+                                            task.output, header_.ny, header_.nz);
+                    }
+                    return ok;
+                }));
+            }
+            for (auto& f : futures) {
+                if (!f.get()) decode_ok = false;
+            }
+        }
+        profile.decode_time_ms += msSince(dec_t0);
+
+        if (!decode_ok) {
+            std::cerr << "Error: RZFP sidecar batch decode failed" << std::endl;
+            return false;
+        }
+
+        i = j;
+    }
+
+    return true;
+}
+
 bool RzfpReader::readSlice(SliceAxis axis, uint64_t index, float* output,
                            int numThreads, size_t memoryLimitMB,
                            const HDDReadWindowConfig& wcfg) {
@@ -682,13 +799,19 @@ bool RzfpReader::readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
 
     const auto t_start = Clock::now();
 
+    std::vector<SliceBatchRequest> x_requests;
+    x_requests.reserve(requests.size());
     for (const auto& req : requests) {
         if (has_xplane_ && req.axis == SliceAxis::X) {
-            if (!readXPlaneFromSidecar(req.index, req.output, profile)) {
-                fallback.push_back(req);
-            }
+            x_requests.push_back(req);
         } else {
             fallback.push_back(req);
+        }
+    }
+
+    if (!x_requests.empty()) {
+        if (!readXPlanesBatchFromSidecar(x_requests, config, *profile)) {
+            fallback.insert(fallback.end(), x_requests.begin(), x_requests.end());
         }
     }
 
