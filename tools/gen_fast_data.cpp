@@ -33,36 +33,20 @@ static void generate_chunk(uint64_t nx, uint64_t ny, uint64_t nz,
     std::mt19937 rng(seed);
     std::uniform_real_distribution<float> dist(0.0f, 1.0f);
 
-    constexpr size_t BUF_SIZE = 1UL << 20;
-    std::vector<float> buf(BUF_SIZE);
-    size_t buf_idx = 0;
-
-    const uint64_t yz = ny * nz;
+    std::vector<float> row(nz);
 
     for (uint64_t x = x_start; x < x_end; ++x) {
-        const uint64_t x_offset = x * yz * sizeof(float);
+        const uint64_t x_offset = x * ny * nz * sizeof(float);
         for (uint64_t y = 0; y < ny; ++y) {
             const uint64_t y_offset = y * nz * sizeof(float);
             for (uint64_t z = 0; z < nz; ++z) {
-                buf[buf_idx++] = dist(rng);
-                if (buf_idx == BUF_SIZE) {
-                    const uint64_t written = (x_offset + y_offset + (z + 1 - BUF_SIZE) * sizeof(float));
-                    if (!pwriteAll(fd, buf.data(), BUF_SIZE * sizeof(float), written)) {
-                        perror("pwrite");
-                        close(fd);
-                        return;
-                    }
-                    buf_idx = 0;
-                }
+                row[z] = dist(rng);
             }
-        }
-    }
-    if (buf_idx > 0) {
-        const uint64_t tail_start = (x_end - 1) * yz * sizeof(float) +
-                                    (ny - 1) * nz * sizeof(float) +
-                                    (nz - buf_idx) * sizeof(float);
-        if (!pwriteAll(fd, buf.data(), buf_idx * sizeof(float), tail_start)) {
-            perror("pwrite");
+            if (!pwriteAll(fd, row.data(), nz * sizeof(float), x_offset + y_offset)) {
+                perror("pwrite");
+                close(fd);
+                return;
+            }
         }
     }
 
