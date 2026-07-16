@@ -1,5 +1,6 @@
 #include "erwt3d/reader.hpp"
 #include "erwt3d/morton.hpp"
+#include "erwt3d/raw_layout.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -116,14 +117,15 @@ bool compareRawVsErwt3d(const VerifyOptions& opt, VerifyStats& stats) {
         }
 
         std::mt19937_64 rng(opt.seed);
-        std::uniform_int_distribution<uint64_t> dist(0, totalElements - 1);
+        std::uniform_int_distribution<uint64_t> distX(0, opt.nx - 1);
+        std::uniform_int_distribution<uint64_t> distY(0, opt.ny - 1);
+        std::uniform_int_distribution<uint64_t> distZ(0, opt.nz - 1);
         std::map<uint64_t, std::vector<std::pair<uint64_t, uint64_t>>> sbGroups;
-        uint64_t nxy = static_cast<uint64_t>(opt.nx) * opt.ny;
         for (uint64_t s = 0; s < opt.numSamples; ++s) {
-            uint64_t idx = dist(rng);
-            uint64_t x = idx % opt.nx;
-            uint64_t y = (idx / opt.nx) % opt.ny;
-            uint64_t z = idx / nxy;
+            uint64_t x = distX(rng);
+            uint64_t y = distY(rng);
+            uint64_t z = distZ(rng);
+            uint64_t rawIdx = erwt3d::rawOffsetZFastest(x, y, z, opt.ny, opt.nz);
 
             uint64_t sx = x / hdr.super_x;
             uint64_t syLocal = y / hdr.super_y;
@@ -148,7 +150,7 @@ bool compareRawVsErwt3d(const VerifyOptions& opt, VerifyStats& stats) {
             uint64_t elemOff = (inLeafZ * hdr.leaf_y + inLeafY) * hdr.leaf_x + inLeafX;
             uint64_t byteOffsetInSb = leafMorton * leafBytes + elemOff * sizeof(float);
 
-            sbGroups[sbIdx].push_back({idx, byteOffsetInSb});
+            sbGroups[sbIdx].push_back({rawIdx, byteOffsetInSb});
         }
 
         std::vector<uint8_t> sbBuf(superBytes);
