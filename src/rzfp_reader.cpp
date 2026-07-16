@@ -699,9 +699,19 @@ bool RzfpReader::readXPlaneFromSidecar(uint64_t x, float* output, RzfpReadProfil
     }
 
     auto dec_t0 = Clock::now();
-    bool ok = decodeXPlane2D(record.data(), size, output, header_.ny, header_.nz);
+    std::vector<float> plane(header_.ny * header_.nz);
+    bool ok = decodeXPlane2D(record.data(), size, plane.data(), header_.ny, header_.nz);
     if (profile) profile->decode_time_ms += msSince(dec_t0);
-    return ok;
+    if (!ok) return false;
+
+    // Sidecar stores X-plane in Y-fastest layout (z*ny + y).
+    // Reader X-slice output follows official Z-fastest layout (y*nz + z).
+    for (uint64_t y = 0; y < header_.ny; ++y) {
+        for (uint64_t z = 0; z < header_.nz; ++z) {
+            output[y * header_.nz + z] = plane[z * header_.ny + y];
+        }
+    }
+    return true;
 }
 
 bool RzfpReader::readXPlanesBatchFromSidecar(
@@ -778,11 +788,12 @@ bool RzfpReader::readXPlanesBatchFromSidecar(
         const size_t count = j - i;
         const int threads_to_use = static_cast<int>(std::min<size_t>(decode_threads, count));
         bool decode_ok = true;
+        std::vector<std::vector<float>> planes(count, std::vector<float>(header_.ny * header_.nz));
         if (threads_to_use <= 1) {
             for (size_t k = i; k < j; ++k) {
                 const auto& task = tasks[k];
                 if (!decodeXPlane2D(window_buf.data() + (task.offset - wstart), task.size,
-                                    task.output, header_.ny, header_.nz)) {
+                                    planes[k - i].data(), header_.ny, header_.nz)) {
                     decode_ok = false;
                     break;
                 }
@@ -799,13 +810,24 @@ bool RzfpReader::readXPlanesBatchFromSidecar(
                     for (size_t k = start; k < end && ok; ++k) {
                         const auto& task = tasks[k];
                         ok = decodeXPlane2D(window_buf.data() + (task.offset - wstart), task.size,
-                                            task.output, header_.ny, header_.nz);
+                                            planes[k - i].data(), header_.ny, header_.nz);
                     }
                     return ok;
                 }));
             }
             for (auto& f : futures) {
                 if (!f.get()) decode_ok = false;
+            }
+        }
+
+        // Transpose each decoded Y-fastest plane to official Z-fastest output.
+        for (size_t k = i; k < j; ++k) {
+            const auto& task = tasks[k];
+            const auto& plane = planes[k - i];
+            for (uint64_t y = 0; y < header_.ny; ++y) {
+                for (uint64_t z = 0; z < header_.nz; ++z) {
+                    task.output[y * header_.nz + z] = plane[z * header_.ny + y];
+                }
             }
         }
         profile.decode_time_ms += msSince(dec_t0);

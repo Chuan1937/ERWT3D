@@ -1,5 +1,6 @@
 #include "erwt3d/rzfp_auto_plan.hpp"
 #include "erwt3d/rzfp_raw_sampler.hpp"
+#include "erwt3d/raw_layout.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -399,7 +400,7 @@ static void computeGlobalStats(
             const uint64_t local_x = dist_x(rng);
             const uint64_t y = dist_y(rng);
             const uint64_t z = dist_z(rng);
-            const float v = slab[local_x * yz_floats + y * nz + z];
+            const float v = slab[rawOffsetZFastest(local_x, y, z, ny, nz)];
             values.push_back(std::abs(v));
             if (v == 0.0f) ++zeros;
             if (!std::isfinite(v)) ++non_finite;

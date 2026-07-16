@@ -1,4 +1,5 @@
 #include "erwt3d/rzfp_raw_sampler.hpp"
+#include "erwt3d/raw_layout.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -71,7 +72,7 @@ bool sampleXPlanesFromRaw(
             for (uint64_t z = plane.z_start; z < plane.z_start + plane.z_count; ++z) {
                 float* dst = plane.row(z);
                 for (uint64_t y = 0; y < ny; ++y) {
-                    dst[y] = full_plane[y * nz + z];
+                    dst[y] = full_plane[rawOffsetZFastest(0, y, z, ny, nz)];
                 }
             }
         }

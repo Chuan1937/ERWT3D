@@ -2,6 +2,7 @@
 #include "erwt3d/relative_error.hpp"
 #include "erwt3d/morton.hpp"
 #include "erwt3d/rzfp_codec.hpp"
+#include "erwt3d/raw_layout.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -212,7 +213,7 @@ static int runFastFullVerify(const VerifyOptions& opt) {
                                 const uint64_t gy = start_y + y;
                                 const uint64_t gz = start_z + z;
                                 const uint64_t local_x = gx - xStart;
-                                const float raw_val = slab[local_x * yzFloats + gy * opt.nz + gz];
+                                const float raw_val = slab[rawOffsetZFastest(local_x, gy, gz, opt.ny, opt.nz)];
                                 const float dec_val = leaf[idx];
                                 auto r = erwt3d::checkPointwiseError(raw_val, dec_val, cfg);
                                 ++checked;
@@ -284,9 +285,9 @@ static int runFullVerify(const VerifyOptions& opt) {
 
         for (uint64_t y = 0; y < opt.ny; ++y) {
             for (uint64_t x = 0; x < opt.nx; ++x) {
-                const uint64_t raw_idx = x * yzFloats + y * opt.nz + z;
+                const uint64_t raw_idx = rawOffsetZFastest(x, y, z, opt.ny, opt.nz);
                 const float raw_val = raw_volume[raw_idx];
-                const float dec_val = slice[y * opt.nx + x];
+                const float dec_val = slice[x * opt.ny + y];
                 auto r = erwt3d::checkPointwiseError(raw_val, dec_val, cfg);
                 ++checked;
                 if (!r.passed) ++failed;
@@ -319,17 +320,15 @@ static int runSampleVerify(const VerifyOptions& opt) {
     const auto cfg = makeConfig(opt);
     const uint64_t total = opt.nx * opt.ny * opt.nz;
     std::mt19937_64 rng(20260511);
-    std::uniform_int_distribution<uint64_t> dist(0, total - 1);
+    std::uniform_int_distribution<uint64_t> distX(0, opt.nx - 1);
+    std::uniform_int_distribution<uint64_t> distY(0, opt.ny - 1);
+    std::uniform_int_distribution<uint64_t> distZ(0, opt.nz - 1);
 
     struct Sample { uint64_t x, y, z; };
     std::vector<Sample> samples;
     samples.reserve(opt.samples);
     for (uint64_t i = 0; i < opt.samples; ++i) {
-        uint64_t v = dist(rng);
-        uint64_t x = v % opt.nx;
-        uint64_t y = (v / opt.nx) % opt.ny;
-        uint64_t z = v / (opt.nx * opt.ny);
-        samples.push_back({x, y, z});
+        samples.push_back({distX(rng), distY(rng), distZ(rng)});
     }
 
     std::sort(samples.begin(), samples.end(), [](const Sample& a, const Sample& b) {
@@ -359,13 +358,13 @@ static int runSampleVerify(const VerifyOptions& opt) {
         while (i < samples.size() && samples[i].z == z) {
             const auto& s = samples[i];
             float raw_val = 0.0f;
-            const uint64_t off = s.x * opt.ny * opt.nz + s.y * opt.nz + s.z;
+            const uint64_t off = rawOffsetZFastest(s.x, s.y, s.z, opt.ny, opt.nz);
             if (!readFullyAt(rawFd, &raw_val, sizeof(float), off * sizeof(float))) {
                 std::cerr << "Error reading raw sample" << std::endl;
                 close(rawFd);
                 return 1;
             }
-            float dec_val = slice[s.y * opt.nx + s.x];
+            float dec_val = slice[s.x * opt.ny + s.y];
             auto r = erwt3d::checkPointwiseError(raw_val, dec_val, cfg);
             ++checked;
             if (!r.passed) ++failed;

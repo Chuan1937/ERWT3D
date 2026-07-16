@@ -1,5 +1,6 @@
 #include "erwt3d/rzfp_writer.hpp"
 #include "erwt3d/morton.hpp"
+#include "erwt3d/raw_layout.hpp"
 #include "erwt3d/thread_pool.hpp"
 
 #include <algorithm>
@@ -93,7 +94,7 @@ static void packLeavesFromSlab(
                     const uint64_t gx_local = bx + x;
                     const uint64_t gy = sy * header.super_y + by + y;
                     const uint64_t gz = sz * header.super_z + bz + z;
-                    const uint64_t srcElem = gx_local * ny * nz + gy * nz + gz;
+                    const uint64_t srcElem = rawOffsetZFastest(gx_local, gy, gz, ny, nz);
                     dst[dstElem + x] = slab[srcElem];
                 }
             }

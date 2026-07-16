@@ -1,4 +1,5 @@
 #include "erwt3d/rzfp_xplane_writer.hpp"
+#include "erwt3d/raw_layout.hpp"
 #include "erwt3d/thread_pool.hpp"
 
 #include <algorithm>
@@ -153,7 +154,7 @@ bool writeXPlaneSidecarFile(
                 std::vector<float> plane(ny * nz);
                 for (uint64_t y = 0; y < ny; ++y) {
                     for (uint64_t z = 0; z < nz; ++z) {
-                        plane[z * ny + y] = raw_plane[y * nz + z];
+                        plane[z * ny + y] = raw_plane[rawOffsetZFastest(0, y, z, ny, nz)];
                     }
                 }
                 return encodeXPlane2D(plane.data(), ny, nz, cfg);

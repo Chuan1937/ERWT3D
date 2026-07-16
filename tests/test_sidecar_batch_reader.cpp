@@ -100,10 +100,10 @@ int main() {
 
     for (size_t i = 0; i < x_indices.size(); ++i) {
         const uint64_t x = x_indices[i];
-        for (uint64_t z = 0; z < nz; ++z) {
-            for (uint64_t y = 0; y < ny; ++y) {
+        for (uint64_t y = 0; y < ny; ++y) {
+            for (uint64_t z = 0; z < nz; ++z) {
                 const float expected = std::sin(x * 0.1f) * std::cos(y * 0.05f) * std::sin(z * 0.07f);
-                const float actual = outputs[i][z * ny + y];
+                const float actual = outputs[i][y * nz + z];
                 const double denom = std::max(1.0, std::abs(static_cast<double>(expected)));
                 const double rel = std::abs(static_cast<double>(actual - expected)) / denom;
                 check(rel < 1e-3, "reconstructed value within tolerance");
