@@ -95,12 +95,13 @@ SBTaskPlan buildSBPlanZ(const ERWT3DHeader& hdr, uint64_t z) {
                     if (vx == 0 || vy == 0) continue;
 
                     LeafOp op;
-                    op.out_base = static_cast<uint32_t>(dy * nx + dx);
-                    op.out_stride = static_cast<uint32_t>(nx);
+                    // Z slice: output[x * ny + y]
+                    op.out_base = static_cast<uint32_t>(dx * ny + dy);
+                    op.out_stride = static_cast<uint32_t>(ny);
                     op.morton = static_cast<uint16_t>(mortonXY[lyi * lpx + lxi]);
                     op.param = static_cast<uint8_t>(inLeafZ);
-                    op.v_inner = static_cast<uint8_t>(vx);
-                    op.v_outer = static_cast<uint8_t>(vy);
+                    op.v_inner = static_cast<uint8_t>(vy);
+                    op.v_outer = static_cast<uint8_t>(vx);
                     op.pad[0] = static_cast<uint8_t>(plan.axis);
                     op.pad[1] = op.pad[2] = 0;
                     plan.leaf_ops.push_back(op);
@@ -155,12 +156,13 @@ SBTaskPlan buildSBPlanY(const ERWT3DHeader& hdr, uint64_t y) {
                     if (vx == 0 || vz == 0) continue;
 
                     LeafOp op;
-                    op.out_base = static_cast<uint32_t>(dz * nx + dx);
-                    op.out_stride = static_cast<uint32_t>(nx);
+                    // Y slice: output[x * nz + z]
+                    op.out_base = static_cast<uint32_t>(dx * nz + dz);
+                    op.out_stride = static_cast<uint32_t>(nz);
                     op.morton = static_cast<uint16_t>(mortonXZ[lzi * lpx + lxi]);
                     op.param = static_cast<uint8_t>(inLeafY);
-                    op.v_inner = static_cast<uint8_t>(vx);
-                    op.v_outer = static_cast<uint8_t>(vz);
+                    op.v_inner = static_cast<uint8_t>(vz);
+                    op.v_outer = static_cast<uint8_t>(vx);
                     op.pad[0] = static_cast<uint8_t>(plan.axis);
                     op.pad[1] = op.pad[2] = 0;
                     plan.leaf_ops.push_back(op);
@@ -215,12 +217,13 @@ SBTaskPlan buildSBPlanX(const ERWT3DHeader& hdr, uint64_t x) {
                     if (vy == 0 || vz == 0) continue;
 
                     LeafOp op;
-                    op.out_base = static_cast<uint32_t>(dz * ny + dy);
-                    op.out_stride = static_cast<uint32_t>(ny);
+                    // X slice: output[y * nz + z]
+                    op.out_base = static_cast<uint32_t>(dy * nz + dz);
+                    op.out_stride = static_cast<uint32_t>(nz);
                     op.morton = static_cast<uint16_t>(mortonYZ[lzi * lpy + lyi]);
                     op.param = static_cast<uint8_t>(inLeafX);
-                    op.v_inner = static_cast<uint8_t>(vy);
-                    op.v_outer = static_cast<uint8_t>(vz);
+                    op.v_inner = static_cast<uint8_t>(vz);
+                    op.v_outer = static_cast<uint8_t>(vy);
                     op.pad[0] = static_cast<uint8_t>(plan.axis);
                     op.pad[1] = op.pad[2] = 0;
                     plan.leaf_ops.push_back(op);
@@ -259,25 +262,37 @@ void scatterDecodedLeaf(const ERWT3DHeader& hdr, const LeafOp& op,
         return;
     }
 
+    // Internal leaf layout is X-fastest:
+    //   leaf[((z * ly) + y) * lx + x]
+    // Official output layouts are Z-fastest:
+    //   axis 0 (X slice): output[y * nz + z]
+    //   axis 1 (Y slice): output[x * nz + z]
+    //   axis 2 (Z slice): output[x * ny + y]
     if (axis == 2) {
-        const uint64_t srcBase = static_cast<uint64_t>(param) * ly;
+        // Z slice: outer = x, inner = y
         for (uint32_t outer = 0; outer < v_outer; ++outer) {
-            const float* src = decoded_leaf + (srcBase + outer) * lx;
-            float* dst = output + out_base + outer * out_stride;
-            std::memcpy(dst, src, v_inner * sizeof(float));
-        }
-    } else if (axis == 1) {
-        for (uint32_t outer = 0; outer < v_outer; ++outer) {
-            const float* src = decoded_leaf + (outer * ly + param) * lx;
-            float* dst = output + out_base + outer * out_stride;
-            std::memcpy(dst, src, v_inner * sizeof(float));
-        }
-    } else {
-        for (uint32_t outer = 0; outer < v_outer; ++outer) {
-            const float* src = decoded_leaf + (outer * ly) * lx + param;
             float* dst = output + out_base + outer * out_stride;
             for (uint32_t inner = 0; inner < v_inner; ++inner) {
-                dst[inner] = src[inner * lx];
+                const float* src = decoded_leaf + (param * ly + inner) * lx + outer;
+                dst[inner] = *src;
+            }
+        }
+    } else if (axis == 1) {
+        // Y slice: outer = x, inner = z
+        for (uint32_t outer = 0; outer < v_outer; ++outer) {
+            float* dst = output + out_base + outer * out_stride;
+            for (uint32_t inner = 0; inner < v_inner; ++inner) {
+                const float* src = decoded_leaf + ((param + inner * ly) * lx + outer);
+                dst[inner] = *src;
+            }
+        }
+    } else {
+        // X slice: outer = y, inner = z
+        for (uint32_t outer = 0; outer < v_outer; ++outer) {
+            float* dst = output + out_base + outer * out_stride;
+            for (uint32_t inner = 0; inner < v_inner; ++inner) {
+                const float* src = decoded_leaf + ((inner * ly + outer) * lx + param);
+                dst[inner] = *src;
             }
         }
     }

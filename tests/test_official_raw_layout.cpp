@@ -81,6 +81,11 @@ void checkRawOffsetFormula(uint64_t nx, uint64_t ny, uint64_t nz) {
           erwt3d::rawOffsetZFastest(0, 0, 0, ny, nz) + ny * nz, "x stride");
 }
 
+// Reference slice layouts follow the official Z-fastest raw ordering:
+// raw offset(x,y,z) = (x*ny + y)*nz + z.
+// X slice (fixed x): output[y * nz + z]
+// Y slice (fixed y): output[x * nz + z]
+// Z slice (fixed z): output[x * ny + y]
 void referenceXSlice(uint64_t x, uint64_t ny, uint64_t nz,
                      std::vector<float>& out) {
     out.resize(ny * nz);

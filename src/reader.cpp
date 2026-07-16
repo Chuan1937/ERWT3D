@@ -474,8 +474,8 @@ bool ERWT3DReader::readFull(float* output, int numThreads, size_t memoryLimitMB)
                                     for (uint64_t x = 0; x < lx; ++x) {
                                         uint64_t globalX = baseX + x;
                                         if (globalX >= nx) break;
-                                        uint64_t srcIdx = (z * ly + y) * lx + x;
-                                        uint64_t dstIdx = (globalZ * ny + globalY) * nx + globalX;
+                                         uint64_t srcIdx = (z * ly + y) * lx + x;
+                                        uint64_t dstIdx = (globalX * ny + globalY) * nz + globalZ;
                                         output[dstIdx] = leafData[srcIdx];
                                     }
                                 }
@@ -541,8 +541,12 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
                                     uint64_t gz = bz + z; if (gz >= nz) break;
                                     for (uint64_t y = 0; y < ly; ++y) {
                                         uint64_t gy = by + y; if (gy >= ny) break;
-                                        uint64_t off = ((gz * ny + gy) * nx + bx) * sizeof(float);
-                                        pwrite(outFd, ld + (z * ly + y) * lx, vx * sizeof(float), off);
+                                for (uint64_t x = 0; x < vx; ++x) {
+                                    uint64_t gx = bx + x;
+                                    uint64_t off = ((gx * ny + gy) * nz + gz) * sizeof(float);
+                                    float v = ld[(z * ly + y) * lx + x];
+                                    pwrite(outFd, &v, sizeof(float), off);
+                                }
                                     }
                                 }
                             }
@@ -586,9 +590,12 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
                                 uint64_t globalZ = baseZ + z; if (globalZ >= nz) break;
                                 for (uint64_t y = 0; y < ly; ++y) {
                                     uint64_t globalY = baseY + y; if (globalY >= ny) break;
-                                    float* dst = outMap + (globalZ * ny + globalY) * nx + baseX;
-                                    const float* src = leafData + (z * ly + y) * lx;
-                                    std::memcpy(dst, src, validLx * sizeof(float));
+                                    for (uint64_t x = 0; x < validLx; ++x) {
+                                        uint64_t globalX = baseX + x;
+                                        uint64_t srcIdx = (z * ly + y) * lx + x;
+                                        uint64_t dstIdx = (globalX * ny + globalY) * nz + globalZ;
+                                        outMap[dstIdx] = leafData[srcIdx];
+                                    }
                                 }
                             }
                         }
