@@ -1,6 +1,7 @@
 #include "erwt3d/writer.hpp"
 #include "erwt3d/morton.hpp"
 #include "erwt3d/raw_layout.hpp"
+#include "erwt3d/thread_pool.hpp"
 #include <fstream>
 #include <vector>
 #include <cstring>
@@ -8,10 +9,12 @@
 #include <iostream>
 #include <chrono>
 #include <iomanip>
+#include <memory>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <future>
 
 #ifdef ERWT3D_HAVE_LZ4
 #include <lz4.h>
@@ -246,6 +249,12 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
     std::vector<float> sb(superX * superY * superZ);
     std::vector<float> planeBuf(doPanels ? superY * superZ : 0);
 
+    std::unique_ptr<ThreadPool> pool;
+    if (compress && numThreads > 1) {
+        pool.reset(new ThreadPool(static_cast<size_t>(numThreads)));
+        std::cout << "Compression threads: " << numThreads << std::endl;
+    }
+
     std::cout << "Sequential conversion: x-slab=" << usableSlabX
               << ", sgX=" << sgX << ", sgY=" << sgY << ", sgZ=" << sgZ << std::endl;
     if (doPanels) {
@@ -279,68 +288,145 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
             uint64_t localXStart = (sbStartX >= xStart) ? (sbStartX - xStart) : 0;
             uint64_t localXEnd = std::min(xStart + currentX - sbStartX, static_cast<uint64_t>(superX));
 
-            for (uint64_t sy = 0; sy < sgY; ++sy) {
-                for (uint64_t sz = 0; sz < sgZ; ++sz) {
-                    std::memset(sb.data(), 0, sb.size() * sizeof(float));
+            const uint64_t batchSize = sgY * sgZ;
 
-                    uint64_t startY = sy * superY;
-                    uint64_t startZ = sz * superZ;
+            if (compress && pool && batchSize > 1) {
+                struct SBResult {
+                    uint64_t idx;
+                    CompressedBlockIndex entry;
+                    std::vector<uint8_t> payload;
+                };
+                std::vector<std::future<SBResult>> futures;
+                futures.reserve(batchSize);
 
-                    for (uint64_t lz = 0; lz < superZ; ++lz) {
-                        uint64_t gz = startZ + lz; if (gz >= nz) break;
-                        for (uint64_t ly = 0; ly < superY; ++ly) {
-                            uint64_t gy = startY + ly; if (gy >= ny) break;
-                            for (uint64_t lx = localXStart; lx < localXEnd; ++lx) {
-                                uint64_t gx = sbStartX + lx;
-                                // In the slab, offset of (gx, gy, gz) relative to xStart.
-                                uint64_t slabOff = (lx * ny + gy) * nz + gz;
-                                sb[(lz * superY + ly) * superX + lx] = slab[slabOff];
+                for (uint64_t sy = 0; sy < sgY; ++sy) {
+                    for (uint64_t sz = 0; sz < sgZ; ++sz) {
+                        const uint64_t idx = (sz * sgY + sy) * sgX + sx;
+                        futures.push_back(pool->submit([&, sy, sz, idx]() -> SBResult {
+                            std::vector<float> localSb(superX * superY * superZ);
+                            std::memset(localSb.data(), 0, localSb.size() * sizeof(float));
+
+                            uint64_t startY = sy * superY;
+                            uint64_t startZ = sz * superZ;
+
+                            for (uint64_t lz = 0; lz < superZ; ++lz) {
+                                uint64_t gz = startZ + lz; if (gz >= nz) break;
+                                for (uint64_t ly = 0; ly < superY; ++ly) {
+                                    uint64_t gy = startY + ly; if (gy >= ny) break;
+                                    for (uint64_t lx = localXStart; lx < localXEnd; ++lx) {
+                                        uint64_t gx = sbStartX + lx;
+                                        uint64_t slabOff = (lx * ny + gy) * nz + gz;
+                                        localSb[(lz * superY + ly) * superX + lx] = slab[slabOff];
+                                    }
+                                }
+                            }
+
+                            SBResult result;
+                            result.idx = idx;
+
+                            std::vector<uint8_t> localLeaf(sbBytes);
+                            writeLeavesToBuffer(localLeaf.data(), header, localSb);
+
+#ifdef ERWT3D_HAVE_LZ4
+                            std::vector<uint8_t> localComp(LZ4_compressBound(static_cast<int>(sbBytes)));
+                            int compSize = LZ4_compress_default(
+                                reinterpret_cast<const char*>(localLeaf.data()),
+                                reinterpret_cast<char*>(localComp.data()),
+                                static_cast<int>(sbBytes),
+                                static_cast<int>(localComp.size()));
+                            if (compSize > 0 && static_cast<uint64_t>(compSize) < sbBytes * 95 / 100) {
+                                result.entry.is_compressed = 1;
+                                result.entry.compressed_size = static_cast<uint64_t>(compSize);
+                                result.payload.assign(localComp.begin(), localComp.begin() + compSize);
+                            } else
+#endif
+                            {
+                                result.entry.is_compressed = 0;
+                                result.entry.compressed_size = static_cast<uint32_t>(sbBytes);
+                                result.payload.assign(localLeaf.begin(), localLeaf.end());
+                            }
+                            return result;
+                        }));
+                    }
+                }
+
+                pool->waitAll();
+
+                std::vector<SBResult> results;
+                results.reserve(futures.size());
+                for (auto& f : futures) results.push_back(f.get());
+                std::sort(results.begin(), results.end(),
+                          [](const SBResult& a, const SBResult& b) { return a.idx < b.idx; });
+
+                for (auto& r : results) {
+                    r.entry.file_offset = static_cast<uint64_t>(outFile.tellp());
+                    std::memset(r.entry.padding, 0, sizeof(r.entry.padding));
+                    outFile.write(reinterpret_cast<const char*>(r.payload.data()), r.payload.size());
+                    compIndex[r.idx] = r.entry;
+                }
+            } else {
+                for (uint64_t sy = 0; sy < sgY; ++sy) {
+                    for (uint64_t sz = 0; sz < sgZ; ++sz) {
+                        std::memset(sb.data(), 0, sb.size() * sizeof(float));
+
+                        uint64_t startY = sy * superY;
+                        uint64_t startZ = sz * superZ;
+
+                        for (uint64_t lz = 0; lz < superZ; ++lz) {
+                            uint64_t gz = startZ + lz; if (gz >= nz) break;
+                            for (uint64_t ly = 0; ly < superY; ++ly) {
+                                uint64_t gy = startY + ly; if (gy >= ny) break;
+                                for (uint64_t lx = localXStart; lx < localXEnd; ++lx) {
+                                    uint64_t gx = sbStartX + lx;
+                                    uint64_t slabOff = (lx * ny + gy) * nz + gz;
+                                    sb[(lz * superY + ly) * superX + lx] = slab[slabOff];
+                                }
                             }
                         }
-                    }
 
-                    uint64_t idx = (sz * sgY + sy) * sgX + sx;
+                        uint64_t idx = (sz * sgY + sy) * sgX + sx;
 
-                    if (compress) {
-                        writeLeavesToBuffer(leafBuf.data(), header, sb);
-                        CompressedBlockIndex entry;
+                        if (compress) {
+                            writeLeavesToBuffer(leafBuf.data(), header, sb);
+                            CompressedBlockIndex entry;
 #ifdef ERWT3D_HAVE_LZ4
-                        int compSize = LZ4_compress_default(
-                            reinterpret_cast<const char*>(leafBuf.data()),
-                            reinterpret_cast<char*>(compBuf.data()),
-                            static_cast<int>(sbBytes),
-                            static_cast<int>(compBuf.size()));
-                        if (compSize > 0 && static_cast<uint64_t>(compSize) < sbBytes * 95 / 100) {
-                            entry.file_offset = static_cast<uint64_t>(outFile.tellp());
-                            entry.compressed_size = static_cast<uint64_t>(compSize);
-                            entry.is_compressed = 1;
-                            std::memset(entry.padding, 0, sizeof(entry.padding));
-                            outFile.write(reinterpret_cast<const char*>(compBuf.data()), compSize);
-                        } else
+                            int compSize = LZ4_compress_default(
+                                reinterpret_cast<const char*>(leafBuf.data()),
+                                reinterpret_cast<char*>(compBuf.data()),
+                                static_cast<int>(sbBytes),
+                                static_cast<int>(compBuf.size()));
+                            if (compSize > 0 && static_cast<uint64_t>(compSize) < sbBytes * 95 / 100) {
+                                entry.file_offset = static_cast<uint64_t>(outFile.tellp());
+                                entry.compressed_size = static_cast<uint64_t>(compSize);
+                                entry.is_compressed = 1;
+                                std::memset(entry.padding, 0, sizeof(entry.padding));
+                                outFile.write(reinterpret_cast<const char*>(compBuf.data()), compSize);
+                            } else
 #endif
-                        {
-                            entry.file_offset = static_cast<uint64_t>(outFile.tellp());
-                            entry.compressed_size = static_cast<uint32_t>(sbBytes);
-                            entry.is_compressed = 0;
-                            std::memset(entry.padding, 0, sizeof(entry.padding));
-                            outFile.write(reinterpret_cast<const char*>(leafBuf.data()), sbBytes);
+                            {
+                                entry.file_offset = static_cast<uint64_t>(outFile.tellp());
+                                entry.compressed_size = static_cast<uint32_t>(sbBytes);
+                                entry.is_compressed = 0;
+                                std::memset(entry.padding, 0, sizeof(entry.padding));
+                                outFile.write(reinterpret_cast<const char*>(leafBuf.data()), sbBytes);
+                            }
+                            compIndex[idx] = entry;
+                        } else {
+                            outFile.seekp(sbOffsets[idx]);
+                            writeLeaves(outFile, header, sb);
                         }
-                        compIndex[idx] = entry;
-                    } else {
-                        outFile.seekp(sbOffsets[idx]);
-                        writeLeaves(outFile, header, sb);
-                    }
 
-                    if (doPanels) {
-                        panelIndex[idx] = panelWritePos;
-                        outFile.seekp(panelWritePos);
-                        for (uint32_t lx = 0; lx < superX; lx += panelStride) {
-                            for (uint64_t z = 0; z < superZ; ++z)
-                                for (uint64_t y = 0; y < superY; ++y)
-                                    planeBuf[z * superY + y] = sb[(z * superY + y) * superX + lx];
-                            outFile.write(reinterpret_cast<const char*>(planeBuf.data()), planeBytes);
+                        if (doPanels) {
+                            panelIndex[idx] = panelWritePos;
+                            outFile.seekp(panelWritePos);
+                            for (uint32_t lx = 0; lx < superX; lx += panelStride) {
+                                for (uint64_t z = 0; z < superZ; ++z)
+                                    for (uint64_t y = 0; y < superY; ++y)
+                                        planeBuf[z * superY + y] = sb[(z * superY + y) * superX + lx];
+                                outFile.write(reinterpret_cast<const char*>(planeBuf.data()), planeBytes);
+                            }
+                            panelWritePos += sbPanelBytes;
                         }
-                        panelWritePos += sbPanelBytes;
                     }
                 }
             }
