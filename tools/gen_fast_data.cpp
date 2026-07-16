@@ -7,11 +7,28 @@
 #include <atomic>
 #include <random>
 
+#include <fcntl.h>
+#include <unistd.h>
+
+static bool pwriteAll(int fd, const void* buf, size_t bytes, uint64_t offset) {
+    const auto* src = static_cast<const uint8_t*>(buf);
+    size_t done = 0;
+    while (done < bytes) {
+        ssize_t n = pwrite(fd, src + done, bytes - done, static_cast<off_t>(offset + done));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
+        done += static_cast<size_t>(n);
+    }
+    return true;
+}
+
 static void generate_chunk(uint64_t nx, uint64_t ny, uint64_t nz,
                            uint64_t x_start, uint64_t x_end,
                            uint32_t seed, const char* path) {
-    FILE* f = fopen(path, "rb+");
-    if (!f) { perror("fopen"); return; }
+    int fd = open(path, O_WRONLY);
+    if (fd < 0) { perror("open"); return; }
 
     std::mt19937 rng(seed);
     std::uniform_real_distribution<float> dist(0.0f, 1.0f);
@@ -20,24 +37,36 @@ static void generate_chunk(uint64_t nx, uint64_t ny, uint64_t nz,
     std::vector<float> buf(BUF_SIZE);
     size_t buf_idx = 0;
 
-    uint64_t yz = ny * nz;
+    const uint64_t yz = ny * nz;
 
     for (uint64_t x = x_start; x < x_end; ++x) {
-        uint64_t x_offset = x * yz * sizeof(float);
+        const uint64_t x_offset = x * yz * sizeof(float);
         for (uint64_t y = 0; y < ny; ++y) {
+            const uint64_t y_offset = y * nz * sizeof(float);
             for (uint64_t z = 0; z < nz; ++z) {
                 buf[buf_idx++] = dist(rng);
                 if (buf_idx == BUF_SIZE) {
-                    fwrite(buf.data(), sizeof(float), BUF_SIZE, f);
+                    const uint64_t written = (x_offset + y_offset + (z + 1 - BUF_SIZE) * sizeof(float));
+                    if (!pwriteAll(fd, buf.data(), BUF_SIZE * sizeof(float), written)) {
+                        perror("pwrite");
+                        close(fd);
+                        return;
+                    }
                     buf_idx = 0;
                 }
             }
         }
     }
-    if (buf_idx > 0)
-        fwrite(buf.data(), sizeof(float), buf_idx, f);
+    if (buf_idx > 0) {
+        const uint64_t tail_start = (x_end - 1) * yz * sizeof(float) +
+                                    (ny - 1) * nz * sizeof(float) +
+                                    (nz - buf_idx) * sizeof(float);
+        if (!pwriteAll(fd, buf.data(), buf_idx * sizeof(float), tail_start)) {
+            perror("pwrite");
+        }
+    }
 
-    fclose(f);
+    close(fd);
 }
 
 int main(int argc, char** argv) {
@@ -53,21 +82,22 @@ int main(int argc, char** argv) {
     uint32_t seed = (argc > 6) ? std::stoul(argv[6]) : 42;
 
     uint64_t total = nx * ny * nz;
-    double gb = total * 4.0 / (1024.0*1024.0*1024.0);
+    double gb = total * 4.0 / (1024.0 * 1024.0 * 1024.0);
     printf("Generating: %lu x %lu x %lu = %lu floats (%.1f GB), %d threads\n",
            nx, ny, nz, total, gb, nthreads);
 
-    // Pre-allocate file
-    FILE* f = fopen(path, "wb");
-    if (!f) { perror("fopen"); return 1; }
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) { perror("open"); return 1; }
     uint64_t file_bytes = total * sizeof(float);
-    if (fseeko(f, file_bytes - 1, SEEK_SET) < 0) { perror("fseeko"); return 1; }
-    fputc(0, f);
-    fclose(f);
+    if (ftruncate(fd, static_cast<off_t>(file_bytes)) != 0) {
+        perror("ftruncate");
+        close(fd);
+        return 1;
+    }
+    close(fd);
 
     auto t0 = std::chrono::steady_clock::now();
 
-    // Launch threads
     std::vector<std::thread> threads;
     uint64_t chunk = (nx + nthreads - 1) / nthreads;
     for (int i = 0; i < nthreads; ++i) {
@@ -80,7 +110,7 @@ int main(int argc, char** argv) {
 
     auto t1 = std::chrono::steady_clock::now();
     double sec = std::chrono::duration<double>(t1 - t0).count();
-    double mb_per_sec = (total * 4.0 / (1024.0*1024.0)) / sec;
+    double mb_per_sec = (total * 4.0 / (1024.0 * 1024.0)) / sec;
     printf("Done: %.1f s, %.0f MB/s\n", sec, mb_per_sec);
     return 0;
 }

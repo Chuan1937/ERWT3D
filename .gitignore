@@ -3,3 +3,4 @@
 benchmarks/
 *.DS_Store
 /build-*
+/deps

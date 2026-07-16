@@ -29,6 +29,7 @@ struct GroupResult {
     double writeTimeMs = 0.0;
     uint64_t outputBytesPerSlice = 0;
     erwt3d::RzfpReadProfile profile;
+    std::string selectedStrategy;
 };
 
 static bool runGroup(erwt3d::RzfpReader& reader,
@@ -126,6 +127,20 @@ static bool runGroup(erwt3d::RzfpReader& reader,
         accumulated.scatter_time_ms += batchProfile.scatter_time_ms;
         accumulated.plan_time_ms += batchProfile.plan_time_ms;
         accumulated.prefix_time_ms += batchProfile.prefix_time_ms;
+
+        switch (batchProfile.selected_strategy) {
+            case erwt3d::RzfpReadStrategy::SelectiveLeaf: result.selectedStrategy = "selective"; break;
+            case erwt3d::RzfpReadStrategy::WholeSuperblock: result.selectedStrategy = "whole"; break;
+            case erwt3d::RzfpReadStrategy::FullPayloadScan: result.selectedStrategy = "fullscan"; break;
+            default: {
+                switch (rzcfg.strategy) {
+                    case erwt3d::RzfpReadStrategy::SelectiveLeaf: result.selectedStrategy = "selective"; break;
+                    case erwt3d::RzfpReadStrategy::WholeSuperblock: result.selectedStrategy = "whole"; break;
+                    case erwt3d::RzfpReadStrategy::FullPayloadScan: result.selectedStrategy = "fullscan"; break;
+                    default: result.selectedStrategy = "auto"; break;
+                }
+            } break;
+        }
 
         for (size_t i = 0; i < batchLen; ++i) {
             auto wStart = std::chrono::high_resolution_clock::now();
@@ -336,7 +351,8 @@ int main(int argc, char* argv[]) {
                   << " preads=" << p.pread_calls
                   << " io=" << std::setprecision(1) << p.io_time_ms / 1000.0
                   << "s dec=" << p.decode_time_ms / 1000.0
-                  << "s scat=" << p.scatter_time_ms / 1000.0 << "s\n";
+                  << "s scat=" << p.scatter_time_ms / 1000.0
+                  << "s strategy=" << gr.selectedStrategy << "\n";
 
         results[g] = gr;
         groupTimes[g] = gr.groupTimeMs;
@@ -350,7 +366,7 @@ int main(int argc, char* argv[]) {
     {
         std::ofstream sf(summaryPath);
         sf << "group,axis,mode,slice_count,group_time_ms,read_time_ms,write_time_ms,output_bytes_per_slice,"
-              "unique_sbs,unique_leaves,requested_bytes,actual_bytes,read_amp,preads,io_ms,decode_ms,scatter_ms\n";
+              "unique_sbs,unique_leaves,requested_bytes,actual_bytes,read_amp,preads,io_ms,decode_ms,scatter_ms,selected_strategy\n";
         for (int g = 0; g < 6; ++g) {
             const auto& r = results[g];
             const auto& p = r.profile;
@@ -363,7 +379,8 @@ int main(int argc, char* argv[]) {
                << std::setprecision(3) << p.readAmplification() << ","
                << p.pread_calls << ","
                << std::setprecision(3) << p.io_time_ms << ","
-               << p.decode_time_ms << "," << p.scatter_time_ms << "\n";
+               << p.decode_time_ms << "," << p.scatter_time_ms << ","
+               << r.selectedStrategy << "\n";
         }
     }
 

@@ -8,10 +8,35 @@ ERWT3D 是一个 C++ 库，用于高效读写大规模规则三维 float32 数�
 
 ## 构建命令
 
+### 默认（LZ4 路径）
+
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
+
+### RZFP 路径
+
+需要 ZFP 库（≥1.0）。若系统未安装，可在项目本地构建：
+
+```bash
+git clone --depth 1 --branch 1.0.1 https://github.com/LLNL/zfp.git deps/zfp-src
+cmake -S deps/zfp-src -B deps/zfp-build -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_UTILITIES=OFF -DBUILD_TESTING=OFF -DZFP_WITH_OPENMP=OFF
+cmake --build deps/zfp-build -j
+cmake --install deps/zfp-build --prefix deps/zfp
+```
+
+然后启用 RZFP 构建：
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DERWT3D_ENABLE_RZFP=ON \
+      -DCMAKE_PREFIX_PATH=/home/chuan/code/ERWT3D/deps/zfp
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+```
+
+`deps/` 已加入 `.gitignore`，不会进入版本控制。
 
 ## 核心二进制
 
@@ -93,6 +118,8 @@ D 盘 HDD，`--hdd` 模式，4GB 内存限制：
 |--------|------------|--------|------|
 | 20GB | 23.80s | 1.369x | RZFP + 2D X-plane sidecar, 512MB/8MB 窗口 |
 | 50GB | 83.58s | 0.804x | RZFP, 512MB/8MB 窗口 |
+
+> 83.58s 是当前最佳测量值，正式基准需要补充多轮冷/热缓存重复性测试。
 
 4GB 是内存拐点，≥4GB 后性能稳定。
 

@@ -94,7 +94,7 @@ struct ReadInterval {
     uint64_t user = 0; // leaf task index for Selective; sb_id for Whole/Full
 };
 
-using DecodeCallback = std::function<void(uint64_t user, const uint8_t* data, RzfpCodec& codec)>;
+using DecodeCallback = std::function<bool(uint64_t user, const uint8_t* data, RzfpCodec& codec)>;
 
 static std::vector<RzfpLeafTask> buildLeafTasks(
     const ERWT3DHeader& plan_hdr,
@@ -398,28 +398,42 @@ static bool executeWindowedRead(
         auto dec_t0 = Clock::now();
         const size_t count = j - i;
         const int threads_to_use = static_cast<int>(std::min<size_t>(decode_threads, count));
+        bool decode_ok = true;
         if (threads_to_use <= 1) {
             for (size_t k = i; k < j; ++k) {
                 const auto& in = sorted[k];
-                decode_cb(in.user, window_buf.data() + (in.offset - wstart), *codecs[0]);
+                if (!decode_cb(in.user, window_buf.data() + (in.offset - wstart), *codecs[0])) {
+                    decode_ok = false;
+                }
             }
         } else {
-            std::vector<std::future<void>> futures;
+            std::vector<std::future<bool>> futures;
             const size_t per = (count + threads_to_use - 1) / threads_to_use;
             for (int t = 0; t < threads_to_use; ++t) {
                 const size_t start = i + static_cast<size_t>(t) * per;
                 const size_t end = std::min(start + per, j);
                 if (start >= end) break;
                 futures.push_back(pool.submit([&, start, end, t]() {
+                    bool ok = true;
                     for (size_t k = start; k < end; ++k) {
                         const auto& in = sorted[k];
-                        decode_cb(in.user, window_buf.data() + (in.offset - wstart), *codecs[t]);
+                        if (!decode_cb(in.user, window_buf.data() + (in.offset - wstart), *codecs[t])) {
+                            ok = false;
+                        }
                     }
+                    return ok;
                 }));
             }
-            for (auto& f : futures) f.get();
+            for (auto& f : futures) {
+                if (!f.get()) decode_ok = false;
+            }
         }
         profile.decode_time_ms += msSince(dec_t0);
+
+        if (!decode_ok) {
+            std::cerr << "Error: RZFP decode failed in window starting at offset " << wstart << std::endl;
+            return false;
+        }
 
         i = j;
     }
@@ -440,17 +454,20 @@ static bool executeSelectiveLeaf(
         profile.requested_record_bytes += tasks[i].record_size;
     }
 
-    auto decode_cb = [&](uint64_t user, const uint8_t* data, RzfpCodec& codec) {
+    auto decode_cb = [&](uint64_t user, const uint8_t* data, RzfpCodec& codec) -> bool {
         const auto& task = tasks[user];
         float leaf[64];
         if (!codec.decodeRecord(task.codec, data, task.record_size, leaf)) {
             std::cerr << "Error: RZFP decode failed for sb=" << task.physical_sb_id
                       << " morton=" << task.morton << std::endl;
-            return;
+            return false;
         }
+        auto sc_t0 = Clock::now();
         for (const auto& sc : task.scatters) {
             scatterDecodedLeaf(plan_hdr, sc.op, leaf, sc.output);
         }
+        profile.scatter_time_ms += msSince(sc_t0);
+        return true;
     };
 
     return executeWindowedRead(fd, intervals, config, decode_cb, profile);
@@ -479,11 +496,12 @@ static bool executeWholeSuperblock(
         }
     }
 
-    auto decode_cb = [&](uint64_t sbid, const uint8_t* payload, RzfpCodec& codec) {
+    auto decode_cb = [&](uint64_t sbid, const uint8_t* payload, RzfpCodec& codec) -> bool {
+        const auto it = groups.find(sbid);
+        if (it == groups.end()) return true;
         const auto& prefix = prefixes.at(sbid);
         const uint64_t descBase = sbid * leavesPerSB;
-        const auto it = groups.find(sbid);
-        if (it == groups.end()) return;
+        bool ok = true;
         for (size_t ti : it->second) {
             const auto& task = tasks[ti];
             const uint8_t* record = payload + prefix[task.morton];
@@ -491,13 +509,16 @@ static bool executeWholeSuperblock(
             if (!codec.decodeRecord(task.codec, record, task.record_size, leaf)) {
                 std::cerr << "Error: RZFP decode failed for sb=" << task.physical_sb_id
                           << " morton=" << task.morton << std::endl;
-                return;
+                ok = false;
+                continue;
             }
             auto sc_t0 = Clock::now();
             for (const auto& sc : task.scatters) {
                 scatterDecodedLeaf(plan_hdr, sc.op, leaf, sc.output);
             }
-            }
+            profile.scatter_time_ms += msSince(sc_t0);
+        }
+        return ok;
     };
 
     return executeWindowedRead(fd, intervals, config, decode_cb, profile);
@@ -523,9 +544,9 @@ static bool executeFullPayloadScan(
     }
     for (const auto& t : tasks) profile.requested_record_bytes += t.record_size;
 
-    auto decode_cb = [&](uint64_t sbid, const uint8_t* payload, RzfpCodec& codec) {
+    auto decode_cb = [&](uint64_t sbid, const uint8_t* payload, RzfpCodec& codec) -> bool {
         auto it = groups.find(sbid);
-        if (it == groups.end()) return;
+        if (it == groups.end()) return true;
 
         const uint64_t descBase = sbid * leavesPerSB;
         std::vector<uint32_t> prefix(leavesPerSB + 1, 0);
@@ -533,6 +554,7 @@ static bool executeFullPayloadScan(
             prefix[i + 1] = prefix[i] + descriptorSize(descriptors[descBase + i]);
         }
 
+        bool ok = true;
         for (size_t ti : it->second) {
             const auto& task = tasks[ti];
             const uint8_t* record = payload + prefix[task.morton];
@@ -540,13 +562,16 @@ static bool executeFullPayloadScan(
             if (!codec.decodeRecord(task.codec, record, task.record_size, leaf)) {
                 std::cerr << "Error: RZFP decode failed for sb=" << task.physical_sb_id
                           << " morton=" << task.morton << std::endl;
-                return;
+                ok = false;
+                continue;
             }
             auto sc_t0 = Clock::now();
             for (const auto& sc : task.scatters) {
                 scatterDecodedLeaf(plan_hdr, sc.op, leaf, sc.output);
             }
-            }
+            profile.scatter_time_ms += msSince(sc_t0);
+        }
+        return ok;
     };
 
     return executeWindowedRead(fd, intervals, config, decode_cb, profile);
@@ -806,13 +831,24 @@ bool RzfpReader::readSlice(SliceAxis axis, uint64_t index, float* output,
 bool RzfpReader::readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
                                  int numThreads, size_t memoryLimitMB,
                                  const HDDReadWindowConfig& wcfg) {
-    (void)numThreads;
-    (void)memoryLimitMB;
     RzfpReaderConfig config;
     config.hdd = wcfg;
     config.strategy = RzfpReadStrategy::Auto;
-    config.decode_threads = 1;
+    config.decode_threads = std::max(1, numThreads);
     config.profile = nullptr;
+
+    // Apply a memory-aware read window if the caller constrained the budget.
+    // Keep at least one window buffer plus headroom for output buffers.
+    if (memoryLimitMB > 0 && config.hdd.read_window_bytes == 0) {
+        const uint64_t auto_window = 512ULL * 1024 * 1024;
+        const uint64_t budget_window = static_cast<uint64_t>(memoryLimitMB) * 1024 * 1024 / 4;
+        config.hdd.read_window_bytes = std::min(auto_window, std::max<uint64_t>(16ULL * 1024 * 1024, budget_window));
+    }
+    if (memoryLimitMB > 0 && config.hdd.max_gap_bytes == 0) {
+        config.hdd.max_gap_bytes = std::max<uint64_t>(1ULL * 1024 * 1024,
+                                                      config.hdd.read_window_bytes / 64);
+    }
+
     return readSlicesBatch(requests, config);
 }
 
@@ -855,8 +891,7 @@ bool RzfpReader::readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
     double plan_time_ms = 0.0;
     auto tasks = buildLeafTasks(plan_hdr, fallback, header_, plan_time_ms);
     if (tasks.empty()) {
-        profile->plan_time_ms += msSince(t_start) - profile->io_time_ms - profile->decode_time_ms;
-        if (profile->plan_time_ms < 0.0) profile->plan_time_ms = 0.0;
+        profile->plan_time_ms += plan_time_ms;
         return true;
     }
 
@@ -877,6 +912,7 @@ bool RzfpReader::readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
     if (strategy == RzfpReadStrategy::Auto) {
         strategy = chooseStrategy(tasks, sb_index_, config, leavesPerSB);
     }
+    profile->selected_strategy = strategy;
 
     auto prefixes = buildPrefixes(tasks, descriptors_, leavesPerSB);
 
@@ -895,9 +931,6 @@ bool RzfpReader::readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
             ok = executeSelectiveLeaf(fd_, tasks, plan_hdr, config, *profile);
             break;
     }
-
-    profile->plan_time_ms += msSince(t_start) - profile->io_time_ms - profile->decode_time_ms;
-    if (profile->plan_time_ms < 0.0) profile->plan_time_ms = 0.0;
 
     return ok;
 }

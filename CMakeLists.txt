@@ -132,6 +132,8 @@ target_link_libraries(erwt3d_bench_line PRIVATE erwt3d)
 
 add_executable(gen_test_data tools/gen_test_data.cpp)
 
+add_executable(gen_fast_data tools/gen_fast_data.cpp)
+
 add_executable(erwt3d_bench_raw tools/erwt3d_bench_raw.cpp)
 
 add_executable(erwt3d_layout_sim tools/erwt3d_layout_sim.cpp)

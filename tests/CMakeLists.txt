@@ -13,9 +13,13 @@ target_link_libraries(test_sidecar_batch_reader PRIVATE erwt3d)
 add_executable(test_rzfp_auto_plan test_rzfp_auto_plan.cpp)
 target_link_libraries(test_rzfp_auto_plan PRIVATE erwt3d)
 
+add_executable(test_rzfp_reader_strategies test_rzfp_reader_strategies.cpp)
+target_link_libraries(test_rzfp_reader_strategies PRIVATE erwt3d)
+
 add_test(NAME relative_error_strict COMMAND test_relative_error strict)
 add_test(NAME relative_error_legacy COMMAND test_relative_error legacy)
 add_test(NAME rzfp_codec COMMAND test_rzfp_codec)
 add_test(NAME raw_xplane_sampler COMMAND test_raw_xplane_sampler)
 add_test(NAME sidecar_batch_reader COMMAND test_sidecar_batch_reader)
 add_test(NAME rzfp_auto_plan COMMAND test_rzfp_auto_plan)
+add_test(NAME rzfp_reader_strategies COMMAND test_rzfp_reader_strategies)

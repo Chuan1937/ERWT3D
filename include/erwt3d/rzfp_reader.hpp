@@ -29,6 +29,7 @@ struct RzfpReadProfile {
     double io_time_ms = 0.0;
     double decode_time_ms = 0.0;
     double scatter_time_ms = 0.0;
+    RzfpReadStrategy selected_strategy = RzfpReadStrategy::Auto;
 
     double readAmplification() const {
         return requested_record_bytes > 0
