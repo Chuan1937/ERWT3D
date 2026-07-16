@@ -254,6 +254,15 @@ static RzfpReadStrategy chooseStrategy(
                                  ? config.hdd.max_gap_bytes
                                  : (8ULL * 1024 * 1024);
 
+    // Drive parameters for the cost model.
+    const double seek_ms = config.hdd.seek_ms > 0.0 ? config.hdd.seek_ms : 9.0;
+    const double seq_mb_s = config.hdd.sequential_mb_s > 0.0 ? config.hdd.sequential_mb_s : 220.0;
+    const double seq_byte_ms = 1.0 / (seq_mb_s * 1024.0 * 1024.0 / 1000.0);
+
+    const auto estimateTime = [&](uint64_t bytes, uint64_t preads) -> double {
+        return static_cast<double>(preads) * seek_ms + static_cast<double>(bytes) * seq_byte_ms;
+    };
+
     uint64_t selective_preads = 0;
     const uint64_t selective_bytes = estimateSelectiveBytes(tasks, read_window, max_gap, selective_preads);
 
@@ -262,25 +271,18 @@ static RzfpReadStrategy chooseStrategy(
 
     const uint64_t fullscan_bytes = totalPayloadBytes(sb_index);
     const uint64_t totalLeaves = sb_index.size() * leavesPerSB;
-
-    // Heuristic auto selector.  Selective is the safest default because it
-    // avoids reading untouched superblocks.  Full scan only pays off when the
-    // requested leaves already cover a large fraction of the volume and the
-    // selective window would still drag in nearly the whole payload.
     const double leaf_coverage = totalLeaves > 0
                                      ? static_cast<double>(tasks.size()) / static_cast<double>(totalLeaves)
                                      : 1.0;
 
-    if (selective_bytes <= fullscan_bytes * 1.05) {
-        return RzfpReadStrategy::SelectiveLeaf;
-    }
+    // Full payload scan reads everything in one large sequential sweep.
+    // On HDD this is often faster than a selective read that drags in most
+    // of the file through many small windows.
+    const uint64_t fullscan_preads = std::max<uint64_t>(1, (fullscan_bytes + read_window - 1) / read_window);
+    const double fullscan_time = estimateTime(fullscan_bytes, fullscan_preads);
 
-    if (leaf_coverage > 0.30 && fullscan_bytes < selective_bytes) {
-        return RzfpReadStrategy::FullPayloadScan;
-    }
-
+    // Whole-superblock merges touched superblock payloads.
     uint64_t whole_preads = 0;
-    // Estimate whole-SB reads by reusing the same window merge over SB intervals.
     std::vector<ReadInterval> sb_intervals;
     sb_intervals.reserve(touched_sbs.size());
     for (uint64_t sbid : touched_sbs) {
@@ -305,8 +307,19 @@ static RzfpReadStrategy chooseStrategy(
         i = j;
     }
 
-    // Prefer whole-SB when it needs fewer reads and reads less total data.
-    if (whole_sb_bytes < selective_bytes && whole_preads <= selective_preads / 2) {
+    const double selective_time = estimateTime(selective_bytes, selective_preads);
+    const double whole_time = estimateTime(whole_sb_bytes, whole_preads);
+
+    // If the selective read would already consume most of the payload, a single
+    // sequential full scan wins due to lower seek overhead.
+    if (selective_bytes > fullscan_bytes * 0.85 || fullscan_time < selective_time * 0.9) {
+        if (leaf_coverage > 0.05 || fullscan_bytes < selective_bytes * 1.2) {
+            return RzfpReadStrategy::FullPayloadScan;
+        }
+    }
+
+    // Prefer whole-SB when it is clearly cheaper than selective.
+    if (whole_time < selective_time && whole_sb_bytes < selective_bytes * 1.05) {
         return RzfpReadStrategy::WholeSuperblock;
     }
 
@@ -340,11 +353,10 @@ static bool executeWindowedRead(
 
     std::vector<uint8_t> window_buf;
 
-    size_t i = 0;
-    while (i < sorted.size()) {
-        uint64_t wstart = sorted[i].offset;
-        uint64_t wend = wstart + sorted[i].size;
-        size_t j = i + 1;
+    auto computeWindowEnd = [&](size_t start) -> std::pair<uint64_t, size_t> {
+        uint64_t wstart = sorted[start].offset;
+        uint64_t wend = wstart + sorted[start].size;
+        size_t j = start + 1;
         while (j < sorted.size()) {
             const uint64_t off = sorted[j].offset;
             const uint64_t end = off + sorted[j].size;
@@ -353,6 +365,13 @@ static bool executeWindowedRead(
             wend = end;
             ++j;
         }
+        return {wend, j};
+    };
+
+    size_t i = 0;
+    while (i < sorted.size()) {
+        const uint64_t wstart = sorted[i].offset;
+        auto [wend, j] = computeWindowEnd(i);
 
         const uint64_t wsize = wend - wstart;
         if (window_buf.size() < wsize) window_buf.resize(wsize);
@@ -365,6 +384,16 @@ static bool executeWindowedRead(
         profile.io_time_ms += msSince(io_t0);
         ++profile.pread_calls;
         profile.actual_read_bytes += wsize;
+
+        // Prefetch the next window so the drive can overlap seek/transfer
+        // with the decode phase of the current window.
+        if (j < sorted.size()) {
+            const uint64_t next_start = sorted[j].offset;
+            auto [next_end, next_j] = computeWindowEnd(j);
+            (void)next_j;
+            const uint64_t next_size = next_end - next_start;
+            readahead(fd, static_cast<off_t>(next_start), static_cast<size_t>(next_size));
+        }
 
         auto dec_t0 = Clock::now();
         const size_t count = j - i;

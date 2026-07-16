@@ -24,6 +24,11 @@ bool executeSBPlanLeafIndex(int fd, const SBTaskPlan& plan, const ERWT3DHeader& 
 struct HDDReadWindowConfig {
     uint64_t read_window_bytes = 0;  // 0 = auto (512 MiB)
     uint64_t max_gap_bytes = 0;      // 0 = auto (8 MiB)
+
+    // Drive characteristics used by the automatic read-strategy selector.
+    // A value of 0 means "use a built-in default".
+    double seek_ms = 0.0;            // default 9 ms
+    double sequential_mb_s = 0.0;    // default 220 MB/s
 };
 
 // HDDReadWindow: 大连续读窗口 + gap容忍 (HDD最优)

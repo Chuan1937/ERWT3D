@@ -285,6 +285,8 @@ RzfpCandidate RzfpCodec::encodeBest(
     }
 
     if (has_compressible) {
+        uint32_t best_accuracy_size = std::numeric_limits<uint32_t>::max();
+
         if (config.try_accuracy || config.try_accuracy_exceptions) {
             const double min_abs = minAbsNonException(input, valid_mask, mandatory_mask);
             if (std::isfinite(min_abs) && min_abs > 0.0) {
@@ -292,25 +294,34 @@ RzfpCandidate RzfpCodec::encodeBest(
                 const int16_t requested_min_exp = safeToleranceExponent(target_tolerance);
                 const double requested_tolerance = std::ldexp(1.0, requested_min_exp);
 
+                // Precompute magnitude-sorted value indices once for optional exceptions.
+                std::vector<std::pair<double, uint32_t>> sorted_vals;
+                if (config.try_accuracy_exceptions) {
+                    sorted_vals.reserve(64);
+                    for (uint32_t i = 0; i < 64; ++i) {
+                        const uint64_t bit = uint64_t{1} << i;
+                        if ((valid_mask & bit) == 0 || (mandatory_mask & bit) != 0) continue;
+                        sorted_vals.emplace_back(std::abs(static_cast<double>(input[i])), i);
+                    }
+                    std::sort(sorted_vals.begin(), sorted_vals.end());
+                }
+
+                bool last_count_improved = true;
+
                 for (uint8_t opt_count : config.optional_exception_counts) {
+                    if (opt_count == 0 && !config.try_accuracy) continue;
+                    if (opt_count > 0 && !config.try_accuracy_exceptions) continue;
+
                     uint64_t optional_mask = 0;
                     if (opt_count > 0) {
-                        std::vector<std::pair<double, uint32_t>> vals;
-                        vals.reserve(64);
-                        for (uint32_t i = 0; i < 64; ++i) {
-                            const uint64_t bit = uint64_t{1} << i;
-                            if ((valid_mask & bit) == 0 || (mandatory_mask & bit) != 0) continue;
-                            vals.emplace_back(std::abs(static_cast<double>(input[i])), i);
-                        }
-                        std::sort(vals.begin(), vals.end());
-                        const uint32_t take = static_cast<uint32_t>(std::min<size_t>(opt_count, vals.size()));
+                        const uint32_t take = static_cast<uint32_t>(
+                            std::min<size_t>(opt_count, sorted_vals.size()));
                         for (uint32_t k = 0; k < take; ++k) {
-                            optional_mask |= uint64_t{1} << vals[k].second;
+                            optional_mask |= uint64_t{1} << sorted_vals[k].second;
                         }
                     }
 
                     uint64_t exception_mask = mandatory_mask | optional_mask;
-                    if (exception_mask != 0 && !config.try_accuracy_exceptions) continue;
                     const uint32_t exc_count = static_cast<uint32_t>(__builtin_popcountll(exception_mask));
                     if (exc_count > config.max_total_exceptions) continue;
 
@@ -350,13 +361,7 @@ RzfpCandidate RzfpCodec::encodeBest(
                         stream_flush(impl_->bits);
                         const size_t flushed_size = zfp_stream_compressed_size(impl_->stream);
 
-                        std::vector<uint8_t> zfp_payload(
-                            impl_->buffer.begin(),
-                            impl_->buffer.begin() + std::max(compressed_size, flushed_size)
-                        );
-
-                        impl_->rewind();
-                        if (!zfp_decompress(impl_->stream, impl_->output_field)) continue;
+                        const size_t payload_zfp_bytes = std::max(compressed_size, flushed_size);
 
                         c.exception_values.clear();
                         for (uint32_t i = 0; i < 64; ++i) {
@@ -364,32 +369,55 @@ RzfpCandidate RzfpCodec::encodeBest(
                                 c.exception_values.push_back(input[i]);
                             }
                         }
-                        patchExceptions(impl_->decoded, exception_mask, c.exception_values);
 
-                        c.error_stats = checkBlockError(
-                            input, impl_->decoded, 64, valid_mask, config.error
-                        );
-                        if (!c.error_stats.passed) continue;
+                        impl_->rewind();
+                        if (!zfp_decompress(impl_->stream, impl_->output_field)) continue;
 
                         c.zfp_payload_size = static_cast<uint32_t>(compressed_size);
                         if (exception_mask == 0) {
-                            c.payload = buildAccuracyRecord(record_min_exp, zfp_payload);
+                            c.payload = buildAccuracyRecord(
+                                record_min_exp,
+                                std::vector<uint8_t>(
+                                    impl_->buffer.begin(),
+                                    impl_->buffer.begin() + payload_zfp_bytes)
+                            );
                         } else {
                             c.payload = buildAccuracyExceptionsRecord(
-                                record_min_exp, exception_mask, c.exception_values, zfp_payload
+                                record_min_exp, exception_mask, c.exception_values,
+                                std::vector<uint8_t>(
+                                    impl_->buffer.begin(),
+                                    impl_->buffer.begin() + payload_zfp_bytes)
                             );
                         }
                         c.parameter = record_min_exp;
                         c.exception_count = exc_count;
                         c.serialized_size = 2 + static_cast<uint32_t>(c.payload.size());
+
+                        patchExceptions(impl_->decoded, exception_mask, c.exception_values);
+                        c.error_stats = checkBlockError(
+                            input, impl_->decoded, 64, valid_mask, config.error
+                        );
+                        if (!c.error_stats.passed) continue;
                         c.passed = true;
                         candidates.push_back(std::move(c));
+
+                        if (c.serialized_size < best_accuracy_size) {
+                            best_accuracy_size = c.serialized_size;
+                            last_count_improved = true;
+                        } else {
+                            last_count_improved = false;
+                        }
                     }
+
+                    // If adding more exceptions did not help for two consecutive counts,
+                    // further exceptions are unlikely to help.
+                    if (opt_count >= 4 && !last_count_improved) break;
                 }
             }
         }
 
         if (config.try_precision && mandatory_mask == 0) {
+            uint32_t best_precision_size = std::numeric_limits<uint32_t>::max();
             for (uint8_t prec : config.precisions) {
                 RzfpCandidate c;
                 c.codec = RzfpLeafCodec::ZfpPrecision;
@@ -427,6 +455,13 @@ RzfpCandidate RzfpCodec::encodeBest(
                 c.serialized_size = 2 + static_cast<uint32_t>(c.payload.size());
                 c.passed = true;
                 candidates.push_back(std::move(c));
+
+                if (c.serialized_size < best_precision_size) {
+                    best_precision_size = c.serialized_size;
+                } else {
+                    // Higher precision only increases size; stop.
+                    break;
+                }
             }
         }
     }

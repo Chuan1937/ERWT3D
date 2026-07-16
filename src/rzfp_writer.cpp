@@ -254,7 +254,9 @@ bool writeRzfpFile(
     const uint64_t slabX = config.super_size;
     const uint64_t slabBytes = rawYZBytes * slabX;
 
-    std::vector<float> slab(slabBytes / sizeof(float));
+    std::vector<float> slab[2];
+    slab[0].resize(slabBytes / sizeof(float));
+    slab[1].resize(slabBytes / sizeof(float));
     std::vector<uint8_t> leafBuffer(header.super_x * header.super_y * header.super_z * sizeof(float));
     std::vector<RzfpSuperblockIndex> sbIndex(totalSB);
 
@@ -265,24 +267,34 @@ bool writeRzfpFile(
 
     uint64_t currentPayloadOffset = payloadStart;
 
-    for (uint64_t xStart = 0; xStart < config.nx; xStart += slabX) {
+    auto readSlab = [&](uint64_t bufIdx, uint64_t xStart) -> bool {
         const uint64_t currentX = std::min<uint64_t>(slabX, config.nx - xStart);
         const uint64_t currentBytes = currentX * rawYZBytes;
+        return readFullyAt(rawFd, slab[bufIdx].data(), currentBytes, xStart * rawYZBytes);
+    };
+
+    std::future<bool> readFuture;
+    if (!readSlab(0, 0)) {
+        std::cerr << "Error reading initial raw X-slab" << std::endl;
+        close(rawFd); close(outFd); unlink(tmpPath.c_str());
+        return false;
+    }
+
+    int curBuf = 0;
+    for (uint64_t xStart = 0; xStart < config.nx; xStart += slabX) {
+        const uint64_t currentX = std::min<uint64_t>(slabX, config.nx - xStart);
+        const uint64_t nextStart = xStart + slabX;
+        const uint64_t sx = xStart / slabX;
+
+        if (nextStart < config.nx) {
+            readFuture = std::async(std::launch::async, readSlab, 1 - curBuf, nextStart);
+        }
 
         auto t0 = Clock::now();
-        if (!readFullyAt(rawFd, slab.data(), currentBytes, xStart * rawYZBytes)) {
-            std::cerr << "Error reading raw X-slab at x=" << xStart << std::endl;
-            close(rawFd); close(outFd); unlink(tmpPath.c_str());
-            return false;
-        }
-        auto t1 = Clock::now();
-        totalReadMs += std::chrono::duration<double, std::milli>(t1 - t0).count();
-
-        const uint64_t sx = xStart / slabX;
         for (uint64_t sz = 0; sz < sgZ; ++sz) {
             for (uint64_t sy = 0; sy < sgY; ++sy) {
                 packLeavesFromSlab(
-                    leafBuffer.data(), header, slab.data(), config.nx, config.ny, config.nz,
+                    leafBuffer.data(), header, slab[curBuf].data(), config.nx, config.ny, config.nz,
                     xStart, currentX, sx, sy, sz);
 
                 const uint64_t sbId = rzfpSuperblockId(header, sz, sy, sx, config.physical_order);
@@ -334,7 +346,7 @@ bool writeRzfpFile(
                 }
 
                 const uint64_t descOff = rzfpSuperblockDescriptorOffset(header, sbId);
-                t0 = Clock::now();
+                auto t0 = Clock::now();
                 if (!writeFullyAt(outFd, descriptors.data(), descriptors.size() * sizeof(RzfpLeafDescriptor), descOff)) {
                     std::cerr << "Error writing descriptors for sb=" << sbId << std::endl;
                     close(rawFd); close(outFd); unlink(tmpPath.c_str());
@@ -347,7 +359,7 @@ bool writeRzfpFile(
                         return false;
                     }
                 }
-                t1 = Clock::now();
+                auto t1 = Clock::now();
                 totalIoMs += std::chrono::duration<double, std::milli>(t1 - t0).count();
 
                 sbIndex[sbId].payload_offset = currentPayloadOffset;
@@ -359,6 +371,18 @@ bool writeRzfpFile(
                           << "%" << std::flush;
             }
         }
+
+        if (readFuture.valid()) {
+            auto rt0 = Clock::now();
+            if (!readFuture.get()) {
+                std::cerr << "Error reading raw X-slab at x=" << nextStart << std::endl;
+                close(rawFd); close(outFd); unlink(tmpPath.c_str());
+                return false;
+            }
+            auto rt1 = Clock::now();
+            totalReadMs += std::chrono::duration<double, std::milli>(rt1 - rt0).count();
+        }
+        curBuf = 1 - curBuf;
     }
     std::cout << std::endl;
 
