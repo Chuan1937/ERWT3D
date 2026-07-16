@@ -75,22 +75,16 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 | big.dat | 2001 × 2201 × 3000 | 50 GB |
 
 - 数据类型：float32
-- 存储顺序：X-Y-Z row-major（Z 变化最快），即官方数据布局 `offset(x,y,z) = (x*ny + y)*nz + z`
+- **官方原始布局**：X-Y-Z row-major，Z 最快变化
+  - 偏移公式：`offset(x,y,z) = (x*ny + y)*nz + z`
+  - 固定 x 的完整 YZ 平面在 raw 文件中连续存储
+- **ERWT3D/RZFP 内部 Leaf 布局**：X 最快变化，`leaf[(z*leafY+y)*leafX+x]`
+  - 转换器负责外部 Z-fastest 与内部 Leaf 布局之间的重排
 
 ## 文件格式
 
 - Header：256 字节（magic、维度、块大小、flags）
-- Superblock：64×64×64 float32 = 1 MiB，Z-Y-X 顺序排列
-- Leaf block：4×4×4 float32 = 256 字节，superblock 内 Morton 顺序
-- 可选 X-plane：预存 YZ 平面，加速 X 切片访问
-- 可选 lz4 压缩：每个 superblock 独立压缩，不压缩的块直接存原始数据
-- 压缩索引：文件末尾存储每个块的偏移和大小（16 字节/块）
-- 偏移公式：`data_offset + sb_idx * sb_bytes + morton3D(lx,ly,lz) * leaf_bytes`
-
-## 文件格式
-
-- Header：256 字节（magic、维度、块大小、flags）
-- Superblock：64×64×64 float32 = 1 MiB，Z-Y-X 顺序排列
+- Superblock：64×64×64 float32 = 1 MiB，Z-Y-X 顺序排列（内部布局 X fastest）
 - Leaf block：4×4×4 float32 = 256 字节，superblock 内 Morton 顺序
 - 可选 X-panel：预存 YZ 平面，加速 X 切片访问
 - 可选 X-plane：连续 X 切片平面（存储比 >1.5x）
@@ -112,7 +106,7 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 
 ## 当前性能
 
-D 盘 HDD，`--hdd` 模式，4GB 内存限制：
+G 盘 HDD，`--hdd` 模式，4GB 内存限制：
 
 | 数据集 | T_composite | 存储比 | 备注 |
 |--------|------------|--------|------|
@@ -183,4 +177,4 @@ D 盘 HDD，`--hdd` 模式，4GB 内存限制：
 
 ## 说明
 
-数据转换和测试都需要在 HDD（D 盘）上进行，不能在 SSD 上测试。
+数据转换和测试都需要在 HDD（G 盘）上进行，不能在 SSD 上测试。
