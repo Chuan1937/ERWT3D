@@ -210,7 +210,7 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
 
     bool doPanels = (panelAxis == 0) && panelStride > 0 && panelStride <= superX;
     uint64_t planeBytes = superY * superZ * sizeof(float);
-    uint64_t panelCount = doPanels ? superX / panelStride : 0;
+    uint64_t panelCount = doPanels ? (superX + panelStride - 1) / panelStride : 0;
     uint64_t sbPanelBytes = doPanels ? panelCount * planeBytes : 0;
     uint64_t panelIndexBytes = doPanels ? totalSB * sizeof(uint64_t) : 0;
 
@@ -230,17 +230,17 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
     const uint64_t yzBytes = yzFloats * sizeof(float);
     const uint64_t slabX = superX;
 
-    // Memory budget: one X-slab plus one superblock plus optional compression buffer.
     size_t budgetBytes = memoryLimitMB * 1024ULL * 1024ULL;
-    if (budgetBytes < slabX * yzBytes + sbBytes + compBuf.size() + 64 * 1024 * 1024) {
-        budgetBytes = slabX * yzBytes + sbBytes + compBuf.size() + 64 * 1024 * 1024;
+    const uint64_t requiredBytes = slabX * yzBytes + sbBytes + compBuf.size() + 64 * 1024 * 1024;
+    if (budgetBytes < requiredBytes) {
+        std::cerr << "Error: memory limit " << memoryLimitMB << " MB too small. "
+                  << "Required at least " << (requiredBytes / (1024 * 1024) + 1)
+                  << " MB for one X-slab (" << slabX << " planes) + superblock + compression buffer."
+                  << std::endl;
+        close(inFd);
+        return false;
     }
     uint64_t usableSlabX = std::min<uint64_t>(slabX, nx);
-    if (usableSlabX * yzBytes + sbBytes + compBuf.size() > budgetBytes) {
-        // Fall back to smaller slabs if memory is extremely tight.
-        usableSlabX = std::max<uint64_t>(1,
-            (budgetBytes - sbBytes - compBuf.size()) / yzBytes);
-    }
 
     std::vector<float> slab(usableSlabX * yzFloats);
     std::vector<float> sb(superX * superY * superZ);
@@ -424,7 +424,7 @@ bool writeERWT3D(const std::string& outputPath,
     uint64_t totalSB=sgX*sgY*sgZ, sbBytes=getSuperblockBytes(header);
     uint64_t rawSize=getRawSize(header);
     uint64_t planeBytes=superY*superZ*sizeof(float);
-    uint64_t panelCount=doPanels?superX/panelStride:0;
+    uint64_t panelCount=doPanels?(superX+panelStride-1)/panelStride:0;
     uint64_t sbPanelBytes=panelCount*planeBytes;
     uint64_t panelDataSize=totalSB*sbPanelBytes;
     uint64_t panelIndexBytes=totalSB*sizeof(uint64_t);

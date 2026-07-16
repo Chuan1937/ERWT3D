@@ -278,7 +278,7 @@ static int runSidecar(const std::string& rawPath, const std::string& erwtPath,
     s.chunkIdx = 0;
     s.totalStorageBytes = 0;
     s.compBuf.resize(LZ4_compressBound(static_cast<int>(chunkRawBytes)));
-    s.rawRow.resize(planeFloats * sizeof(float));
+    s.rawRow.resize(planeFloats);
     s.planeChunks.resize(planeCount);
     for (uint32_t pi = 0; pi < planeCount; ++pi) {
         s.planeChunks[pi].resize(ny * chunkZRows);
