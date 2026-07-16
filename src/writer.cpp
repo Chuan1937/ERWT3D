@@ -1,5 +1,6 @@
 #include "erwt3d/writer.hpp"
 #include "erwt3d/morton.hpp"
+#include "erwt3d/raw_layout.hpp"
 #include <fstream>
 #include <vector>
 #include <cstring>
@@ -99,7 +100,8 @@ static void fillSuperBuffer(std::vector<float>& sb, const float* rawData,
             uint64_t gy = startY+y; if (gy >= ny) break;
             for (uint64_t x = 0; x < superX; ++x) {
                 uint64_t gx = startX+x; if (gx >= nx) break;
-                sb[(z*superY+y)*superX+x] = rawData[(gz*ny+gy)*nx+gx];
+                sb[(z*superY+y)*superX+x] =
+                    rawData[rawOffsetZFastest(gx, gy, gz, ny, nz)];
             }
         }
     }
@@ -115,17 +117,18 @@ static void fillSuperBufferFromFile(std::vector<float>& sb, std::ifstream& inFil
         uint64_t gz = startZ+z; if (gz >= nz) break;
         for (uint64_t y = 0; y < superY; ++y) {
             uint64_t gy = startY+y; if (gy >= ny) break;
-            uint64_t foff = ((gz*ny+gy)*nx+startX)*sizeof(float);
             uint64_t vx = std::min(static_cast<uint64_t>(superX), nx-startX);
-            inFile.seekg(foff); inFile.clear();
-            std::vector<float> row(vx);
-            inFile.read(reinterpret_cast<char*>(row.data()), vx*sizeof(float));
-            for (uint64_t x=0; x<vx; ++x) sb[(z*superY+y)*superX+x] = row[x];
+            for (uint64_t x = 0; x < vx; ++x) {
+                uint64_t gx = startX + x;
+                uint64_t foff = rawOffsetBytesZFastest(gx, gy, gz, ny, nz);
+                inFile.seekg(foff); inFile.clear();
+                inFile.read(reinterpret_cast<char*>(&sb[(z*superY+y)*superX+x]), sizeof(float));
+            }
         }
     }
 }
 
-// mmap版本: 直接从内存映射读取，避免大量seek
+// mmap version: read from memory-mapped file using the official Z-fastest layout.
 static void fillSuperBufferFromMmap(std::vector<float>& sb, const float* rawData,
                                      uint64_t nx, uint64_t ny, uint64_t nz,
                                      uint64_t sx, uint64_t sy, uint64_t sz,
@@ -137,14 +140,17 @@ static void fillSuperBufferFromMmap(std::vector<float>& sb, const float* rawData
         for (uint64_t y = 0; y < superY; ++y) {
             uint64_t gy = startY+y; if (gy >= ny) break;
             uint64_t vx = std::min(static_cast<uint64_t>(superX), nx-startX);
-            const float* src = rawData + (gz*ny+gy)*nx+startX;
-            for (uint64_t x=0; x<vx; ++x) sb[(z*superY+y)*superX+x] = src[x];
+            for (uint64_t x = 0; x < vx; ++x) {
+                uint64_t gx = startX + x;
+                sb[(z*superY+y)*superX+x] = rawData[rawOffsetZFastest(gx, gy, gz, ny, nz)];
+            }
         }
     }
 }
 
-// 顺序读取策略: 按行顺序读取输入文件，分配到superblock缓冲区
-// 适用于HDD，避免随机访问
+// Sequential read strategy: read the official Z-fastest raw file one X-slab at a
+// time. Each X-slab contains a contiguous range of X planes, so every pread is
+// sequential and large, which is optimal for HDD.
 static bool writeERWT3DFromFileSequential(const std::string& outputPath,
                                            const std::string& inputPath,
                                            uint64_t nx, uint64_t ny, uint64_t nz,
@@ -162,28 +168,23 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
     uint64_t sgX=getSuperGridX(header), sgY=getSuperGridY(header), sgZ=getSuperGridZ(header);
     uint64_t totalSB=sgX*sgY*sgZ, sbBytes=getSuperblockBytes(header);
 
-    // 打开输入文件
-    std::ifstream inFile(inputPath, std::ios::binary);
-    if (!inFile) {
+    int inFd = open(inputPath.c_str(), O_RDONLY);
+    if (inFd < 0) {
         std::cerr << "Error: Cannot open input file: " << inputPath << std::endl;
         return false;
     }
 
-    // 创建输出文件
     std::ofstream outFile(outputPath, std::ios::binary);
     if (!outFile) {
+        close(inFd);
         std::cerr << "Error: Cannot create output file: " << outputPath << std::endl;
         return false;
     }
 
-    // 增大输出缓冲区到16MB
     std::vector<char> outBuf(16 * 1024 * 1024);
     outFile.rdbuf()->pubsetbuf(outBuf.data(), outBuf.size());
-
-    // 写入header
     outFile.write(reinterpret_cast<const char*>(&header), sizeof(header));
 
-    // 计算每个superblock在输出文件中的偏移
     std::vector<uint64_t> sbOffsets(totalSB);
     for (uint64_t sz=0; sz<sgZ; ++sz)
         for (uint64_t sy=0; sy<sgY; ++sy)
@@ -192,7 +193,6 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
                 sbOffsets[idx] = sizeof(header) + idx * sbBytes;
             }
 
-    // Compression support
     std::vector<CompressedBlockIndex> compIndex;
     std::vector<uint8_t> leafBuf;
     std::vector<uint8_t> compBuf;
@@ -208,14 +208,12 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
 #endif
     }
 
-    // Panel support
     bool doPanels = (panelAxis == 0) && panelStride > 0 && panelStride <= superX;
     uint64_t planeBytes = superY * superZ * sizeof(float);
     uint64_t panelCount = doPanels ? superX / panelStride : 0;
     uint64_t sbPanelBytes = doPanels ? panelCount * planeBytes : 0;
     uint64_t panelIndexBytes = doPanels ? totalSB * sizeof(uint64_t) : 0;
 
-    // Reserve space for panel index after main data
     uint64_t mainDataEnd = sizeof(header) + totalSB * sbBytes;
     uint64_t panelIndexOff = doPanels ? mainDataEnd : 0;
     uint64_t panelDataStart = doPanels ? panelIndexOff + panelIndexBytes : 0;
@@ -223,113 +221,88 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
     std::vector<uint64_t> panelIndex;
     if (doPanels) {
         panelIndex.resize(totalSB);
-        // Pre-allocate panel file space: write placeholder index
         outFile.seekp(panelIndexOff);
         std::vector<char> placeholder(panelIndexBytes, 0);
         outFile.write(placeholder.data(), panelIndexBytes);
     }
 
-    // 分批处理：每次处理一批sy值，减少seek次数
-    // 同一sy范围内的行是连续的，可以顺序读取
-    uint64_t maxBatchSY = std::max(uint64_t(1), uint64_t(memoryLimitMB * 1024ULL * 1024ULL / (sgX * sgZ * sbBytes)));
-    maxBatchSY = std::min(maxBatchSY, sgY);
+    const uint64_t yzFloats = ny * nz;
+    const uint64_t yzBytes = yzFloats * sizeof(float);
+    const uint64_t slabX = superX;
 
-    std::cout << "Sequential conversion: batch_sy=" << maxBatchSY << ", sgY=" << sgY << std::endl;
+    // Memory budget: one X-slab plus one superblock plus optional compression buffer.
+    size_t budgetBytes = memoryLimitMB * 1024ULL * 1024ULL;
+    if (budgetBytes < slabX * yzBytes + sbBytes + compBuf.size() + 64 * 1024 * 1024) {
+        budgetBytes = slabX * yzBytes + sbBytes + compBuf.size() + 64 * 1024 * 1024;
+    }
+    uint64_t usableSlabX = std::min<uint64_t>(slabX, nx);
+    if (usableSlabX * yzBytes + sbBytes + compBuf.size() > budgetBytes) {
+        // Fall back to smaller slabs if memory is extremely tight.
+        usableSlabX = std::max<uint64_t>(1,
+            (budgetBytes - sbBytes - compBuf.size()) / yzBytes);
+    }
+
+    std::vector<float> slab(usableSlabX * yzFloats);
+    std::vector<float> sb(superX * superY * superZ);
+    std::vector<float> planeBuf(doPanels ? superY * superZ : 0);
+
+    std::cout << "Sequential conversion: x-slab=" << usableSlabX
+              << ", sgX=" << sgX << ", sgY=" << sgY << ", sgZ=" << sgZ << std::endl;
     if (doPanels) {
         std::cout << "X-panels: stride=" << panelStride << ", " << panelCount << " planes/sb" << std::endl;
     }
 
-    // 增大读取缓冲区（一次读取多行）
-    uint64_t rowsPerBatch = std::min(uint64_t(1024), ny);
-    std::vector<float> rowBuf(nx * rowsPerBatch);
-    std::vector<float> planeBuf(doPanels ? superY * superZ : 0);
-
     auto startTime = std::chrono::high_resolution_clock::now();
-    uint64_t totalRowsProcessed = 0;
-    uint64_t totalRows = nz * ny;
-    uint64_t panelWritePos = panelDataStart;  // current panel write position
+    uint64_t panelWritePos = panelDataStart;
+    uint64_t slabsProcessed = 0;
+    uint64_t totalSlabs = (nx + usableSlabX - 1) / usableSlabX;
 
-    for (uint64_t syStart=0; syStart<sgY; syStart+=maxBatchSY) {
-        uint64_t syEnd = std::min(syStart + maxBatchSY, sgY);
-        uint64_t batchSYCount = syEnd - syStart;
+    for (uint64_t xStart = 0; xStart < nx; xStart += usableSlabX) {
+        uint64_t currentX = std::min(usableSlabX, nx - xStart);
+        uint64_t slabFloats = currentX * yzFloats;
+        uint64_t slabReadBytes = slabFloats * sizeof(float);
 
-        // 分配当前批次的superblock缓冲区
-        std::vector<std::vector<float>> sbBuffers(sgX * batchSYCount * sgZ);
-        for (auto& buf : sbBuffers) buf.resize(superX * superY * superZ, 0.0f);
+        ssize_t n = pread(inFd, slab.data(), slabReadBytes,
+                          xStart * yzBytes);
+        if (n != static_cast<ssize_t>(slabReadBytes)) {
+            std::cerr << "Error reading X-slab at x=" << xStart << std::endl;
+            close(inFd);
+            return false;
+        }
 
-        // 顺序读取输入文件，分配到superblock缓冲区
-        for (uint64_t z=0; z<nz; ++z) {
-            uint64_t sz = z / superZ;
-            uint64_t localZ = z % superZ;
+        // For every superblock whose X range intersects this slab, pack it.
+        uint64_t sxStart = xStart / superX;
+        uint64_t sxEnd = std::min((xStart + currentX + superX - 1) / superX, sgX);
 
-            // 计算当前sy范围的行范围
-            uint64_t yStart = syStart * superY;
-            uint64_t yEnd = std::min(syEnd * superY, ny);
+        for (uint64_t sx = sxStart; sx < sxEnd; ++sx) {
+            uint64_t sbStartX = sx * superX;
+            uint64_t localXStart = (sbStartX >= xStart) ? (sbStartX - xStart) : 0;
+            uint64_t localXEnd = std::min(xStart + currentX - sbStartX, static_cast<uint64_t>(superX));
 
-            // 批量读取多行数据
-            for (uint64_t yBatchStart=yStart; yBatchStart<yEnd; yBatchStart+=rowsPerBatch) {
-                uint64_t yBatchEnd = std::min(yBatchStart + rowsPerBatch, yEnd);
-                uint64_t rowsToRead = yBatchEnd - yBatchStart;
+            for (uint64_t sy = 0; sy < sgY; ++sy) {
+                for (uint64_t sz = 0; sz < sgZ; ++sz) {
+                    std::memset(sb.data(), 0, sb.size() * sizeof(float));
 
-                // 读取一批行
-                uint64_t batchOffset = (z * ny + yBatchStart) * nx * sizeof(float);
-                inFile.seekg(batchOffset);
-                inFile.read(reinterpret_cast<char*>(rowBuf.data()), rowsToRead * nx * sizeof(float));
-                if (!inFile) {
-                    std::cerr << "Error reading rows at z=" << z << ", y=" << yBatchStart << std::endl;
-                    return false;
-                }
+                    uint64_t startY = sy * superY;
+                    uint64_t startZ = sz * superZ;
 
-                // 分配到各个superblock
-                for (uint64_t y=yBatchStart; y<yBatchEnd; ++y) {
-                    uint64_t sy = y / superY;
-                    uint64_t localY = y % superY;
-                    uint64_t syIdx = sy - syStart;
-                    uint64_t rowIdx = y - yBatchStart;
-
-                    for (uint64_t sx=0; sx<sgX; ++sx) {
-                        uint64_t startX = sx * superX;
-                        uint64_t vx = std::min(uint64_t(superX), nx - startX);
-                        uint64_t localX = 0;
-
-                        uint64_t sbIdx = (sx * batchSYCount + syIdx) * sgZ + sz;
-                        auto& sbBuf = sbBuffers[sbIdx];
-                        uint64_t sbOffset = (localZ * superY + localY) * superX;
-
-                        for (uint64_t x=startX; x<startX+vx; ++x) {
-                            sbBuf[sbOffset + localX] = rowBuf[rowIdx * nx + x];
-                            localX++;
+                    for (uint64_t lz = 0; lz < superZ; ++lz) {
+                        uint64_t gz = startZ + lz; if (gz >= nz) break;
+                        for (uint64_t ly = 0; ly < superY; ++ly) {
+                            uint64_t gy = startY + ly; if (gy >= ny) break;
+                            for (uint64_t lx = localXStart; lx < localXEnd; ++lx) {
+                                uint64_t gx = sbStartX + lx;
+                                // In the slab, offset of (gx, gy, gz) relative to xStart.
+                                uint64_t slabOff = (lx * ny + gy) * nz + gz;
+                                sb[(lz * superY + ly) * superX + lx] = slab[slabOff];
+                            }
                         }
                     }
 
-                    totalRowsProcessed++;
-                }
-            }
-
-            // 输出进度
-            if (z % 100 == 0 || z == nz-1) {
-                auto now = std::chrono::high_resolution_clock::now();
-                double elapsed = std::chrono::duration<double>(now - startTime).count();
-                double progress = 100.0 * totalRowsProcessed / totalRows;
-                double speed = totalRowsProcessed / elapsed;
-                double eta = (totalRows - totalRowsProcessed) / speed;
-                std::cout << "\rProgress: " << std::fixed << std::setprecision(1) << progress << "% "
-                          << "(" << totalRowsProcessed << "/" << totalRows << " rows) "
-                          << std::setprecision(1) << speed << " rows/s "
-                          << "ETA: " << std::setprecision(0) << eta << "s" << std::flush;
-            }
-        }
-
-        // 写入当前批次的superblocks + panel数据
-        for (uint64_t sy=syStart; sy<syEnd; ++sy) {
-            uint64_t syIdx = sy - syStart;
-            for (uint64_t sz=0; sz<sgZ; ++sz) {
-                for (uint64_t sx=0; sx<sgX; ++sx) {
-                    uint64_t idx = (sz*sgY+sy)*sgX+sx;
-                    uint64_t sbIdx = (sx * batchSYCount + syIdx) * sgZ + sz;
+                    uint64_t idx = (sz * sgY + sy) * sgX + sx;
 
                     if (compress) {
-                        writeLeavesToBuffer(leafBuf.data(), header, sbBuffers[sbIdx]);
+                        writeLeavesToBuffer(leafBuf.data(), header, sb);
                         CompressedBlockIndex entry;
 #ifdef ERWT3D_HAVE_LZ4
                         int compSize = LZ4_compress_default(
@@ -339,7 +312,7 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
                             static_cast<int>(compBuf.size()));
                         if (compSize > 0 && static_cast<uint64_t>(compSize) < sbBytes * 95 / 100) {
                             entry.file_offset = static_cast<uint64_t>(outFile.tellp());
-                            entry.compressed_size = static_cast<uint32_t>(compSize);
+                            entry.compressed_size = static_cast<uint64_t>(compSize);
                             entry.is_compressed = 1;
                             std::memset(entry.padding, 0, sizeof(entry.padding));
                             outFile.write(reinterpret_cast<const char*>(compBuf.data()), compSize);
@@ -354,20 +327,17 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
                         }
                         compIndex[idx] = entry;
                     } else {
-                        uint64_t offset = sbOffsets[idx];
-                        outFile.seekp(offset);
-                        writeLeaves(outFile, header, sbBuffers[sbIdx]);
+                        outFile.seekp(sbOffsets[idx]);
+                        writeLeaves(outFile, header, sb);
                     }
 
-                    // Write panel data for this superblock
                     if (doPanels) {
                         panelIndex[idx] = panelWritePos;
                         outFile.seekp(panelWritePos);
-                        const auto& sbBuf = sbBuffers[sbIdx];
                         for (uint32_t lx = 0; lx < superX; lx += panelStride) {
                             for (uint64_t z = 0; z < superZ; ++z)
                                 for (uint64_t y = 0; y < superY; ++y)
-                                    planeBuf[z * superY + y] = sbBuf[(z * superY + y) * superX + lx];
+                                    planeBuf[z * superY + y] = sb[(z * superY + y) * superX + lx];
                             outFile.write(reinterpret_cast<const char*>(planeBuf.data()), planeBytes);
                         }
                         panelWritePos += sbPanelBytes;
@@ -375,11 +345,24 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
                 }
             }
         }
+
+        ++slabsProcessed;
+        if (slabsProcessed % 10 == 0 || slabsProcessed == totalSlabs) {
+            auto now = std::chrono::high_resolution_clock::now();
+            double elapsed = std::chrono::duration<double>(now - startTime).count();
+            double progress = 100.0 * slabsProcessed / totalSlabs;
+            double speed = elapsed > 0 ? slabsProcessed / elapsed : 0.0;
+            double eta = speed > 0 ? (totalSlabs - slabsProcessed) / speed : 0.0;
+            std::cout << "\rProgress: " << std::fixed << std::setprecision(1) << progress << "% "
+                      << "(" << slabsProcessed << "/" << totalSlabs << " slabs) "
+                      << std::setprecision(1) << speed << " slabs/s "
+                      << "ETA: " << std::setprecision(0) << eta << "s" << std::flush;
+        }
     }
 
+    close(inFd);
     std::cout << std::endl;
 
-    // Write panel index and update header
     if (doPanels) {
         outFile.seekp(panelIndexOff);
         outFile.write(reinterpret_cast<const char*>(panelIndex.data()), panelIndexBytes);
@@ -395,7 +378,6 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
         std::cout << "Panels written: " << (panelWritePos - panelDataStart) / (1024*1024) << " MB" << std::endl;
     }
 
-    // Write compression index and update header
     if (compress && !compIndex.empty()) {
         uint64_t indexOffset = static_cast<uint64_t>(outFile.tellp());
         uint64_t indexBytes = compIndex.size() * sizeof(CompressedBlockIndex);
