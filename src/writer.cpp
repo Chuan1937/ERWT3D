@@ -212,6 +212,14 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
     }
 
     bool doPanels = (panelAxis == 0) && panelStride > 0 && panelStride <= superX;
+    if (compress && doPanels && numThreads > 1) {
+        std::cerr << "Error: parallel compressed writer with embedded X-panels is not supported. "
+                  << "Use --compress without --panel-stride for parallel compression, "
+                  << "or use erwt3d_precompute_x --mode sidecar for external X-plane acceleration."
+                  << std::endl;
+        close(inFd);
+        return false;
+    }
     uint64_t planeBytes = superY * superZ * sizeof(float);
     uint64_t panelCount = doPanels ? (superX + panelStride - 1) / panelStride : 0;
     uint64_t sbPanelBytes = doPanels ? panelCount * planeBytes : 0;

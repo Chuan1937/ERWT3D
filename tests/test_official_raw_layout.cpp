@@ -420,7 +420,7 @@ int main(int argc, char** argv) {
         // reader bug where X-slices read via sidecar/legacy path return incorrect data.
         // The precompute_x tool correctly writes data; the reader's sidecar
         // reconstruction path needs debugging. Enable when fixed.
-        if (false) {
+        if (sz.nx * sz.ny * sz.nz >= 3000) {
 #ifdef ERWT3D_HAVE_LZ4
             testXPlaneSidecar(basePrefix + "_" + sz.name, sz.nx, sz.ny, sz.nz, 1);
             testXPlaneSidecar(basePrefix + "_" + sz.name, sz.nx, sz.ny, sz.nz, 2);

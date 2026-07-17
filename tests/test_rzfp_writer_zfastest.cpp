@@ -27,34 +27,32 @@ float valueAt(uint64_t x, uint64_t y, uint64_t z) {
 
 enum class DataPattern { Coordinate, Mixed };
 
+float patternValue(uint64_t x, uint64_t y, uint64_t z, DataPattern pattern) {
+    if (pattern == DataPattern::Coordinate)
+        return valueAt(x, y, z);
+
+    uint64_t h = (x * 73856093ULL + y * 19349663ULL + z * 83492791ULL) % 10;
+    switch (h) {
+        case 0:  return 0.0f;
+        case 1:  return -0.0f;
+        case 2:  return 1e-8f;
+        case 3:  return -1e-8f;
+        case 4:  return 0.5f;
+        case 5:  return -3.14f;
+        case 6:  return 1e6f;
+        case 7:  return -1e6f;
+        default: return valueAt(x % 3, y % 3, z % 3);
+    }
+}
+
 bool writeRawFile(const std::string& path,
                   uint64_t nx, uint64_t ny, uint64_t nz,
                   DataPattern pattern) {
     std::vector<float> data(nx * ny * nz, 0.0f);
     for (uint64_t x = 0; x < nx; ++x)
         for (uint64_t y = 0; y < ny; ++y)
-            for (uint64_t z = 0; z < nz; ++z) {
-                float v = 0.0f;
-                switch (pattern) {
-                    case DataPattern::Coordinate:
-                        v = valueAt(x, y, z);
-                        break;
-                    case DataPattern::Mixed: {
-                        uint64_t h = (x * 73856093ULL + y * 19349663ULL + z * 83492791ULL) % 10;
-                        if (h == 0)      v = 0.0f;
-                        else if (h == 1) v = -0.0f;
-                        else if (h == 2) v = 1e-8f;
-                        else if (h == 3) v = -1e-8f;
-                        else if (h == 4) v = 0.5f;
-                        else if (h == 5) v = -3.14f;
-                        else if (h == 6) v = 1e6f;
-                        else if (h == 7) v = -1e6f;
-                        else             v = valueAt(x % 3, y % 3, z % 3);
-                        break;
-                    }
-                }
-                data[(x * ny + y) * nz + z] = v;
-            }
+            for (uint64_t z = 0; z < nz; ++z)
+                data[(x * ny + y) * nz + z] = patternValue(x, y, z, pattern);
 
     int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) return false;
@@ -73,36 +71,24 @@ void referenceXSlice(uint64_t x, uint64_t ny, uint64_t nz,
                      std::vector<float>& out, DataPattern pattern) {
     out.resize(ny * nz);
     for (uint64_t y = 0; y < ny; ++y)
-        for (uint64_t z = 0; z < nz; ++z) {
-            if (pattern == DataPattern::Coordinate)
-                out[y * nz + z] = valueAt(x, y, z);
-            else
-                out[y * nz + z] = 0.0f; // handled by readRawFile
-        }
+        for (uint64_t z = 0; z < nz; ++z)
+            out[y * nz + z] = patternValue(x, y, z, pattern);
 }
 
 void referenceYSlice(uint64_t nx, uint64_t y, uint64_t nz,
                      std::vector<float>& out, DataPattern pattern) {
     out.resize(nx * nz);
     for (uint64_t x = 0; x < nx; ++x)
-        for (uint64_t z = 0; z < nz; ++z) {
-            if (pattern == DataPattern::Coordinate)
-                out[x * nz + z] = valueAt(x, y, z);
-            else
-                out[x * nz + z] = 0.0f;
-        }
+        for (uint64_t z = 0; z < nz; ++z)
+            out[x * nz + z] = patternValue(x, y, z, pattern);
 }
 
 void referenceZSlice(uint64_t nx, uint64_t ny, uint64_t z,
                      std::vector<float>& out, DataPattern pattern) {
     out.resize(nx * ny);
     for (uint64_t x = 0; x < nx; ++x)
-        for (uint64_t y = 0; y < ny; ++y) {
-            if (pattern == DataPattern::Coordinate)
-                out[x * ny + y] = valueAt(x, y, z);
-            else
-                out[x * ny + y] = 0.0f;
-        }
+        for (uint64_t y = 0; y < ny; ++y)
+            out[x * ny + y] = patternValue(x, y, z, pattern);
 }
 
 bool checkError(float refVal, float actualVal, double zeroTol, double relTol) {
@@ -184,8 +170,7 @@ void testRzfpRoundTrip(const std::string& prefix,
         referenceXSlice(x, ny, nz, ref, pattern);
         ok = reader.readSlice(erwt3d::SliceAxis::X, x, got.data());
         check(ok, (label + " read X=" + std::to_string(x)).c_str());
-        if (pattern == DataPattern::Coordinate)
-            verifyRzfpSlice(got, ref, label + " X=" + std::to_string(x));
+        verifyRzfpSlice(got, ref, label + " X=" + std::to_string(x));
     }
 
     // Y slice: first, middle, last
@@ -195,8 +180,7 @@ void testRzfpRoundTrip(const std::string& prefix,
         referenceYSlice(nx, y, nz, ref, pattern);
         ok = reader.readSlice(erwt3d::SliceAxis::Y, y, got.data());
         check(ok, (label + " read Y=" + std::to_string(y)).c_str());
-        if (pattern == DataPattern::Coordinate)
-            verifyRzfpSlice(got, ref, label + " Y=" + std::to_string(y));
+        verifyRzfpSlice(got, ref, label + " Y=" + std::to_string(y));
     }
 
     // Z slice: first, middle, last
@@ -206,8 +190,7 @@ void testRzfpRoundTrip(const std::string& prefix,
         referenceZSlice(nx, ny, z, ref, pattern);
         ok = reader.readSlice(erwt3d::SliceAxis::Z, z, got.data());
         check(ok, (label + " read Z=" + std::to_string(z)).c_str());
-        if (pattern == DataPattern::Coordinate)
-            verifyRzfpSlice(got, ref, label + " Z=" + std::to_string(z));
+        verifyRzfpSlice(got, ref, label + " Z=" + std::to_string(z));
     }
 
     unlink(rawPath.c_str());
@@ -276,7 +259,7 @@ void testRzfpCorruption(const std::string& prefix,
                          uint64_t nx, uint64_t ny, uint64_t nz) {
     const std::string rawPath = prefix + "_corr.raw";
     const std::string rzfpPath = prefix + "_corr.rzfp";
-    const std::string corruptPath = prefix + "_corr_corrupt.rzfp";
+    const std::string corruptPath = prefix + "_corr_bad.rzfp";
 
     check(writeRawFile(rawPath, nx, ny, nz, DataPattern::Coordinate),
           "corruption: write raw");
@@ -290,42 +273,51 @@ void testRzfpCorruption(const std::string& prefix,
 
     check(erwt3d::writeRzfpFile(rawPath, rzfpPath, cfg, nullptr), "corruption: write");
 
-    // Copy file and corrupt a descriptor byte
-    {
+    // Helper: copy file to new path with a byte modification
+    auto makeCorrupt = [&](const std::string& outPath, uint64_t off, uint8_t newVal) -> bool {
         std::vector<uint8_t> data;
         int fd = open(rzfpPath.c_str(), O_RDONLY);
-        check(fd >= 0, "corruption: open original");
+        if (fd < 0) return false;
         off_t end = lseek(fd, 0, SEEK_END);
         lseek(fd, 0, SEEK_SET);
         data.resize(static_cast<size_t>(end));
-        ssize_t n = read(fd, data.data(), data.size());
+        if (read(fd, data.data(), data.size()) != static_cast<ssize_t>(data.size())) { close(fd); return false; }
         close(fd);
-        check(n == static_cast<ssize_t>(data.size()) && n > 256, "corruption: read original");
-
-        // Corrupt a byte in descriptor area (after index, before payload)
-        uint64_t descOff = *reinterpret_cast<const uint64_t*>(data.data() +
-                            offsetof(erwt3d::RzfpFileHeader, descriptor_offset));
-        uint64_t payloadOff = *reinterpret_cast<const uint64_t*>(data.data() +
-                               offsetof(erwt3d::RzfpFileHeader, payload_offset));
-        uint64_t corruptPos = std::min(descOff + 100, payloadOff > 300 ? payloadOff - 100 : descOff + 100);
-        if (corruptPos < data.size()) {
-            data[corruptPos] ^= 0xFF;
-        }
-
-        int fd2 = open(corruptPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        check(fd2 >= 0, "corruption: create corrupt file");
+        if (off >= data.size()) return false;
+        data[off] = newVal;
+        int fd2 = open(outPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd2 < 0) return false;
         write(fd2, data.data(), data.size());
         close(fd2);
+        return true;
+    };
+
+    // Test 1: Bad magic → reader should reject
+    {
+        unlink(corruptPath.c_str());
+        check(makeCorrupt(corruptPath, 2, 0xFF), "corr: make bad magic");
+        erwt3d::RzfpReader reader(corruptPath);
+        check(!reader.ok(), "corr: bad magic rejected");
     }
 
-    // Read from corrupted file - should pass readSlice but may have bad data
-    // The key test: reader should not crash and should report ok().
+    // Test 2: Corrupt payload_offset beyond file → reader should reject
     {
+        unlink(corruptPath.c_str());
+        uint64_t idxOff = sizeof(erwt3d::RzfpFileHeader);
+        check(makeCorrupt(corruptPath, idxOff + 6, 0xFF), "corr: make bad index");
         erwt3d::RzfpReader reader(corruptPath);
-        std::vector<float> buf(ny * nz);
-        bool ok = reader.readSlice(erwt3d::SliceAxis::X, nx / 2, buf.data());
-        (void)ok; // May succeed or fail depending on corruption location, just not crash
-        check(reader.ok(), "corruption: reader survives");
+        check(!reader.ok(), "corr: bad index rejected");
+    }
+
+    // Test 3: Corrupt descriptor codec value → reader should reject
+    {
+        unlink(corruptPath.c_str());
+        erwt3d::RzfpReader readerOrig(rzfpPath);
+        check(readerOrig.ok(), "corr: original is valid");
+        uint64_t descOff = readerOrig.header().descriptor_offset + 1;
+        check(makeCorrupt(corruptPath, descOff, 0xFF), "corr: make bad descriptor");
+        erwt3d::RzfpReader readerBad(corruptPath);
+        check(!readerBad.ok(), "corr: bad descriptor rejected");
     }
 
     unlink(rawPath.c_str());

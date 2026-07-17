@@ -633,6 +633,32 @@ RzfpReader::RzfpReader(const std::string& path) : path_(path), fd_(-1) {
         return;
     }
 
+    // Validate structure integrity
+    struct stat st;
+    if (fstat(fd_, &st) == 0) {
+        const uint64_t fileSize = static_cast<uint64_t>(st.st_size);
+        if (header_.descriptor_offset + descriptorBytes > fileSize) {
+            close(fd_); fd_ = -1; return;
+        }
+        if (header_.payload_offset > fileSize) {
+            close(fd_); fd_ = -1; return;
+        }
+        for (uint64_t i = 0; i < totalSB; ++i) {
+            const auto& idx = sb_index_[i];
+            if (idx.payload_offset > fileSize ||
+                idx.payload_offset + idx.payload_bytes > fileSize) {
+                close(fd_); fd_ = -1; return;
+            }
+        }
+    }
+
+    // Validate descriptor codecs
+    for (uint64_t i = 0; i < totalLeaves; ++i) {
+        if (static_cast<uint8_t>(descriptorCodec(descriptors_[i])) > 5) {
+            close(fd_); fd_ = -1; return;
+        }
+    }
+
     openXPlaneSidecar();
 }
 
