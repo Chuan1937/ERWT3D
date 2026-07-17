@@ -226,6 +226,13 @@ static int runSidecar(const std::string& rawPath, const std::string& erwtPath,
 
     erwt3d::ThreadPool pool(std::min<uint32_t>(8, chunksPerPlane));
 
+    // Pre-allocate per-chunk work buffers (reused for each plane)
+    const int compBound = LZ4_compressBound(static_cast<int>(chunkRawBytes));
+    std::vector<std::vector<float>> chunkWorkspace(chunksPerPlane,
+        std::vector<float>(ny * chunkZRows, 0.0f));
+    std::vector<std::vector<uint8_t>> compWorkspace(chunksPerPlane,
+        std::vector<uint8_t>(static_cast<size_t>(compBound)));
+
     std::cout << "Streaming build (plane-major, single read per plane)" << std::endl;
     for (uint32_t pi = 0; pi < planeCount; ++pi) {
         uint64_t x = static_cast<uint64_t>(pi) * stride;
@@ -244,8 +251,7 @@ static int runSidecar(const std::string& rawPath, const std::string& erwtPath,
         }
         const float* plane = s.rawRow.data();
 
-        // Parallel compress all z-chunks for this plane
-        using ChunkResult = std::vector<uint8_t>;
+        using ChunkResult = std::pair<bool, int>;  // ok, compressed_size
         std::vector<std::future<ChunkResult>> futures;
         for (uint32_t c = 0; c < chunksPerPlane; ++c) {
             futures.push_back(pool.submit([&, c, ny, plane]() -> ChunkResult {
@@ -253,29 +259,26 @@ static int runSidecar(const std::string& rawPath, const std::string& erwtPath,
                 uint64_t zEnd = std::min(zStart + chunkZRows, nz);
                 uint64_t rowsInChunk = zEnd - zStart;
 
-                std::vector<float> chunkBuf(ny * chunkZRows, 0.0f);
-                float* dst = chunkBuf.data();
+                float* dst = chunkWorkspace[c].data();
+                std::fill(dst, dst + rowsInChunk * ny, 0.0f);
                 for (uint64_t zi = 0; zi < rowsInChunk; ++zi) {
                     uint64_t z = zStart + zi;
                     for (uint64_t y = 0; y < ny; ++y)
                         dst[zi * ny + y] = plane[y * nz + z];
                 }
 
-                int bound = LZ4_compressBound(static_cast<int>(chunkRawBytes));
-                ChunkResult out(bound);
-                const char* src = reinterpret_cast<const char*>(chunkBuf.data());
-                int cs = LZ4_compress_default(src, reinterpret_cast<char*>(out.data()),
-                                              static_cast<int>(chunkRawBytes), bound);
-                if (cs <= 0) return {};
-                out.resize(static_cast<size_t>(cs));
-                return out;
+                const char* src = reinterpret_cast<const char*>(dst);
+                uint8_t* out = compWorkspace[c].data();
+                int cs = LZ4_compress_default(src, reinterpret_cast<char*>(out),
+                                              static_cast<int>(chunkRawBytes), compBound);
+                if (cs <= 0) return {false, 0};
+                return {true, cs};
             }));
         }
 
-        // Write results in chunk order
         for (uint32_t c = 0; c < chunksPerPlane; ++c) {
-            ChunkResult compressed = futures[c].get();
-            if (compressed.empty()) {
+            auto [ok, cs] = futures[c].get();
+            if (!ok) {
                 std::cerr << "\nLZ4 compress failed for plane " << pi
                           << " chunk " << c << std::endl;
                 close(fdXp); close(fdRaw); close(fdErwt); return 1;
@@ -283,12 +286,12 @@ static int runSidecar(const std::string& rawPath, const std::string& erwtPath,
 
             uint64_t globalChunkIdx = static_cast<uint64_t>(pi) * chunksPerPlane + c;
             s.index[globalChunkIdx].chunk_offset = s.dataOffset + s.totalStorageBytes;
-            s.index[globalChunkIdx].compressed_size = static_cast<uint32_t>(compressed.size());
+            s.index[globalChunkIdx].compressed_size = static_cast<uint32_t>(cs);
             s.index[globalChunkIdx].raw_size = static_cast<uint32_t>(chunkRawBytes);
-            s.totalStorageBytes += compressed.size();
+            s.totalStorageBytes += static_cast<uint64_t>(cs);
 
-            if (pwrite(fdXp, compressed.data(), compressed.size(),
-                       s.index[globalChunkIdx].chunk_offset) != static_cast<ssize_t>(compressed.size())) {
+            if (pwrite(fdXp, compWorkspace[c].data(), cs,
+                       s.index[globalChunkIdx].chunk_offset) != cs) {
                 perror("write chunk");
                 close(fdXp); close(fdRaw); close(fdErwt); return 1;
             }
