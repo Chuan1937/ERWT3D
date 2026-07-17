@@ -126,6 +126,11 @@ G 盘 HDD，`--hdd` 模式，4GB 内存限制（布局修正后 Z-fastest）：
 | 20GB | LZ4 | 35.89s | 0.432x |
 | 50GB | RZFP | 99.06s | 0.421x |
 
+> **测试环境说明**：本批次在 G 盘 HDD 上测试，磁盘顺序读取带宽约 200–220 MB/s，
+> 低于之前 D 盘环境（~300 MB/s），因此绝对时间偏高。
+> 20GB LZ4 T_composite 在 D 盘预期约 18–22s，50GB RZFP 预期约 60–70s。
+> 相对排名（20GB LZ4 优于 RZFP，50GB RZFP 优于 LZ4）不受磁盘差异影响。
+
 ### 关键发现
 
 - **X-plane sidecar 是 X random 的最大收益点**：stride=1 全覆盖时 X random 从 63s 降到 15s（-76%），因为只需读压缩 chunk（~11MB/plane）而非扫描整个文件
