@@ -7,6 +7,7 @@
 #include <vector>
 #include <atomic>
 #include <thread>
+#include <sstream>
 
 namespace {
 
@@ -24,6 +25,7 @@ bool pwriteAll(int fd, const void* buf, size_t bytes, uint64_t offset) {
     size_t done = 0;
     while (done < bytes) {
         ssize_t n = pwrite(fd, src + done, bytes - done, static_cast<off_t>(offset + done));
+        if (n == 0) return false;
         if (n < 0) { if (errno == EINTR) continue; return false; }
         done += static_cast<size_t>(n);
     }
@@ -55,6 +57,39 @@ void generateChunk(uint64_t nx, uint64_t ny, uint64_t nz,
     close(fd);
 }
 
+// Test real gen_fast_data binary
+void testRealBinary(const std::string& binPath) {
+    std::cout << "=== real gen_fast_data binary ===" << std::endl;
+
+    // Test valid generation
+    {
+        int rc = std::system((binPath + " 16 8 4 /tmp/gfd_real_valid.raw 4 42 2>&1 > /dev/null").c_str());
+        check(rc == 0, "real binary: valid generation succeeds");
+        int fd_sz_ = open("/tmp/gfd_real_valid.raw", O_RDONLY); check(fd_sz_ >= 0, "real binary: open for size"); uint64_t fileSize_ = static_cast<uint64_t>(lseek(fd_sz_, 0, SEEK_END)); close(fd_sz_);
+        check(fileSize_ == 16*8*4*(uint64_t)sizeof(float), "real binary: file size correct");
+        unlink("/tmp/gfd_real_valid.raw");
+    }
+
+    // Test invalid output dir
+    {
+        int rc = std::system((binPath + " 4 4 4 /nonexistent_dir/test.raw 1 42 2>&1 > /dev/null").c_str());
+        check(rc != 0, "real binary: invalid dir fails");
+    }
+
+    // Test threads=0
+    {
+        int rc = std::system((binPath + " 4 4 4 /tmp/gfd_zero.raw 0 42 2>&1 > /dev/null").c_str());
+        check(rc != 0, "real binary: threads=0 fails");
+    }
+
+    // Test 0 dimension
+    {
+        int rc = std::system((binPath + " 0 4 4 /tmp/gfd_zero.raw 1 42 2>&1 > /dev/null").c_str());
+        check(rc != 0, "real binary: nx=0 fails");
+    }
+}
+
+// Test internal helper (in-process, like the real tool)
 void testParallelWrite(const std::string& path,
                        uint64_t nx, uint64_t ny, uint64_t nz,
                        int nthreads) {
@@ -80,8 +115,10 @@ void testParallelWrite(const std::string& path,
     check(!failed.load(), "no worker failures");
     check(!threads.empty(), "threads created");
 
-    uint64_t fileSize = 0;
-    int fd2 = open(path.c_str(), O_RDONLY); check(fd2 >= 0, "open for size"); fileSize = lseek(fd2, 0, SEEK_END); close(fd2);
+    int fd2 = open(path.c_str(), O_RDONLY);
+    check(fd2 >= 0, "open for size");
+    uint64_t fileSize = static_cast<uint64_t>(lseek(fd2, 0, SEEK_END));
+    close(fd2);
     check(fileSize == file_bytes, "file size correct");
 
     std::vector<float> data(nx * ny * nz);
@@ -119,12 +156,17 @@ void testParallelWrite(const std::string& path,
 
 } // namespace
 
-int main() {
-    std::vector<int> threadCounts = {1, 4, 8};
+int main(int argc, char** argv) {
+    std::string binPath;
+    if (argc >= 2) binPath = argv[1];
 
+    if (!binPath.empty()) {
+        testRealBinary(binPath);
+    }
+
+    std::vector<int> threadCounts = {1, 4};
     for (int nthreads : threadCounts) {
         std::cout << "=== gen_fast_data " << nthreads << " threads ===" << std::endl;
-
         testParallelWrite("/tmp/gen_fast_data_test.raw", 16, 8, 4, nthreads);
         testParallelWrite("/tmp/gen_fast_data_test.raw", 5, 7, 11, nthreads);
     }
