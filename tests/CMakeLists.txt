@@ -28,6 +28,9 @@ target_link_libraries(test_gen_fast_data PRIVATE erwt3d)
 add_executable(test_raw_x_aux test_raw_x_aux.cpp)
 target_link_libraries(test_raw_x_aux PRIVATE erwt3d)
 
+add_executable(test_adaptive_strategy test_adaptive_strategy.cpp)
+target_link_libraries(test_adaptive_strategy PRIVATE erwt3d)
+
 add_test(NAME relative_error_strict COMMAND test_relative_error strict)
 add_test(NAME relative_error_legacy COMMAND test_relative_error legacy)
 add_test(NAME rzfp_codec COMMAND test_rzfp_codec)
@@ -39,3 +42,4 @@ add_test(NAME official_raw_layout COMMAND test_official_raw_layout $<TARGET_FILE
 add_test(NAME rzfp_writer_zfastest COMMAND test_rzfp_writer_zfastest)
 add_test(NAME gen_fast_data COMMAND test_gen_fast_data $<TARGET_FILE:gen_fast_data>)
 add_test(NAME raw_x_aux COMMAND test_raw_x_aux)
+add_test(NAME adaptive_strategy COMMAND test_adaptive_strategy)
