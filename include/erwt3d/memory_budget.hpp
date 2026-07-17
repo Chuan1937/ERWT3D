@@ -1,7 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdlib>
+#include <exception>
 #include <string>
+#include <utility>
 
 namespace erwt3d {
 
