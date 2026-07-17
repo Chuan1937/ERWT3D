@@ -1,7 +1,6 @@
 #include "erwt3d/rzfp_auto_plan.hpp"
 
 #include <cstdint>
-#include <cstdlib>
 #include <fcntl.h>
 #include <iostream>
 #include <unistd.h>
@@ -46,8 +45,7 @@ bool writeRawFile(const std::string& path, uint64_t nx, uint64_t ny, uint64_t nz
 } // namespace
 
 int main() {
-    std::system("mkdir -p /mnt/d/opencode_tests");
-    const std::string path = "/mnt/d/opencode_tests/test_auto_plan.raw";
+    const std::string path = "/tmp/erwt3d_test_auto_plan.raw";
     const uint64_t nx = 40;
     const uint64_t ny = 48;
     const uint64_t nz = 32;
