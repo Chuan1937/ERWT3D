@@ -116,6 +116,18 @@ private:
         const RzfpReaderConfig& config,
         RzfpReadProfile& profile
     );
+
+    // Raw X auxiliary (full-coverage uncompressed X-plane region)
+    int rawXAuxFd_ = -1;
+    bool rawXAuxAvailable_ = false;
+    uint64_t rawXAuxOffset_ = 0;
+    uint64_t rawXAuxPlaneBytes_ = 0;
+
+    void initRawXAux_();
+    bool tryReadBatchRawXAux_(const std::vector<SliceBatchRequest>& requests,
+                              const RzfpReaderConfig& config,
+                              RzfpReadProfile& profile);
+    bool tryReadSliceRawXAux_(uint64_t x, float* output, RzfpReadProfile* profile);
 };
 
 } // namespace erwt3d

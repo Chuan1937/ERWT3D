@@ -16,6 +16,8 @@ struct FormatCandidate {
     MainFormat main_format = MainFormat::Unknown;
     SidecarFormat sidecar_format = SidecarFormat::None;
     uint32_t sidecar_stride = 0;
+    bool has_raw_x_aux = false;
+    bool requires_force_storage_edge = false;
     std::string name;
 
     double main_ratio_mean = 1.0, main_ratio_lower = 1.0, main_ratio_upper = 1.0;
@@ -32,6 +34,15 @@ struct FormatCandidate {
     std::string reason;
 };
 
+struct PlannerWorkload {
+    uint64_t x_random_slices = 100;
+    uint64_t y_random_slices = 100;
+    uint64_t z_random_slices = 100;
+    uint64_t x_contiguous_slices = 10;
+    uint64_t y_contiguous_slices = 10;
+    uint64_t z_contiguous_slices = 10;
+};
+
 struct PlannerResult {
     FormatCandidate recommended;
     std::vector<FormatCandidate> alternatives;
@@ -45,7 +56,8 @@ PlannerResult planFormat(
     const std::string& raw_path,
     uint64_t nx, uint64_t ny, uint64_t nz,
     int threads = 8,
-    double storage_budget = 1.45
+    double storage_budget = 1.45,
+    const PlannerWorkload& workload = {}
 );
 
 } // namespace erwt3d

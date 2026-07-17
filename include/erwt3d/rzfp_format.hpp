@@ -92,6 +92,12 @@ inline bool validateRzfpHeader(const RzfpFileHeader& header) {
     return true;
 }
 
+inline bool hasRawXAux(const RzfpFileHeader& h) { return (h.flags & FLAG_HAS_RAW_X_AUX) != 0; }
+inline uint64_t rzfpRawXAuxOffset(const RzfpFileHeader& h) { return h.reserved[0]; }
+inline uint64_t rzfpRawXAuxBytes(const RzfpFileHeader& h) { return h.reserved[1]; }
+inline uint64_t rzfpRawXAuxPlaneBytes(const RzfpFileHeader& h) { return h.reserved[2]; }
+inline uint32_t rzfpRawXAuxVersion(const RzfpFileHeader& h) { return static_cast<uint32_t>(h.reserved[3]); }
+
 inline uint64_t rzfpSuperGridX(const RzfpFileHeader& h) {
     return (h.nx + h.super_x - 1) / h.super_x;
 }

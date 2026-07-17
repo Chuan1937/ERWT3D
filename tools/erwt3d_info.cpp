@@ -33,6 +33,14 @@ int main(int argc, char* argv[]) {
                   << std::fixed << std::setprecision(2) << erwt3d::getPanelStorageBytes(header) / (1024.0*1024.0) << " MB)" << std::endl;
     }
 
+    if (erwt3d::hasRawXAux(header)) {
+        std::cout << "Raw X auxiliary: offset=" << erwt3d::getRawXAuxOffset(header)
+                  << " bytes=" << erwt3d::getRawXAuxBytes(header) << " ("
+                  << std::fixed << std::setprecision(2) << erwt3d::getRawXAuxBytes(header) / (1024.0*1024.0) << " MB)"
+                  << " plane_bytes=" << erwt3d::getRawXAuxPlaneBytes(header)
+                  << " version=" << erwt3d::getRawXAuxVersion(header) << std::endl;
+    }
+
     if (erwt3d::isCompressed(header)) {
         uint64_t idxOffset = erwt3d::getCompressionIndexOffset(header);
         uint64_t idxCount = erwt3d::getCompressedBlockCount(header);

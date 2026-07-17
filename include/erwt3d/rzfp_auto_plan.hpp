@@ -56,6 +56,8 @@ struct RzfpAutoPlanResult {
     uint64_t max_gap_bytes = 8ULL * 1024 * 1024;
 
     bool enable_x_sidecar = false;
+    bool enable_raw_x_aux = false;
+    double raw_x_aux_total_ratio = 0.0;
     bool early_stopped = false;
     std::string early_stop_reason;
 

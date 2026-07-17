@@ -1,6 +1,7 @@
 #include "erwt3d/rzfp_xplane_writer.hpp"
 #include "erwt3d/raw_layout.hpp"
 #include "erwt3d/thread_pool.hpp"
+#include "erwt3d/raw_x_aux.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -46,35 +47,7 @@ struct XPlaneIndexEntry {
 
 static_assert(sizeof(XPlaneIndexEntry) == XPLANE_INDEX_ENTRY_SIZE, "XPlaneIndexEntry size mismatch");
 
-static bool readFullyAt(int fd, void* buffer, size_t bytes, uint64_t offset) {
-    auto* dst = static_cast<uint8_t*>(buffer);
-    size_t done = 0;
-    while (done < bytes) {
-        ssize_t n = pread(fd, dst + done, bytes - done, static_cast<off_t>(offset + done));
-        if (n == 0) return false;
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            return false;
-        }
-        done += static_cast<size_t>(n);
-    }
-    return true;
-}
 
-static bool writeFullyAt(int fd, const void* buffer, size_t bytes, uint64_t offset) {
-    const auto* src = static_cast<const uint8_t*>(buffer);
-    size_t done = 0;
-    while (done < bytes) {
-        ssize_t n = pwrite(fd, src + done, bytes - done, static_cast<off_t>(offset + done));
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            return false;
-        }
-        if (n == 0) return false;
-        done += static_cast<size_t>(n);
-    }
-    return true;
-}
 
 } // namespace
 

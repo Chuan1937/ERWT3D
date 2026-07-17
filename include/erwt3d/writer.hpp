@@ -1,12 +1,12 @@
 #pragma once
 
 #include "format.hpp"
+#include "raw_x_aux.hpp"
 #include <cstdint>
 #include <string>
 
 namespace erwt3d {
 
-// Write raw float32 data to ERWT3D format
 bool writeERWT3D(const std::string& outputPath,
                  const float* rawData,
                  uint64_t nx, uint64_t ny, uint64_t nz,
@@ -21,7 +21,6 @@ bool writeERWT3D(const std::string& outputPath,
                  uint32_t panelAxis = 0,
                  uint32_t panelStride = 0);
 
-// Write raw float32 data from file to ERWT3D format
 bool writeERWT3DFromFile(const std::string& outputPath,
                          const std::string& inputPath,
                          uint64_t nx, uint64_t ny, uint64_t nz,
@@ -35,6 +34,15 @@ bool writeERWT3DFromFile(const std::string& outputPath,
                          size_t memoryLimitMB = 2048,
                          uint32_t panelAxis = 0,
                          uint32_t panelStride = 0,
-                         bool compress = false);
+                         bool compress = false,
+                         RawXAuxMode rawXAuxMode = RawXAuxMode::Off,
+                         bool forceStorageEdge = false,
+                         RawXAuxStats* rawXAuxStats = nullptr);
+
+bool appendRawXAuxToFile(const std::string& erwt3dPath,
+                         const std::string& rawPath,
+                         uint64_t nx, uint64_t ny, uint64_t nz,
+                         RawXAuxStats* stats = nullptr,
+                         bool forceEdge = false);
 
 } // namespace erwt3d
