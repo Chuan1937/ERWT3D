@@ -4,6 +4,7 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
