@@ -757,12 +757,13 @@ bool ERWT3DReader::tryReadBatchRawXAux_(
 
         uint64_t wsize = wend - wstart;
 
-        std::vector<uint8_t> winBuf(wsize);
-        if (!readFullyAt(rawXAuxFd_, winBuf.data(), wsize, wstart)) return false;
+        if (rawXAuxWindowBuf_.size() < wsize)
+            rawXAuxWindowBuf_.resize(wsize);
+        if (!readFullyAt(rawXAuxFd_, rawXAuxWindowBuf_.data(), wsize, wstart)) return false;
 
         for (size_t k = i; k < j; ++k) {
             uint64_t off_in_window = tasks[k].file_offset - wstart;
-            std::memcpy(tasks[k].output, winBuf.data() + off_in_window, planeBytes);
+            std::memcpy(tasks[k].output, rawXAuxWindowBuf_.data() + off_in_window, planeBytes);
             handled[tasks[k].req_idx] = true;
         }
 

@@ -106,7 +106,9 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 
 ## 当前性能
 
-### P2-hardening (HEAD: 0307f3f)
+### P2-hardening
+
+Validated on branch `perf/p2-axis-aware-hybrid`.
 
 - **硬上限 1.45x 永久不可绕过**：`--force-storage-edge` 仅在 1.445-1.450 之间生效
 - **事务式追加 + 自动回滚**：写入失败自动 `ftruncate` 恢复原始文件

@@ -125,6 +125,7 @@ private:
     uint64_t rawXAuxOffset_ = 0;
     uint64_t rawXAuxBytes_ = 0;
     uint64_t rawXAuxPlaneBytes_ = 0;
+    std::vector<uint8_t> rawXAuxWindowBuf_;
     void initRawXAux_();
     bool tryReadSliceRawXAux_(uint64_t x, float* output);
     bool tryReadBatchRawXAux_(const std::vector<SliceBatchRequest>& requests,

@@ -1,5 +1,6 @@
 #include "erwt3d/auto_plan.hpp"
 #include "erwt3d/lz4_probe.hpp"
+#include "erwt3d/raw_x_aux.hpp"
 #include "erwt3d/sb_hdd.hpp"
 
 #ifdef ERWT3D_HAVE_RZFP
@@ -69,17 +70,47 @@ static void addCandidate(
 
 } // namespace
 
+static void predictRawXAuxTimes(
+    FormatCandidate& candidate,
+    const HDDReadWindowConfig& disk,
+    uint64_t nx, uint64_t ny, uint64_t nz,
+    const PlannerWorkload& workload
+) {
+    double planeMB = static_cast<double>(ny) * static_cast<double>(nz) * sizeof(float) / (1024.0 * 1024.0);
+    double seqMBs = disk.sequential_mb_s > 0 ? disk.sequential_mb_s : 210.0;
+    double seekS = (disk.seek_ms > 0 ? disk.seek_ms : 9.0) / 1000.0;
+
+    uint64_t xRandomCount = std::min<uint64_t>(workload.x_random_slices, nx);
+    uint64_t xContCount = std::min<uint64_t>(workload.x_contiguous_slices, nx);
+
+    // X random: each plane is read via ~1 pread call in merged windows
+    double randomReadMB = planeMB * static_cast<double>(xRandomCount);
+    double randomSeekS = static_cast<double>(xRandomCount) * seekS;
+    candidate.predicted_x_random = randomReadMB / seqMBs + randomSeekS;
+
+    // X continuous: contiguous planes read in one window
+    double contReadMB = planeMB * static_cast<double>(xContCount);
+    candidate.predicted_x_cont = contReadMB / seqMBs + seekS;
+}
+
 PlannerResult planFormat(
     const std::string& raw_path,
     uint64_t nx, uint64_t ny, uint64_t nz,
     int threads,
-    double storage_budget
+    double storage_budget,
+    const PlannerWorkload& workload
 ) {
     using Clock = std::chrono::steady_clock;
     auto t0 = Clock::now();
     PlannerResult result;
 
-    uint64_t rawSize = nx * ny * nz * sizeof(float);
+    uint64_t xy = 0, xyz = 0, rawSize = 0;
+    if (!checkedMulU64(nx, ny, xy) || !checkedMulU64(xy, nz, xyz) ||
+        !checkedMulU64(xyz, sizeof(float), rawSize)) {
+        result.recommended.feasible = false;
+        result.recommended.reason = "raw size overflow";
+        return result;
+    }
     double rawMB = static_cast<double>(rawSize) / (1024.0 * 1024.0);
 
     int raw_fd = open(raw_path.c_str(), O_RDONLY);
@@ -154,9 +185,18 @@ PlannerResult planFormat(
                 c.total_ratio_upper = c.main_ratio_upper + 1.0;
                 c.confidence = 0.6;
                 c.reason = "LZ4 + full raw X-plane region (zero-decompress X random)";
-                addCandidate(result.alternatives, c, result.disk_cfg, rawSize,
-                             1.0, rawMB * c.main_ratio_mean, 100,
-                             rawMB, static_cast<double>(nx), storage_budget);
+                c.feasible = (c.total_ratio_upper <= RAW_X_AUX_HARD_LIMIT);
+                c.requires_force_storage_edge =
+                    (c.total_ratio_upper > RAW_X_AUX_MAX_RATIO && c.feasible);
+                predictRawXAuxTimes(c, result.disk_cfg, nx, ny, nz, workload);
+                double compressedMB = rawMB * c.main_ratio_mean;
+                c.predicted_y_random = approxTComposite(compressedMB, result.disk_cfg.sequential_mb_s, static_cast<double>(workload.y_random_slices), result.disk_cfg.seek_ms);
+                c.predicted_z_random = approxTComposite(compressedMB, result.disk_cfg.sequential_mb_s, static_cast<double>(workload.z_random_slices), result.disk_cfg.seek_ms);
+                c.predicted_y_cont = c.predicted_y_random * 0.06;
+                c.predicted_z_cont = c.predicted_z_random * 0.06;
+                c.predicted_t_composite = (c.predicted_x_random + c.predicted_y_random + c.predicted_z_random
+                                          + c.predicted_x_cont + c.predicted_y_cont + c.predicted_z_cont) / 6.0;
+                result.alternatives.push_back(c);
             }
         }
 
@@ -221,9 +261,18 @@ addCandidate(result.alternatives, c, result.disk_cfg, rawSize,
                 c.total_ratio_upper = rzfpResult.raw_x_aux_total_ratio;
                 c.confidence = 0.6;
                 c.reason = "RZFP + full raw X-plane region (zero-decompress X random)";
-                addCandidate(result.alternatives, c, result.disk_cfg, rawSize,
-                             1.0, rawMB * rzfpRatio, 100,
-                             rawMB, static_cast<double>(nx), storage_budget);
+                c.feasible = (c.total_ratio_upper <= RAW_X_AUX_HARD_LIMIT);
+                c.requires_force_storage_edge =
+                    (c.total_ratio_upper > RAW_X_AUX_MAX_RATIO && c.feasible);
+                predictRawXAuxTimes(c, result.disk_cfg, nx, ny, nz, workload);
+                double compressedMB = rawMB * c.main_ratio_mean;
+                c.predicted_y_random = approxTComposite(compressedMB, result.disk_cfg.sequential_mb_s, static_cast<double>(workload.y_random_slices), result.disk_cfg.seek_ms);
+                c.predicted_z_random = approxTComposite(compressedMB, result.disk_cfg.sequential_mb_s, static_cast<double>(workload.z_random_slices), result.disk_cfg.seek_ms);
+                c.predicted_y_cont = c.predicted_y_random * 0.06;
+                c.predicted_z_cont = c.predicted_z_random * 0.06;
+                c.predicted_t_composite = (c.predicted_x_random + c.predicted_y_random + c.predicted_z_random
+                                          + c.predicted_x_cont + c.predicted_y_cont + c.predicted_z_cont) / 6.0;
+                result.alternatives.push_back(c);
             }
         }
         close(raw_fd);
