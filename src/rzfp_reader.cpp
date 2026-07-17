@@ -4,6 +4,7 @@
 #include "erwt3d/rzfp_xplane_codec.hpp"
 #include "erwt3d/sb_plan.hpp"
 #include "erwt3d/thread_pool.hpp"
+#include "erwt3d/raw_x_aux.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -34,20 +35,6 @@ static uint64_t nsSince(Clock::time_point t) {
         std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - t).count());
 }
 
-static bool readFullyAt(int fd, void* buffer, size_t bytes, uint64_t offset) {
-    auto* dst = static_cast<uint8_t*>(buffer);
-    size_t done = 0;
-    while (done < bytes) {
-        ssize_t n = pread(fd, dst + done, bytes - done, static_cast<off_t>(offset + done));
-        if (n == 0) return false;
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            return false;
-        }
-        done += static_cast<size_t>(n);
-    }
-    return true;
-}
 
 static ERWT3DHeader planHeaderFromRzfp(const RzfpFileHeader& rh) {
     ERWT3DHeader h{};
@@ -729,8 +716,34 @@ RzfpReader::~RzfpReader() {
 void RzfpReader::initRawXAux_() {
     if (!hasRawXAux(header_)) return;
 
-    rawXAuxOffset_ = rzfpRawXAuxOffset(header_);
-    rawXAuxPlaneBytes_ = rzfpRawXAuxPlaneBytes(header_);
+    RawXAuxRegion region;
+    region.offset = rzfpRawXAuxOffset(header_);
+    region.bytes = rzfpRawXAuxBytes(header_);
+    region.plane_bytes = rzfpRawXAuxPlaneBytes(header_);
+    region.version = rzfpRawXAuxVersion(header_);
+
+    struct stat st;
+    if (fstat(fd_, &st) != 0) return;
+    uint64_t fileSize = static_cast<uint64_t>(st.st_size);
+
+    // Minimum offset: after all RZFP payload
+    uint64_t minimumOffset = header_.payload_offset;
+    for (const auto& sb : sb_index_) {
+        uint64_t end = sb.payload_offset + sb.payload_bytes;
+        if (end > minimumOffset) minimumOffset = end;
+    }
+
+    auto err = validateRawXAuxRegion(fileSize, minimumOffset,
+                                      header_.nx, header_.ny, header_.nz, region);
+    if (err != RawXAuxValidationError::None) {
+        std::cerr << "Warning: RZFP Raw X auxiliary validation failed: "
+                  << rawXAuxValidationErrorStr(err)
+                  << " — falling back to main file reader" << std::endl;
+        return;
+    }
+
+    rawXAuxOffset_ = region.offset;
+    rawXAuxPlaneBytes_ = region.plane_bytes;
 
     rawXAuxFd_ = open(path_.c_str(), O_RDONLY);
     if (rawXAuxFd_ < 0) return;

@@ -1,8 +1,8 @@
 #include "erwt3d/rzfp_writer.hpp"
 #include "erwt3d/morton.hpp"
 #include "erwt3d/raw_layout.hpp"
+#include "erwt3d/raw_x_aux.hpp"
 #include "erwt3d/thread_pool.hpp"
-#include "erwt3d/writer.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -23,36 +23,6 @@
 namespace erwt3d {
 
 namespace {
-
-static bool readFullyAt(int fd, void* buffer, size_t bytes, uint64_t offset) {
-    auto* dst = static_cast<uint8_t*>(buffer);
-    size_t done = 0;
-    while (done < bytes) {
-        ssize_t n = pread(fd, dst + done, bytes - done, static_cast<off_t>(offset + done));
-        if (n == 0) return false;
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            return false;
-        }
-        done += static_cast<size_t>(n);
-    }
-    return true;
-}
-
-static bool writeFullyAt(int fd, const void* buffer, size_t bytes, uint64_t offset) {
-    const auto* src = static_cast<const uint8_t*>(buffer);
-    size_t done = 0;
-    while (done < bytes) {
-        ssize_t n = pwrite(fd, src + done, bytes - done, static_cast<off_t>(offset + done));
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            return false;
-        }
-        if (n == 0) return false;
-        done += static_cast<size_t>(n);
-    }
-    return true;
-}
 
 static void packLeavesFromSlab(
     uint8_t* out,
@@ -439,9 +409,6 @@ bool writeRzfpFile(
     return true;
 }
 
-static constexpr uint64_t RZFP_RAW_X_AUX_ALIGN = 4096;
-static constexpr uint64_t RZFP_RAW_X_AUX_COPY_CHUNK = 256ULL * 1024 * 1024;
-
 bool appendRawXAuxToRzfpFile(
     const std::string& rzfpPath,
     const std::string& rawPath,
@@ -456,19 +423,21 @@ bool appendRawXAuxToRzfpFile(
     }
 
     RzfpFileHeader header;
-    if (pread(rzfpFd, &header, sizeof(header), 0) != sizeof(header)) {
+    if (!readFullyAt(rzfpFd, &header, sizeof(header), 0)) {
         std::cerr << "Error: Cannot read RZFP header from " << rzfpPath << std::endl;
         close(rzfpFd);
         return false;
     }
 
     if (hasRawXAux(header)) {
-        std::cerr << "Warning: RZFP file already has raw X auxiliary, skipping" << std::endl;
         close(rzfpFd);
         if (stats) {
+            stats->status = RawXAuxStatus::AlreadyPresent;
             stats->raw_x_aux_offset = rzfpRawXAuxOffset(header);
             stats->raw_x_aux_bytes = rzfpRawXAuxBytes(header);
-            stats->stored = true;
+            stats->raw_x_aux_plane_bytes = rzfpRawXAuxPlaneBytes(header);
+            stats->raw_x_aux_version = rzfpRawXAuxVersion(header);
+            stats->message = "already present";
         }
         return true;
     }
@@ -479,7 +448,7 @@ bool appendRawXAuxToRzfpFile(
         close(rzfpFd);
         return false;
     }
-    uint64_t mainFileBytes = static_cast<uint64_t>(st.st_size);
+    const uint64_t mainFileBytes = static_cast<uint64_t>(st.st_size);
 
     int rawFd = open(rawPath.c_str(), O_RDONLY);
     if (rawFd < 0) {
@@ -495,82 +464,98 @@ bool appendRawXAuxToRzfpFile(
         close(rawFd);
         return false;
     }
-    uint64_t rawBytes = static_cast<uint64_t>(rawSt.st_size);
-    uint64_t planeBytes = rawXPlaneBytes(ny, nz);
-    uint64_t rawAuxBytes = nx * planeBytes;
+    const uint64_t rawBytes = static_cast<uint64_t>(rawSt.st_size);
 
-    if (rawAuxBytes > rawBytes) {
-        std::cerr << "Error: raw X auxiliary (" << rawAuxBytes
-                  << " bytes) exceeds raw file size (" << rawBytes << " bytes)" << std::endl;
-        close(rzfpFd);
-        close(rawFd);
-        return false;
+    uint64_t expectedPlaneFloats = 0, planeBytes = 0, rawAuxBytes = 0;
+    if (!checkedMulU64(ny, nz, expectedPlaneFloats) ||
+        !checkedMulU64(expectedPlaneFloats, sizeof(float), planeBytes) ||
+        !checkedMulU64(nx, planeBytes, rawAuxBytes)) {
+        std::cerr << "Error: RZFP raw X auxiliary size overflow" << std::endl;
+        close(rzfpFd); close(rawFd); return false;
     }
 
-    uint64_t alignedOffset = (mainFileBytes + RZFP_RAW_X_AUX_ALIGN - 1) & ~(RZFP_RAW_X_AUX_ALIGN - 1);
-    uint64_t totalProjected = alignedOffset + rawAuxBytes;
+    if (rawBytes != rawAuxBytes) {
+        std::cerr << "Error: raw file size " << rawBytes
+                  << " does not match nx*ny*nz*sizeof(float) = " << rawAuxBytes << std::endl;
+        close(rzfpFd); close(rawFd); return false;
+    }
+
+    uint64_t alignedOffset = 0;
+    if (!checkedAddU64(mainFileBytes, RAW_X_AUX_ALIGN - 1, alignedOffset)) return false;
+    alignedOffset &= ~(RAW_X_AUX_ALIGN - 1);
+
+    uint64_t totalProjected = 0;
+    if (!checkedAddU64(alignedOffset, rawAuxBytes, totalProjected)) return false;
+
     double projectedRatio = static_cast<double>(totalProjected) / static_cast<double>(rawBytes);
-
-    if (projectedRatio > RAW_X_AUX_HARD_LIMIT && !forceEdge) {
-        std::cerr << "Error: projected storage ratio " << std::fixed << std::setprecision(3)
-                  << projectedRatio << "x exceeds hard limit " << RAW_X_AUX_HARD_LIMIT
-                  << "x. Raw X auxiliary rejected." << std::endl;
-        close(rzfpFd);
-        close(rawFd);
-        return false;
+    if (!std::isfinite(projectedRatio)) {
+        std::cerr << "Error: invalid projected storage ratio" << std::endl;
+        close(rzfpFd); close(rawFd); return false;
     }
 
-    if (projectedRatio > RAW_X_AUX_MAX_RATIO && !forceEdge) {
-        std::cerr << "Error: projected storage ratio " << std::fixed << std::setprecision(3)
-                  << projectedRatio << "x exceeds max ratio " << RAW_X_AUX_MAX_RATIO
-                  << "x. Use --force-storage-edge to override." << std::endl;
-        close(rzfpFd);
-        close(rawFd);
-        return false;
+    if (rawBytes >= RAW_X_AUX_MIN_RAW_BYTES_FOR_RATIO_CHECK) {
+        if (projectedRatio > RAW_X_AUX_HARD_LIMIT) {
+            std::cerr << "Error: projected storage ratio " << std::fixed << std::setprecision(3)
+                      << projectedRatio << "x exceeds absolute hard limit "
+                      << RAW_X_AUX_HARD_LIMIT << "x. Raw X auxiliary rejected." << std::endl;
+            close(rzfpFd); close(rawFd);
+            if (stats) {
+                stats->status = RawXAuxStatus::SkippedStorageBudget;
+                stats->total_storage_ratio = projectedRatio;
+                stats->message = "hard limit exceeded";
+            }
+            return false;
+        }
+
+        if (projectedRatio > RAW_X_AUX_MAX_RATIO && !forceEdge) {
+            std::cerr << "Error: projected storage ratio " << std::fixed << std::setprecision(3)
+                      << projectedRatio << "x exceeds safe limit " << RAW_X_AUX_MAX_RATIO
+                      << "x. Use --force-storage-edge only for ratios <= "
+                      << RAW_X_AUX_HARD_LIMIT << "x." << std::endl;
+            close(rzfpFd); close(rawFd);
+            if (stats) {
+                stats->status = RawXAuxStatus::SkippedStorageBudget;
+                stats->total_storage_ratio = projectedRatio;
+                stats->message = "soft limit exceeded";
+            }
+            return false;
+        }
     }
 
-    posix_fadvise(rawFd, 0, rawBytes, POSIX_FADV_SEQUENTIAL);
-    posix_fadvise(rawFd, 0, rawBytes, POSIX_FADV_WILLNEED);
+    posix_fadvise(rawFd, 0, static_cast<off_t>(rawBytes), POSIX_FADV_SEQUENTIAL);
+    posix_fadvise(rawFd, 0, static_cast<off_t>(rawBytes), POSIX_FADV_WILLNEED);
 
     if (posix_fallocate(rzfpFd, static_cast<off_t>(alignedOffset),
                         static_cast<off_t>(rawAuxBytes)) != 0) {
         std::cerr << "Warning: posix_fallocate failed, using sequential write" << std::endl;
     }
 
-    std::vector<uint8_t> copyBuf(RZFP_RAW_X_AUX_COPY_CHUNK);
-    uint64_t remaining = rawAuxBytes;
-    uint64_t rawOff = 0;
-    uint64_t outOff = alignedOffset;
+    FileAppendTransaction txn(rzfpFd, mainFileBytes);
 
     std::cout << "Appending raw X auxiliary to RZFP: " << (rawAuxBytes / (1024*1024)) << " MB"
               << " (" << nx << " planes x " << (planeBytes / (1024*1024)) << " MB each)"
               << ", total ratio: " << std::fixed << std::setprecision(3) << projectedRatio << "x" << std::endl;
 
+    std::vector<uint8_t> copyBuf(RAW_X_AUX_COPY_CHUNK);
+    uint64_t remaining = rawAuxBytes;
+    uint64_t rawOff = 0;
+    uint64_t outOff = alignedOffset;
+
     auto startTime = std::chrono::high_resolution_clock::now();
 
     while (remaining > 0) {
-        uint64_t chunk = std::min(remaining, RZFP_RAW_X_AUX_COPY_CHUNK);
-        ssize_t n = pread(rawFd, copyBuf.data(), chunk, rawOff);
-        if (n != static_cast<ssize_t>(chunk)) {
+        uint64_t chunk = std::min(remaining, RAW_X_AUX_COPY_CHUNK);
+        if (!readFullyAt(rawFd, copyBuf.data(), chunk, rawOff)) {
             std::cerr << "Error reading raw data at offset " << rawOff << std::endl;
-            close(rzfpFd);
-            close(rawFd);
-            ftruncate(rzfpFd, static_cast<off_t>(mainFileBytes));
-            return false;
+            close(rawFd); return false;
         }
-        ssize_t w = pwrite(rzfpFd, copyBuf.data(), chunk, outOff);
-        if (w != static_cast<ssize_t>(chunk)) {
+        if (!writeFullyAt(rzfpFd, copyBuf.data(), chunk, outOff)) {
             std::cerr << "Error writing raw X aux data at offset " << outOff << std::endl;
-            close(rzfpFd);
-            close(rawFd);
-            ftruncate(rzfpFd, static_cast<off_t>(mainFileBytes));
-            return false;
+            close(rawFd); return false;
         }
-        rawOff += chunk;
-        outOff += chunk;
-        remaining -= chunk;
+        rawOff += chunk; outOff += chunk; remaining -= chunk;
 
-        if (rawOff % (RZFP_RAW_X_AUX_COPY_CHUNK * 4) == 0 || remaining == 0) {
+        if (rawOff % (RAW_X_AUX_COPY_CHUNK * 4) == 0 || remaining == 0) {
             auto now = std::chrono::high_resolution_clock::now();
             double elapsed = std::chrono::duration<double>(now - startTime).count();
             double progress = 100.0 * static_cast<double>(rawOff) / static_cast<double>(rawAuxBytes);
@@ -581,22 +566,24 @@ bool appendRawXAuxToRzfpFile(
         }
     }
     std::cout << std::endl;
-
     close(rawFd);
 
-    header.flags |= FLAG_HAS_RAW_X_AUX;
-    header.reserved[0] = alignedOffset;
-    header.reserved[1] = rawAuxBytes;
-    header.reserved[2] = planeBytes;
-    header.reserved[3] = RAW_X_AUX_VERSION;
+    fdatasync(rzfpFd);
 
-    if (pwrite(rzfpFd, &header, sizeof(header), 0) != sizeof(header)) {
+    RzfpFileHeader newHeader = header;
+    newHeader.flags |= FLAG_HAS_RAW_X_AUX;
+    newHeader.reserved[0] = alignedOffset;
+    newHeader.reserved[1] = rawAuxBytes;
+    newHeader.reserved[2] = planeBytes;
+    newHeader.reserved[3] = RAW_X_AUX_VERSION;
+
+    if (!writeFullyAt(rzfpFd, &newHeader, sizeof(newHeader), 0)) {
         std::cerr << "Error: failed to write back RZFP header with raw X aux metadata" << std::endl;
-        close(rzfpFd);
         return false;
     }
 
     fsync(rzfpFd);
+    txn.commit();
     close(rzfpFd);
 
     auto endTime = std::chrono::high_resolution_clock::now();
@@ -607,12 +594,13 @@ bool appendRawXAuxToRzfpFile(
               << std::endl;
 
     if (stats) {
+        stats->status = RawXAuxStatus::Stored;
         stats->raw_x_aux_offset = alignedOffset;
         stats->raw_x_aux_bytes = rawAuxBytes;
+        stats->raw_x_aux_plane_bytes = planeBytes;
+        stats->raw_x_aux_version = RAW_X_AUX_VERSION;
         stats->total_storage_ratio = projectedRatio;
-        stats->stored = true;
     }
-
     return true;
 }
 

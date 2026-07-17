@@ -21,8 +21,6 @@ constexpr uint64_t FLAG_PHYSICAL_ORDER_YZX = 1ULL << 6;
 constexpr uint64_t FLAG_HAS_RAW_X_AUX = 1ULL << 7;
 
 constexpr uint32_t RAW_X_AUX_VERSION = 1;
-constexpr double RAW_X_AUX_MAX_RATIO = 1.445;
-constexpr double RAW_X_AUX_HARD_LIMIT = 1.450;
 
 enum class PhysicalOrder : uint8_t {
     V05_YZX,

@@ -1,7 +1,7 @@
 #include "erwt3d/rzfp_auto_plan.hpp"
 #include "erwt3d/rzfp_writer.hpp"
 #include "erwt3d/rzfp_xplane_writer.hpp"
-#include "erwt3d/writer.hpp"
+#include "erwt3d/raw_x_aux.hpp"
 
 #include <cstring>
 #include <fcntl.h>
@@ -91,7 +91,7 @@ int main(int argc, char* argv[]) {
     bool auto_plan = false;
     uint64_t auto_time_limit = 600;
     uint64_t auto_soft_time_limit = 300;
-    bool rawXAux = false;
+    erwt3d::RawXAuxMode rawXAuxMode = erwt3d::RawXAuxMode::Off;
     bool forceStorageEdge = false;
 
     for (int i = 1; i < argc; ++i) {
@@ -131,8 +131,9 @@ int main(int argc, char* argv[]) {
             auto_soft_time_limit = std::stoull(next());
         } else if (std::strcmp(argv[i], "--raw-x-aux") == 0) {
             std::string mode = next();
-            if (mode == "on" || mode == "auto") rawXAux = true;
-            else if (mode == "off") rawXAux = false;
+            if (mode == "on") rawXAuxMode = erwt3d::RawXAuxMode::On;
+            else if (mode == "auto") rawXAuxMode = erwt3d::RawXAuxMode::Auto;
+            else if (mode == "off") rawXAuxMode = erwt3d::RawXAuxMode::Off;
             else {
                 std::cerr << "Error: unknown --raw-x-aux mode: " << mode << " (valid: auto, on, off)" << std::endl;
                 return 1;
@@ -187,17 +188,23 @@ int main(int argc, char* argv[]) {
     std::cout << "RZFP conversion complete: " << outputPath << std::endl;
     std::cout << "storage_ratio: " << stats.storage_ratio << std::endl;
 
-    if (rawXAux) {
+if (rawXAuxMode != erwt3d::RawXAuxMode::Off) {
         erwt3d::RawXAuxStats auxStats;
-        if (!erwt3d::appendRawXAuxToRzfpFile(outputPath, inputPath, cfg.nx, cfg.ny, cfg.nz,
-                                              &auxStats, forceStorageEdge)) {
-            std::cerr << "Error: Raw X auxiliary generation failed" << std::endl;
+        bool auxOk = erwt3d::appendRawXAuxToRzfpFile(outputPath, inputPath, cfg.nx, cfg.ny, cfg.nz,
+                                                       &auxStats, forceStorageEdge);
+        if (!auxOk && rawXAuxMode == erwt3d::RawXAuxMode::On) {
+            std::cerr << "Error: Raw X auxiliary required but generation failed" << std::endl;
             return 1;
         }
-        std::cout << "Raw X auxiliary: " << (auxStats.stored ? "stored" : "skipped")
-                  << " (" << (auxStats.raw_x_aux_bytes / (1024*1024)) << " MB)"
-                  << ", total ratio: " << std::fixed << std::setprecision(3)
-                  << auxStats.total_storage_ratio << "x" << std::endl;
+        if (auxStats.stored()) {
+            std::cout << "Raw X auxiliary: stored"
+                      << " (" << (auxStats.raw_x_aux_bytes / (1024*1024)) << " MB)"
+                      << ", total ratio: " << std::fixed << std::setprecision(3)
+                      << auxStats.total_storage_ratio << "x" << std::endl;
+        } else {
+            std::cout << "Raw X auxiliary: skipped"
+                      << " (" << auxStats.message << ")" << std::endl;
+        }
     }
 
     if (xplane_sidecar) {

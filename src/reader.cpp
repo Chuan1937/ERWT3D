@@ -1,10 +1,12 @@
 #include "erwt3d/reader.hpp"
 #include "erwt3d/morton.hpp"
 #include "erwt3d/raw_layout.hpp"
+#include "erwt3d/raw_x_aux.hpp"
 #include "erwt3d/thread_pool.hpp"
 #include "erwt3d/sb_task.hpp"
 #include <algorithm>
 #include <fstream>
+#include <iostream>
 #include <vector>
 #include <cstring>
 #include <chrono>
@@ -623,16 +625,39 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
 void ERWT3DReader::initRawXAux_() {
     if (!hasRawXAux(header_)) return;
 
-    rawXAuxOffset_ = getRawXAuxOffset(header_);
-    rawXAuxBytes_ = getRawXAuxBytes(header_);
-    rawXAuxPlaneBytes_ = getRawXAuxPlaneBytes(header_);
+    RawXAuxRegion region;
+    region.offset = getRawXAuxOffset(header_);
+    region.bytes = getRawXAuxBytes(header_);
+    region.plane_bytes = getRawXAuxPlaneBytes(header_);
+    region.version = getRawXAuxVersion(header_);
+
+    struct stat st;
+    if (fstat(fd_, &st) != 0) return;
+    uint64_t fileSize = static_cast<uint64_t>(st.st_size);
+
+    // Compute minimum offset: must be after all compressed content
+    uint64_t minimumOffset = sizeof(header_);
+    if (compressed_ && !compIndex_.empty()) {
+        for (const auto& entry : compIndex_) {
+            uint64_t end = entry.file_offset + entry.compressed_size;
+            if (end > minimumOffset) minimumOffset = end;
+        }
+    }
+
+    auto err = validateRawXAuxRegion(fileSize, minimumOffset,
+                                      header_.nx, header_.ny, header_.nz, region);
+    if (err != RawXAuxValidationError::None) {
+        std::cerr << "Warning: Raw X auxiliary validation failed: "
+                  << rawXAuxValidationErrorStr(err)
+                  << " — falling back to main file reader" << std::endl;
+        return;
+    }
+
+    rawXAuxOffset_ = region.offset;
+    rawXAuxBytes_ = region.bytes;
+    rawXAuxPlaneBytes_ = region.plane_bytes;
 
     int flags = O_RDONLY;
-    if (rawXAuxDirect_) {
-#ifdef O_DIRECT
-        flags |= O_DIRECT;
-#endif
-    }
     rawXAuxFd_ = open(path_.c_str(), flags);
     if (rawXAuxFd_ < 0) return;
 
@@ -645,16 +670,8 @@ bool ERWT3DReader::tryReadSliceRawXAux_(uint64_t x, float* output) {
     uint64_t planeBytes = header_.ny * header_.nz * sizeof(float);
     uint64_t offset = rawXAuxOffset_ + x * rawXAuxPlaneBytes_;
 
-    if (rawXAuxDirect_) {
-        if (rawXAuxAlignedBuf_.size() < planeBytes)
-            rawXAuxAlignedBuf_.resize(planeBytes);
-        ssize_t n = pread(rawXAuxFd_, rawXAuxAlignedBuf_.data(), planeBytes, offset);
-        if (n != static_cast<ssize_t>(planeBytes)) return false;
-        std::memcpy(output, rawXAuxAlignedBuf_.data(), planeBytes);
-    } else {
-        ssize_t n = pread(rawXAuxFd_, output, planeBytes, offset);
-        if (n != static_cast<ssize_t>(planeBytes)) return false;
-    }
+    ssize_t n = pread(rawXAuxFd_, output, planeBytes, offset);
+    if (n != static_cast<ssize_t>(planeBytes)) return false;
 
     posix_fadvise(rawXAuxFd_, static_cast<off_t>(offset),
                   static_cast<off_t>(planeBytes), POSIX_FADV_DONTNEED);
@@ -720,31 +737,14 @@ bool ERWT3DReader::tryReadBatchRawXAux_(
 
         uint64_t wsize = wend - wstart;
 
-        if (rawXAuxDirect_) {
-            if (rawXAuxAlignedBuf_.size() < wsize)
-                rawXAuxAlignedBuf_.resize(wsize);
-            ssize_t n = pread(rawXAuxFd_, rawXAuxAlignedBuf_.data(), wsize, wstart);
-            if (n != static_cast<ssize_t>(wsize)) return false;
+        std::vector<uint8_t> winBuf(wsize);
+        ssize_t n = pread(rawXAuxFd_, winBuf.data(), wsize, wstart);
+        if (n != static_cast<ssize_t>(wsize)) return false;
 
-            // Scatter to individual outputs
-            for (size_t k = i; k < j; ++k) {
-                uint64_t off_in_window = tasks[k].file_offset - wstart;
-                std::memcpy(tasks[k].output,
-                            rawXAuxAlignedBuf_.data() + off_in_window,
-                            planeBytes);
-                handled[tasks[k].req_idx] = true;
-            }
-        } else {
-            // Read contiguous merged planes into a single buffer, then scatter
-            std::vector<uint8_t> winBuf(wsize);
-            ssize_t n = pread(rawXAuxFd_, winBuf.data(), wsize, wstart);
-            if (n != static_cast<ssize_t>(wsize)) return false;
-
-            for (size_t k = i; k < j; ++k) {
-                uint64_t off_in_window = tasks[k].file_offset - wstart;
-                std::memcpy(tasks[k].output, winBuf.data() + off_in_window, planeBytes);
-                handled[tasks[k].req_idx] = true;
-            }
+        for (size_t k = i; k < j; ++k) {
+            uint64_t off_in_window = tasks[k].file_offset - wstart;
+            std::memcpy(tasks[k].output, winBuf.data() + off_in_window, planeBytes);
+            handled[tasks[k].req_idx] = true;
         }
 
         posix_fadvise(rawXAuxFd_, static_cast<off_t>(wstart),
@@ -1258,9 +1258,7 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
         std::vector<std::vector<uint8_t>> workerBufs(decodeThreads);
         for (auto& wb : workerBufs) wb.resize(sbBV);
 
-        std::vector<uint8_t> windowBuf[2];
-        size_t curBuf = 0;
-        bool hasNext = false;
+        std::vector<uint8_t> windowBuf;
 
         adviseSequential(fd_);
 
@@ -1280,8 +1278,8 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
             }
 
             uint64_t wsize = wend - wstart;
-            if (windowBuf[curBuf].size() < wsize)
-                windowBuf[curBuf].resize(wsize);
+            if (windowBuf.size() < wsize)
+                windowBuf.resize(wsize);
 
             // Prefetch next window
             if (sj < sortedSBs.size()) {
@@ -1291,7 +1289,7 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
             }
 
             // Read window
-            ssize_t n = pread(fd_, windowBuf[curBuf].data(), wsize, wstart);
+            ssize_t n = pread(fd_, windowBuf.data(), wsize, wstart);
             if (n != static_cast<ssize_t>(wsize)) return false;
 
             // Parallel decompress + scatter
@@ -1300,7 +1298,7 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
                 for (size_t k = si; k < sj; ++k) {
                     auto* sb = sortedSBs[k];
                     uint8_t* decompBuf = workerBufs[0].data();
-                    const uint8_t* srcData = windowBuf[curBuf].data() +
+                    const uint8_t* srcData = windowBuf.data() +
                         (sb->compressed_offset - wstart);
 
                     if (sb->is_compressed) {
@@ -1336,7 +1334,7 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
                         uint8_t* decompBuf = workerBufs[t].data();
                         for (size_t k = kstart; k < kend; ++k) {
                             auto* sb = sortedSBs[k];
-                            const uint8_t* srcData = windowBuf[curBuf].data() +
+                            const uint8_t* srcData = windowBuf.data() +
                                 (sb->compressed_offset - wstart);
 
                             if (sb->is_compressed) {

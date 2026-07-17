@@ -1,6 +1,7 @@
 #include "erwt3d/writer.hpp"
 #include "erwt3d/reader.hpp"
 #include "erwt3d/morton.hpp"
+#include "erwt3d/raw_x_aux.hpp"
 #include <iostream>
 #include <iomanip>
 #include <string>
@@ -130,7 +131,7 @@ int main(int argc, char* argv[]) {
     uint32_t panelAxis = 0;
     uint32_t panelStride = 0;
     bool compress = false;
-    bool rawXAux = false;
+    erwt3d::RawXAuxMode rawXAuxMode = erwt3d::RawXAuxMode::Off;
     bool forceStorageEdge = false;
     
     // Parse arguments
@@ -171,8 +172,9 @@ int main(int argc, char* argv[]) {
             compress = true;
         } else if (std::strcmp(argv[i], "--raw-x-aux") == 0 && i + 1 < argc) {
             std::string mode = argv[++i];
-            if (mode == "on" || mode == "auto") rawXAux = true;
-            else if (mode == "off") rawXAux = false;
+            if (mode == "on") rawXAuxMode = erwt3d::RawXAuxMode::On;
+            else if (mode == "auto") rawXAuxMode = erwt3d::RawXAuxMode::Auto;
+            else if (mode == "off") rawXAuxMode = erwt3d::RawXAuxMode::Off;
             else {
                 std::cerr << "Error: unknown --raw-x-aux mode: " << mode << " (valid: auto, on, off)" << std::endl;
                 return 1;
@@ -243,7 +245,7 @@ int main(int argc, char* argv[]) {
                                          superSize, superSize, superSize,
                                          leafSize, leafSize, leafSize,
                                          numThreads, memoryLimitMB,
-                                         panelAxis, panelStride, compress, rawXAux, forceStorageEdge)) {
+                                         panelAxis, panelStride, compress, rawXAuxMode, forceStorageEdge)) {
             std::cerr << "Error: Failed to convert raw to ERWT3D" << std::endl;
             return 1;
         }

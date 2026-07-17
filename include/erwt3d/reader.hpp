@@ -83,7 +83,7 @@ public:
     bool profileIO() const { return profileIO_; }
     const IOProfile& lastProfile() const { return lastProfile_; }
 
-    void setRawXAuxDirect(bool enable) { rawXAuxDirect_ = enable; }
+    void setRawXAuxAvailable(bool available) { rawXAuxAvailable_ = available; }
     bool rawXAuxAvailable() const { return rawXAuxAvailable_; }
 
 private:
@@ -125,8 +125,6 @@ private:
     uint64_t rawXAuxOffset_ = 0;
     uint64_t rawXAuxBytes_ = 0;
     uint64_t rawXAuxPlaneBytes_ = 0;
-    bool rawXAuxDirect_ = false;
-    std::vector<uint8_t> rawXAuxAlignedBuf_;
     void initRawXAux_();
     bool tryReadSliceRawXAux_(uint64_t x, float* output);
     bool tryReadBatchRawXAux_(const std::vector<SliceBatchRequest>& requests,
