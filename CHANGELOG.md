@@ -2,6 +2,92 @@
 
 本文件记录 ERWT3D 的重要变更。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.6.0] - 2026-07-17
+
+### Changed
+
+- **Z-fastest 官方 raw 布局修正**（全项目范围）：
+  - 统一所有 raw 文件读取为 `offset(x,y,z) = (x*ny+y)*nz+z`（Z 最快变化）
+  - 内部 Leaf 布局保持 X-fastest 不变；转换器负责两者之间的重排
+  - 修复旧 LZ4 Writer、Verify、precompute_x、gen_fast_data 中的 X-fastest 错误公式
+  - RZFP 路径已正确使用 Z-fastest，重构为统一调用 `rawOffsetZFastest()`
+
+- **LZ4 Writer 并行压缩**（`src/writer.cpp`）：
+  - 线程池并行处理 (sy,sz) superblock 的打包、Leaf 重排和 LZ4 压缩
+  - 结果按逻辑索引排序后顺序写出
+
+- **Plane-major sidecar 生成器**（`tools/erwt3d_precompute_x.cpp`）：
+  - 从 z-chunk-first 改为 plane-major：每个 X-plane 只读一次
+  - 8 线程并行压缩同一 plane 的全部 z-chunk
+  - 预分配工作缓冲区复用，消除 per-chunk 动态分配
+  - 删除旧的 `buildChunk()` 和 `planeChunks` 死代码
+
+### Added
+
+- **Sidecar/legacy Reader 转置修复**（`src/reader.cpp`）：
+  - 外置 `.xp` sidecar 的 chunk 数据从 Y-fastest 转置为输出 Z-fastest
+  - 内嵌 legacy X-plane 同修复
+  - 4 条代码路径（单/批 × 外置/内嵌）全部修复
+  - 新增 blocked `transposeZYToYZ()` 工具函数（32×32 分块）
+
+- **RZFP 结构完整性验证**（`src/rzfp_reader.cpp`）：
+  - 在分配前校验文件大小、区域边界和顺序
+  - 安全算术防止 offset+bytes 溢出
+  - 每个 Superblock 的 descriptor size 总和必须等于 `payload_bytes`
+  - 三种确定性损坏测试（bad magic / bad index / bad descriptor）
+
+- **LZ4 压缩探针**（`src/lz4_probe.cpp` / `tools/erwt3d_lz4_probe.cpp`）：
+  - 分层 X-slab 采样，每个 slab 随机采样 (sy,sz) superblock
+  - 复用 Writer 的真实打包→Leaf 重排→LZ4 压缩流程
+  - 基于 per-SB ratio 分布的真实 95% 置信区间
+
+- **顶层自动格式规划器**（`src/auto_plan.cpp` / `tools/erwt3d_auto_plan.cpp`）：
+  - 组合 LZ4 Probe、RZFP AutoPlan、HDD 校准
+  - 候选：LZ4 main、LZ4+sidecar(s1/s2/s3)、RZFP main、RZFP+sidecar
+  - 按存储预算过滤，按预测 T_composite 排序，输出 Top-2
+  - 20GB → LZ4+s2、50GB → RZFP（经验证与实际一致）
+
+- **HDD 自动校准**（`src/sb_hdd.cpp`）：
+  - 3 区域顺序带宽（头部/中部/尾部各 256MB，取中位数）
+  - 128 次随机 1MB 读取中位数延迟
+  - 64 位随机数发生器，4KB 对齐，`posix_fadvise(DONTNEED)`
+
+- **RZFP profiling 线程安全**（`src/rzfp_reader.cpp`）：
+  - `scatter_time_ms` 从数据竞争 double 改为 `atomic<uint64_t> scatter_ns.fetch_add()`
+  - sidecar plan 时间不再错误计入 I/O
+
+- **gen_fast_data 错误传播**（`tools/gen_fast_data.cpp`）：
+  - worker 错误通过 `std::atomic<bool>` 传到主线程
+  - `pwrite()==0` 处理、线程数/维度校验、安全乘法防溢出
+  - 真实二进制测试验证输出内容、确定性和不同 seed
+
+### Fixed
+
+- X-panel count：`superX / panelStride` → `(superX + panelStride - 1) / panelStride`
+- Writer 内存限制：不再静默放大预算，不足时直接报错退出
+- 并行压缩 + 内嵌 X-panel 不支持组合被正确拒绝
+- `precompute_x` 的 `rawRow.resize(planeFloats * sizeof(float))` 4 倍内存浪费
+- sidecar `rowsInChunk` 当 `chunkZRows > nz` 时溢出输出缓冲区
+- external sidecar 与 legacy X-plane 现在使用独立测试文件
+- stride 命中/未命中现在直接验证，不再依赖假阳性跳过
+
+### Performance
+
+G 盘 HDD，`--hdd` 模式，4GB 内存限制，Z-fastest 布局修正后：
+
+| 数据集 | 格式 | T_composite | 存储比 | 备注 |
+|--------|------|------------|--------|------|
+| 20GB | LZ4 + sidecar s2 | 25.37s mean / 22.09s best | 0.479x | 3 轮 CV≈2% |
+| 50GB | RZFP | 99.06s | 0.421x | 单次代表性 |
+
+> G 盘顺序带宽 ~200-220 MB/s，低于之前 D 盘（~300 MB/s）。相对排名不受磁盘差异影响。
+
+### Known limitations
+
+- Sidecar ratio 在 Planner 中为启发式估算（由 LZ4 主文件 ratio 外推）
+- Planner 预测时间为格式筛选近似值，非精确 benchmark 预报
+- 50GB 缺少多轮冷/热缓存重复测试
+
 ## [0.5.1] - 2026-07-07
 
 ### Changed
