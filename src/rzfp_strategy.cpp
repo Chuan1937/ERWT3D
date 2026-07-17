@@ -105,6 +105,18 @@ static int preferenceRank(RzfpReadStrategy strategy) {
     }
 }
 
+static const StrategyEstimate* lowerVolumeOfTwo(
+    const StrategyEstimate* a,
+    const StrategyEstimate* b
+) {
+    if (a->read_bytes != b->read_bytes) {
+        return a->read_bytes < b->read_bytes ? a : b;
+    }
+    return preferenceRank(a->strategy) <= preferenceRank(b->strategy)
+        ? a
+        : b;
+}
+
 static void selectAllowedStrategy(
     StrategyDecision& decision,
     const RzfpAdaptiveConfig& config
@@ -171,23 +183,15 @@ static void selectAllowedStrategy(
 
     decision.uncertain = true;
 
-    // When predictions are close, choose the lower-risk option that reads the
-    // least data. Resolve exact byte ties with Whole, Selective, Fullscan.
-    const StrategyEstimate* lowerVolume = best;
-    for (const StrategyEstimate* candidate : candidates) {
-        if (!candidate->allowed) continue;
-        if (candidate->read_bytes < lowerVolume->read_bytes ||
-            (candidate->read_bytes == lowerVolume->read_bytes &&
-             preferenceRank(candidate->strategy) <
-                 preferenceRank(lowerVolume->strategy))) {
-            lowerVolume = candidate;
-        }
-    }
-
+    // Hysteresis is only a tie-break between the two predicted leaders. A much
+    // slower third strategy must not leapfrog merely because it reads fewer
+    // bytes. Resolve exact byte ties with Whole, Selective, Fullscan.
+    const StrategyEstimate* lowerVolume = lowerVolumeOfTwo(best, second);
     decision.selected = lowerVolume->strategy;
+
     std::ostringstream reason;
     reason << "prediction gap " << relativeGap * 100.0
-           << "% is below hysteresis; selected lower read volume";
+           << "% is below hysteresis; selected lower read volume among top two";
     decision.reason = reason.str();
 }
 
