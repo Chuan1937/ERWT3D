@@ -1,5 +1,6 @@
 #include "erwt3d/reader.hpp"
 #include "erwt3d/morton.hpp"
+#include "erwt3d/raw_layout.hpp"
 #include "erwt3d/thread_pool.hpp"
 #include "erwt3d/sb_task.hpp"
 #include <algorithm>
@@ -677,15 +678,10 @@ bool ERWT3DReader::tryReadSliceXPSidecar_(uint64_t x, float* output, IOProfile* 
         }
 
         uint64_t zStart = static_cast<uint64_t>(c) * xpHeader_.chunk_z_rows;
-        uint64_t rowsInChunk = ci.raw_size / (ny * sizeof(float));
+        uint64_t rowsInChunk = std::min(ci.raw_size / (ny * sizeof(float)),
+                                         xpHeader_.nz - zStart);
         const float* chunk = reinterpret_cast<const float*>(xpRawBuf_.data());
-        for (uint64_t zi = 0; zi < rowsInChunk; ++zi) {
-            uint64_t z = zStart + zi;
-            if (z >= xpHeader_.nz) break;
-            for (uint64_t y = 0; y < ny; ++y) {
-                output[y * xpHeader_.nz + z] = chunk[zi * ny + y];
-            }
-        }
+        transposeZYToYZ(chunk, output + zStart, rowsInChunk, ny, xpHeader_.nz);
     }
 
     if (profile) {
@@ -799,16 +795,10 @@ bool ERWT3DReader::tryReadBatchXPSidecar_(const std::vector<SliceBatchRequest>& 
 
             float* output = requests[t.request_idx].output;
             uint64_t zStart = static_cast<uint64_t>(t.chunk_idx_in_plane) * xpHeader_.chunk_z_rows;
-            uint64_t rowsInChunk = t.raw_size / (ny * sizeof(float));
+            uint64_t rowsInChunk = std::min(t.raw_size / (ny * sizeof(float)),
+                                             xpHeader_.nz - zStart);
             const float* chunk = reinterpret_cast<const float*>(xpRawBuf_.data());
-            const uint64_t nz = xpHeader_.nz;
-            for (uint64_t zi = 0; zi < rowsInChunk; ++zi) {
-                uint64_t z = zStart + zi;
-                if (z >= nz) break;
-                for (uint64_t y = 0; y < ny; ++y) {
-                    output[y * nz + z] = chunk[zi * ny + y];
-                }
-            }
+            transposeZYToYZ(chunk, output + zStart, rowsInChunk, ny, xpHeader_.nz);
             handled[t.request_idx] = true;
         }
 
@@ -869,12 +859,7 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
                     ssize_t n = pread(fd_, xPlaneRawBuf_.data(), planeBytes, off);
                 auto readEnd = std::chrono::high_resolution_clock::now();
                 if (n == static_cast<ssize_t>(planeBytes)) {
-                    const float* src = xPlaneRawBuf_.data();
-                    const uint64_t ny = header_.ny;
-                    const uint64_t nz = header_.nz;
-                    for (uint64_t z = 0; z < nz; ++z)
-                        for (uint64_t y = 0; y < ny; ++y)
-                            output[y * nz + z] = src[z * ny + y];
+                    transposeZYToYZ(xPlaneRawBuf_.data(), output, header_.nz, header_.ny, header_.nz);
                     auto planEnd = std::chrono::high_resolution_clock::now();
                     double planMs = std::chrono::duration<double, std::milli>(planEnd - planStart).count();
                     double readMs = std::chrono::duration<double, std::milli>(readEnd - readStart).count();
@@ -1016,12 +1001,7 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
                     xPlaneRawBuf_.resize(header_.ny * header_.nz);
                     ssize_t n = pread(fd_, xPlaneRawBuf_.data(), planeBytes, off);
                     if (n == static_cast<ssize_t>(planeBytes)) {
-                        const float* src = xPlaneRawBuf_.data();
-                        const uint64_t ny = header_.ny;
-                        const uint64_t nz = header_.nz;
-                        for (uint64_t z = 0; z < nz; ++z)
-                            for (uint64_t y = 0; y < ny; ++y)
-                                r.output[y * nz + z] = src[z * ny + y];
+                        transposeZYToYZ(xPlaneRawBuf_.data(), r.output, header_.nz, header_.ny, header_.nz);
                         continue;
                     }
                 }

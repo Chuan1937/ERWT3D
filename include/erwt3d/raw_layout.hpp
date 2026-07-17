@@ -58,4 +58,29 @@ inline uint64_t rawOffsetXFastest(
     return (z * ny + y) * nx + x;
 }
 
+// Blocked transpose: Z-major (zi*ny+y) → Z-fastest output (y*nz+z).
+// Used by sidecar/legacy X-plane reader paths after decompression.
+// Blocks improve cache locality for large planes (~24MB per X-plane).
+inline void transposeZYToYZ(
+    const float* __restrict src,
+    float* __restrict dst,
+    uint64_t srcRows,
+    uint64_t ny,
+    uint64_t nz
+) {
+    constexpr uint64_t BY = 32;
+    constexpr uint64_t BZ = 32;
+    for (uint64_t z0 = 0; z0 < srcRows; z0 += BZ) {
+        const uint64_t zEnd = z0 + BZ < srcRows ? z0 + BZ : srcRows;
+        for (uint64_t y0 = 0; y0 < ny; y0 += BY) {
+            const uint64_t yEnd = y0 + BY < ny ? y0 + BY : ny;
+            for (uint64_t y = y0; y < yEnd; ++y) {
+                for (uint64_t zi = z0; zi < zEnd; ++zi) {
+                    dst[y * nz + zi] = src[zi * ny + y];
+                }
+            }
+        }
+    }
+}
+
 } // namespace erwt3d
