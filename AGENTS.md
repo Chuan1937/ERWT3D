@@ -134,6 +134,7 @@ G 盘 HDD，`--hdd` 模式，4GB 内存限制（布局修正后 Z-fastest）：
 > 20GB LZ4+s2 T_composite 在 D 盘预期约 12–15s，50GB RZFP 预期约 60–70s。
 > 相对排名（20GB LZ4 优于 RZFP，50GB RZFP 优于 LZ4）不受磁盘差异影响。
 > LZ4 stride=2 在存储和性能之间取得最佳平衡。
+> 3 轮重复测试：LZ4+s2 T_composite 均值 25.37s，CV ~2%（首轮 22.09s 为 sidecar 生成后热缓存）。
 
 ### 关键发现
 
