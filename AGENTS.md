@@ -106,7 +106,7 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 
 ## 当前性能
 
-### P2-hardening (HEAD: 0f5c185)
+### P2-hardening (HEAD: 0307f3f)
 
 - **硬上限 1.45x 永久不可绕过**：`--force-storage-edge` 仅在 1.445-1.450 之间生效
 - **事务式追加 + 自动回滚**：写入失败自动 `ftruncate` 恢复原始文件
@@ -145,8 +145,8 @@ G 盘 HDD，`--hdd` 模式，4GB 内存限制：
 - **FLAG_HAS_RAW_X_AUX** (bit 7)：完整 raw X-plane 数据追加到主文件末尾
 - **Raw X 读取**：独立 fd + POSIX_FADV_DONTNEED，零解压、零转置、零散射
 - **LZ4 合并窗口并行读取**：256MB 窗口合并 + 8 线程并行解压 + readahead 预读
-- **RZFP prefix checkpoint**：每 16 leaves 保存偏移，最多 15 项扫描（原 4096 项）
-- **存储预算**：1.445x 软限制，1.45x 硬限制，--force-storage-edge 允许更高
+- **RZFP prefix checkpoint**：每 16 leaves 存稀疏 checkpoint（~257 uint32/SB vs 4097），单 leaf 查询最多扫描 15 项
+- **存储预算**：1.445x 软限制，1.45x 绝对硬限制（永不绕过）；`--force-storage-edge` 仅在 1.445-1.450 间生效
 - **命令**：`--raw-x-aux auto|on|off` + `--force-storage-edge`
 
 > **G 盘限速说明**：G 盘顺序读仅 ~66 MB/s（WSL 9p 协议），远低于原 D 盘环境（~300 MB/s）。
@@ -205,6 +205,12 @@ G 盘 HDD，`--hdd` 模式，4GB 内存限制：
 ```bash
 # 直接命令模式：erwt3d <command> key=value ...
 ./build/erwt3d convert input=data.raw output=data.erwt3d nx=801 ny=2405 nz=2501 threads=8 memory-limit-mb=4096
+
+# LZ4 压缩 + Raw X 辅助区（推荐，存储比 ≤1.45x 时最佳）
+./build/erwt3d_convert --input data.raw --output data.erwt3d --nx 801 --ny 2405 --nz 2501 --compress --raw-x-aux on --threads 12
+
+# RZFP + Raw X 辅助区
+./build/erwt3d_convert_rzfp --input data.raw --output data.rzfp --nx 2001 --ny 2201 --nz 3000 --raw-x-aux on --threads 12
 
 ./build/erwt3d bench-contest input=data.erwt3d output-dir=out hdd
 
