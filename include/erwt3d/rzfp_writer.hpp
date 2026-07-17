@@ -3,6 +3,7 @@
 #include "rzfp_codec.hpp"
 #include "rzfp_format.hpp"
 #include "format.hpp"
+#include "writer.hpp"
 
 #include <cstdint>
 #include <string>
@@ -55,6 +56,14 @@ bool writeRzfpFile(
     const std::string& output_path,
     const RzfpWriterConfig& config,
     RzfpWriterStats* stats = nullptr
+);
+
+bool appendRawXAuxToRzfpFile(
+    const std::string& rzfpPath,
+    const std::string& rawPath,
+    uint64_t nx, uint64_t ny, uint64_t nz,
+    RawXAuxStats* stats = nullptr,
+    bool forceEdge = false
 );
 
 } // namespace erwt3d

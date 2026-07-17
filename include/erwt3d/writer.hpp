@@ -35,6 +35,23 @@ bool writeERWT3DFromFile(const std::string& outputPath,
                          size_t memoryLimitMB = 2048,
                          uint32_t panelAxis = 0,
                          uint32_t panelStride = 0,
-                         bool compress = false);
+                         bool compress = false,
+                         bool rawXAux = false,
+                         bool forceStorageEdge = false);
+
+enum class RawXAuxMode { Auto, On, Off };
+
+struct RawXAuxStats {
+    uint64_t raw_x_aux_bytes = 0;
+    uint64_t raw_x_aux_offset = 0;
+    double total_storage_ratio = 0.0;
+    bool stored = false;
+};
+
+bool appendRawXAuxToFile(const std::string& erwt3dPath,
+                         const std::string& rawPath,
+                         uint64_t nx, uint64_t ny, uint64_t nz,
+                         RawXAuxStats* stats = nullptr,
+                         bool forceEdge = false);
 
 } // namespace erwt3d

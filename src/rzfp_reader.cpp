@@ -157,23 +157,47 @@ static std::vector<RzfpLeafTask> buildLeafTasks(
     return tasks;
 }
 
-static std::unordered_map<uint64_t, std::vector<uint32_t>> buildPrefixes(
+static constexpr uint32_t PREFIX_CHECKPOINT_STRIDE = 16;
+
+static std::unordered_map<uint64_t, std::vector<uint32_t>> buildPrefixCheckpoints(
     const std::vector<RzfpLeafTask>& tasks,
     const std::vector<RzfpLeafDescriptor>& descriptors,
     uint64_t leavesPerSB
 ) {
-    std::unordered_map<uint64_t, std::vector<uint32_t>> prefixes;
-    prefixes.reserve(tasks.size());
+    std::unordered_map<uint64_t, std::vector<uint32_t>> checkpoints;
+    checkpoints.reserve(tasks.size());
+    std::unordered_set<uint64_t> seen;
     for (const auto& t : tasks) {
-        if (prefixes.find(t.physical_sb_id) != prefixes.end()) continue;
-        std::vector<uint32_t> prefix(leavesPerSB + 1, 0);
+        if (!seen.insert(t.physical_sb_id).second) continue;
+        uint64_t numCheckpoints = (leavesPerSB + PREFIX_CHECKPOINT_STRIDE - 1) / PREFIX_CHECKPOINT_STRIDE + 1;
+        std::vector<uint32_t> cp(numCheckpoints, 0);
         const uint64_t descBase = t.physical_sb_id * leavesPerSB;
+        uint32_t running = 0;
         for (uint64_t i = 0; i < leavesPerSB; ++i) {
-            prefix[i + 1] = prefix[i] + descriptorSize(descriptors[descBase + i]);
+            if (i % PREFIX_CHECKPOINT_STRIDE == 0) {
+                cp[i / PREFIX_CHECKPOINT_STRIDE] = running;
+            }
+            running += descriptorSize(descriptors[descBase + i]);
         }
-        prefixes.emplace(t.physical_sb_id, std::move(prefix));
+        cp[numCheckpoints - 1] = running;
+        checkpoints.emplace(t.physical_sb_id, std::move(cp));
     }
-    return prefixes;
+    return checkpoints;
+}
+
+static uint32_t prefixFromCheckpoint(
+    uint16_t morton,
+    const std::vector<uint32_t>& checkpoints,
+    const std::vector<RzfpLeafDescriptor>& descriptors,
+    uint64_t descBase
+) {
+    uint32_t cpIdx = morton / PREFIX_CHECKPOINT_STRIDE;
+    uint32_t base = checkpoints[cpIdx];
+    uint64_t start = static_cast<uint64_t>(cpIdx) * PREFIX_CHECKPOINT_STRIDE;
+    for (uint64_t i = start; i < morton; ++i) {
+        base += descriptorSize(descriptors[descBase + i]);
+    }
+    return base;
 }
 
 static void computeTaskOffsets(
@@ -184,15 +208,16 @@ static void computeTaskOffsets(
     double& prefix_time_ms
 ) {
     auto t0 = Clock::now();
-    auto prefixes = buildPrefixes(tasks, descriptors, leavesPerSB);
+    auto checkpoints = buildPrefixCheckpoints(tasks, descriptors, leavesPerSB);
 
     for (auto& t : tasks) {
-        const auto& prefix = prefixes[t.physical_sb_id];
         const uint64_t descBase = t.physical_sb_id * leavesPerSB;
         const auto descriptor = descriptors[descBase + t.morton];
         t.codec = descriptorCodec(descriptor);
         t.record_size = descriptorSize(descriptor);
-        t.file_offset = sb_index[t.physical_sb_id].payload_offset + prefix[t.morton];
+        uint32_t prefix = prefixFromCheckpoint(t.morton, checkpoints[t.physical_sb_id],
+                                                descriptors, descBase);
+        t.file_offset = sb_index[t.physical_sb_id].payload_offset + prefix;
     }
 
     prefix_time_ms = msSince(t0);
@@ -482,14 +507,14 @@ static bool executeSelectiveLeaf(
 static bool executeWholeSuperblock(
     int fd,
     const std::vector<RzfpLeafTask>& tasks,
-    const std::unordered_map<uint64_t, std::vector<uint32_t>>& prefixes,
+    const std::unordered_map<uint64_t, std::vector<uint32_t>>& checkpoints,
     const std::vector<RzfpLeafDescriptor>& descriptors,
     const std::vector<RzfpSuperblockIndex>& sb_index,
     const ERWT3DHeader& plan_hdr,
     const RzfpReaderConfig& config,
-    RzfpReadProfile& profile
+    RzfpReadProfile& profile,
+    uint64_t leavesPerSB
 ) {
-    const uint64_t leavesPerSB = prefixes.begin()->second.size() - 1;
     auto groups = groupTasksBySuperblock(tasks);
 
     std::vector<ReadInterval> intervals;
@@ -505,12 +530,13 @@ static bool executeWholeSuperblock(
     auto decode_cb = [&](uint64_t sbid, const uint8_t* payload, RzfpCodec& codec) -> bool {
         const auto it = groups.find(sbid);
         if (it == groups.end()) return true;
-        const auto& prefix = prefixes.at(sbid);
+        const auto& cp = checkpoints.at(sbid);
         const uint64_t descBase = sbid * leavesPerSB;
         bool ok = true;
         for (size_t ti : it->second) {
             const auto& task = tasks[ti];
-            const uint8_t* record = payload + prefix[task.morton];
+            uint32_t off = prefixFromCheckpoint(task.morton, cp, descriptors, descBase);
+            const uint8_t* record = payload + off;
             float leaf[64];
             if (!codec.decodeRecord(task.codec, record, task.record_size, leaf)) {
                 std::cerr << "Error: RZFP decode failed for sb=" << task.physical_sb_id
@@ -542,6 +568,7 @@ static bool executeFullPayloadScan(
 ) {
     const uint64_t leavesPerSB = rzfpTotalLeafsPerSuper(header);
     auto groups = groupTasksBySuperblock(tasks);
+    auto checkpoints = buildPrefixCheckpoints(tasks, descriptors, leavesPerSB);
 
     std::vector<ReadInterval> intervals;
     intervals.reserve(sb_index.size());
@@ -555,15 +582,13 @@ static bool executeFullPayloadScan(
         if (it == groups.end()) return true;
 
         const uint64_t descBase = sbid * leavesPerSB;
-        std::vector<uint32_t> prefix(leavesPerSB + 1, 0);
-        for (uint64_t i = 0; i < leavesPerSB; ++i) {
-            prefix[i + 1] = prefix[i] + descriptorSize(descriptors[descBase + i]);
-        }
+        const auto& cp = checkpoints.at(sbid);
 
         bool ok = true;
         for (size_t ti : it->second) {
             const auto& task = tasks[ti];
-            const uint8_t* record = payload + prefix[task.morton];
+            uint32_t off = prefixFromCheckpoint(task.morton, cp, descriptors, descBase);
+            const uint8_t* record = payload + off;
             float leaf[64];
             if (!codec.decodeRecord(task.codec, record, task.record_size, leaf)) {
                 std::cerr << "Error: RZFP decode failed for sb=" << task.physical_sb_id
@@ -692,11 +717,126 @@ RzfpReader::RzfpReader(const std::string& path) : path_(path), fd_(-1) {
     }
 
     openXPlaneSidecar();
+    initRawXAux_();
 }
 
 RzfpReader::~RzfpReader() {
+    if (rawXAuxFd_ >= 0) close(rawXAuxFd_);
     if (fd_ >= 0) close(fd_);
     if (xplane_fd_ >= 0) close(xplane_fd_);
+}
+
+void RzfpReader::initRawXAux_() {
+    if (!hasRawXAux(header_)) return;
+
+    rawXAuxOffset_ = rzfpRawXAuxOffset(header_);
+    rawXAuxPlaneBytes_ = rzfpRawXAuxPlaneBytes(header_);
+
+    rawXAuxFd_ = open(path_.c_str(), O_RDONLY);
+    if (rawXAuxFd_ < 0) return;
+
+    rawXAuxAvailable_ = true;
+}
+
+bool RzfpReader::tryReadSliceRawXAux_(uint64_t x, float* output, RzfpReadProfile* profile) {
+    if (!rawXAuxAvailable_ || x >= header_.nx) return false;
+
+    uint64_t planeBytes = header_.ny * header_.nz * sizeof(float);
+    uint64_t offset = rawXAuxOffset_ + x * rawXAuxPlaneBytes_;
+
+    auto io_t0 = Clock::now();
+    ssize_t n = pread(rawXAuxFd_, output, planeBytes, offset);
+    if (n != static_cast<ssize_t>(planeBytes)) return false;
+
+    if (profile) {
+        profile->io_time_ms += msSince(io_t0);
+        ++profile->pread_calls;
+        profile->actual_read_bytes += planeBytes;
+        profile->requested_record_bytes += planeBytes;
+    }
+
+    posix_fadvise(rawXAuxFd_, static_cast<off_t>(offset),
+                  static_cast<off_t>(planeBytes), POSIX_FADV_DONTNEED);
+
+    return true;
+}
+
+bool RzfpReader::tryReadBatchRawXAux_(
+    const std::vector<SliceBatchRequest>& requests,
+    const RzfpReaderConfig& config,
+    RzfpReadProfile& profile) {
+
+    if (!rawXAuxAvailable_ || requests.empty()) return false;
+
+    struct RawXAuxTask {
+        uint64_t x;
+        uint64_t file_offset;
+        float* output;
+    };
+
+    std::vector<RawXAuxTask> tasks;
+    tasks.reserve(requests.size());
+    bool anyHit = false;
+
+    for (const auto& req : requests) {
+        if (req.axis != SliceAxis::X) continue;
+        uint64_t x = req.index;
+        if (x >= header_.nx) continue;
+        anyHit = true;
+        tasks.push_back({x, rawXAuxOffset_ + x * rawXAuxPlaneBytes_, req.output});
+        profile.requested_record_bytes += header_.ny * header_.nz * sizeof(float);
+    }
+
+    if (!anyHit) return false;
+    if (tasks.empty()) return true;
+
+    uint64_t planeBytes = header_.ny * header_.nz * sizeof(float);
+
+    std::sort(tasks.begin(), tasks.end(),
+              [](const RawXAuxTask& a, const RawXAuxTask& b) {
+                  return a.file_offset < b.file_offset;
+              });
+
+    const uint64_t MAX_WINDOW = 256ULL * 1024 * 1024;
+
+    size_t i = 0;
+    while (i < tasks.size()) {
+        uint64_t wstart = tasks[i].file_offset;
+        uint64_t wend = wstart + planeBytes;
+        size_t j = i + 1;
+
+        while (j < tasks.size()) {
+            uint64_t next_offset = tasks[j].file_offset;
+            if (next_offset > wend + planeBytes) break;
+            uint64_t proposed_end = next_offset + planeBytes;
+            if (proposed_end - wstart > MAX_WINDOW) break;
+            wend = proposed_end;
+            ++j;
+        }
+
+        uint64_t wsize = wend - wstart;
+
+        std::vector<uint8_t> winBuf(wsize);
+        auto io_t0 = Clock::now();
+        ssize_t n = pread(rawXAuxFd_, winBuf.data(), wsize, wstart);
+        if (n != static_cast<ssize_t>(wsize)) return false;
+
+        profile.io_time_ms += msSince(io_t0);
+        ++profile.pread_calls;
+        profile.actual_read_bytes += wsize;
+
+        for (size_t k = i; k < j; ++k) {
+            uint64_t off_in_window = tasks[k].file_offset - wstart;
+            std::memcpy(tasks[k].output, winBuf.data() + off_in_window, planeBytes);
+        }
+
+        posix_fadvise(rawXAuxFd_, static_cast<off_t>(wstart),
+                      static_cast<off_t>(wsize), POSIX_FADV_DONTNEED);
+
+        i = j;
+    }
+
+    return true;
 }
 
 bool RzfpReader::openXPlaneSidecar() {
@@ -959,24 +1099,43 @@ bool RzfpReader::readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
 
     const auto t_plan = Clock::now();
 
-    std::vector<SliceBatchRequest> x_requests;
-    x_requests.reserve(requests.size());
-    for (const auto& req : requests) {
-        if (has_xplane_ && req.axis == SliceAxis::X) {
-            x_requests.push_back(req);
-        } else {
-            fallback.push_back(req);
+    // Try raw X auxiliary first (fastest path for X requests)
+    if (rawXAuxAvailable_) {
+        SliceBatchRequest xSel;
+        xSel.axis = SliceAxis::X;
+        std::vector<SliceBatchRequest> x_requests;
+        x_requests.reserve(requests.size());
+        for (const auto& req : requests) {
+            if (req.axis == SliceAxis::X) {
+                x_requests.push_back(req);
+            } else {
+                fallback.push_back(req);
+            }
+        }
+        if (!x_requests.empty()) {
+            if (!tryReadBatchRawXAux_(x_requests, config, *profile)) {
+                fallback.insert(fallback.end(), x_requests.begin(), x_requests.end());
+            }
+        }
+    } else {
+        std::vector<SliceBatchRequest> x_requests;
+        x_requests.reserve(requests.size());
+        for (const auto& req : requests) {
+            if (has_xplane_ && req.axis == SliceAxis::X) {
+                x_requests.push_back(req);
+            } else {
+                fallback.push_back(req);
+            }
+        }
+        if (!x_requests.empty()) {
+            if (!readXPlanesBatchFromSidecar(x_requests, config, *profile)) {
+                fallback.insert(fallback.end(), x_requests.begin(), x_requests.end());
+            }
         }
     }
 
     // Plan time: only the request classification above (not sidecar I/O)
     profile->plan_time_ms += msSince(t_plan);
-
-    if (!x_requests.empty()) {
-        if (!readXPlanesBatchFromSidecar(x_requests, config, *profile)) {
-            fallback.insert(fallback.end(), x_requests.begin(), x_requests.end());
-        }
-    }
 
     if (fallback.empty()) {
         return true;
@@ -1011,7 +1170,7 @@ bool RzfpReader::readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
     }
     profile->selected_strategy = strategy;
 
-    auto prefixes = buildPrefixes(tasks, descriptors_, leavesPerSB);
+    auto checkpoints = buildPrefixCheckpoints(tasks, descriptors_, leavesPerSB);
 
     bool ok = false;
     switch (strategy) {
@@ -1019,7 +1178,7 @@ bool RzfpReader::readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
             ok = executeSelectiveLeaf(fd_, tasks, plan_hdr, config, *profile);
             break;
         case RzfpReadStrategy::WholeSuperblock:
-            ok = executeWholeSuperblock(fd_, tasks, prefixes, descriptors_, sb_index_, plan_hdr, config, *profile);
+            ok = executeWholeSuperblock(fd_, tasks, checkpoints, descriptors_, sb_index_, plan_hdr, config, *profile, leavesPerSB);
             break;
         case RzfpReadStrategy::FullPayloadScan:
             ok = executeFullPayloadScan(fd_, tasks, sb_index_, descriptors_, header_, plan_hdr, config, *profile);

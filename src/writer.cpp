@@ -22,6 +22,9 @@
 
 namespace erwt3d {
 
+static constexpr uint64_t RAW_X_AUX_ALIGN = 4096;
+static constexpr uint64_t RAW_X_AUX_COPY_CHUNK = 256ULL * 1024 * 1024; // 256 MB
+
 static void writeLeaves(std::ofstream& file, const ERWT3DHeader& header,
                         const std::vector<float>& superBuffer) {
     uint64_t leafBytes = getLeafBytes(header);
@@ -595,15 +598,206 @@ bool writeERWT3DFromFile(const std::string& outputPath,
                          uint32_t leafX, uint32_t leafY, uint32_t leafZ,
                          int numThreads, size_t memoryLimitMB,
                          uint32_t panelAxis, uint32_t panelStride,
-                         bool compress) {
+                         bool compress, bool rawXAux, bool forceStorageEdge) {
     std::cout << "Using sequential read strategy (HDD optimized)" << std::endl;
     if (compress) std::cout << "Compression: enabled (lz4)" << std::endl;
-    return writeERWT3DFromFileSequential(outputPath, inputPath,
-                                          nx, ny, nz,
-                                          superX, superY, superZ,
-                                          leafX, leafY, leafZ,
-                                          numThreads, memoryLimitMB,
-                                          panelAxis, panelStride, compress);
+    bool ok = writeERWT3DFromFileSequential(outputPath, inputPath,
+                                           nx, ny, nz,
+                                           superX, superY, superZ,
+                                           leafX, leafY, leafZ,
+                                           numThreads, memoryLimitMB,
+                                           panelAxis, panelStride, compress);
+    if (!ok) return false;
+
+    if (rawXAux) {
+        RawXAuxStats auxStats;
+        if (!appendRawXAuxToFile(outputPath, inputPath, nx, ny, nz, &auxStats, forceStorageEdge)) {
+            std::cerr << "Warning: Raw X auxiliary generation failed" << std::endl;
+            return false;
+        }
+        std::cout << "Raw X auxiliary: " << (auxStats.stored ? "stored" : "skipped")
+                  << " (" << (auxStats.raw_x_aux_bytes / (1024*1024)) << " MB)"
+                  << ", total ratio: " << std::fixed << std::setprecision(3)
+                  << auxStats.total_storage_ratio << "x" << std::endl;
+    }
+    return true;
+}
+
+bool appendRawXAuxToFile(const std::string& erwt3dPath,
+                         const std::string& rawPath,
+                         uint64_t nx, uint64_t ny, uint64_t nz,
+                         RawXAuxStats* stats, bool forceEdge) {
+    if (stats) *stats = RawXAuxStats{};
+
+    int erwt3dFd = open(erwt3dPath.c_str(), O_RDWR);
+    if (erwt3dFd < 0) {
+        std::cerr << "Error: Cannot open ERWT3D file for raw X aux append: " << erwt3dPath << std::endl;
+        return false;
+    }
+
+    ERWT3DHeader header;
+    if (pread(erwt3dFd, &header, sizeof(header), 0) != sizeof(header)) {
+        std::cerr << "Error: Cannot read header from " << erwt3dPath << std::endl;
+        close(erwt3dFd);
+        return false;
+    }
+
+    if (hasRawXAux(header)) {
+        std::cerr << "Warning: file already has raw X auxiliary, skipping" << std::endl;
+        close(erwt3dFd);
+        if (stats) {
+            stats->raw_x_aux_offset = getRawXAuxOffset(header);
+            stats->raw_x_aux_bytes = getRawXAuxBytes(header);
+            stats->stored = true;
+        }
+        return true;
+    }
+
+    struct stat st;
+    if (fstat(erwt3dFd, &st) != 0) {
+        std::cerr << "Error: cannot stat " << erwt3dPath << std::endl;
+        close(erwt3dFd);
+        return false;
+    }
+    uint64_t mainFileBytes = static_cast<uint64_t>(st.st_size);
+
+    int rawFd = open(rawPath.c_str(), O_RDONLY);
+    if (rawFd < 0) {
+        std::cerr << "Error: Cannot open raw file: " << rawPath << std::endl;
+        close(erwt3dFd);
+        return false;
+    }
+
+    struct stat rawSt;
+    if (fstat(rawFd, &rawSt) != 0) {
+        std::cerr << "Error: cannot stat raw file" << std::endl;
+        close(erwt3dFd);
+        close(rawFd);
+        return false;
+    }
+    uint64_t rawBytes = static_cast<uint64_t>(rawSt.st_size);
+    uint64_t planeBytes = rawXPlaneBytes(ny, nz);
+    uint64_t rawAuxBytes = nx * planeBytes;
+
+    if (rawAuxBytes > rawBytes) {
+        std::cerr << "Error: raw X auxiliary (" << rawAuxBytes
+                  << " bytes) exceeds raw file size (" << rawBytes << " bytes)" << std::endl;
+        close(erwt3dFd);
+        close(rawFd);
+        return false;
+    }
+
+    // 4KB align the start of raw X auxiliary region
+    uint64_t alignedOffset = (mainFileBytes + RAW_X_AUX_ALIGN - 1) & ~(RAW_X_AUX_ALIGN - 1);
+    uint64_t totalProjected = alignedOffset + rawAuxBytes;
+    double projectedRatio = static_cast<double>(totalProjected) / static_cast<double>(rawBytes);
+
+    if (projectedRatio > RAW_X_AUX_HARD_LIMIT && !forceEdge) {
+        std::cerr << "Error: projected storage ratio " << std::fixed << std::setprecision(3)
+                  << projectedRatio << "x exceeds hard limit " << RAW_X_AUX_HARD_LIMIT
+                  << "x. Raw X auxiliary rejected." << std::endl;
+        close(erwt3dFd);
+        close(rawFd);
+        return false;
+    }
+
+    if (projectedRatio > RAW_X_AUX_MAX_RATIO && !forceEdge) {
+        std::cerr << "Error: projected storage ratio " << std::fixed << std::setprecision(3)
+                  << projectedRatio << "x exceeds max ratio " << RAW_X_AUX_MAX_RATIO
+                  << "x. Use --force-storage-edge to override." << std::endl;
+        close(erwt3dFd);
+        close(rawFd);
+        return false;
+    }
+
+    posix_fadvise(rawFd, 0, rawBytes, POSIX_FADV_SEQUENTIAL);
+    posix_fadvise(rawFd, 0, rawBytes, POSIX_FADV_WILLNEED);
+
+    // Pre-allocate output space
+    if (posix_fallocate(erwt3dFd, static_cast<off_t>(alignedOffset),
+                        static_cast<off_t>(rawAuxBytes)) != 0) {
+        std::cerr << "Warning: posix_fallocate failed, using sequential write" << std::endl;
+    }
+
+    std::vector<uint8_t> copyBuf(RAW_X_AUX_COPY_CHUNK);
+    uint64_t remaining = rawAuxBytes;
+    uint64_t rawOff = 0;
+    uint64_t outOff = alignedOffset;
+
+    std::cout << "Appending raw X auxiliary: " << (rawAuxBytes / (1024*1024)) << " MB"
+              << " (" << nx << " planes x " << (planeBytes / (1024*1024)) << " MB each)"
+              << ", total ratio: " << std::fixed << std::setprecision(3) << projectedRatio << "x" << std::endl;
+
+    auto startTime = std::chrono::high_resolution_clock::now();
+
+    while (remaining > 0) {
+        uint64_t chunk = std::min(remaining, RAW_X_AUX_COPY_CHUNK);
+        ssize_t n = pread(rawFd, copyBuf.data(), chunk, rawOff);
+        if (n != static_cast<ssize_t>(chunk)) {
+            std::cerr << "Error reading raw data at offset " << rawOff << std::endl;
+            close(erwt3dFd);
+            close(rawFd);
+            // Truncate back to main file size to avoid corrupted file
+            ftruncate(erwt3dFd, static_cast<off_t>(mainFileBytes));
+            return false;
+        }
+        ssize_t w = pwrite(erwt3dFd, copyBuf.data(), chunk, outOff);
+        if (w != static_cast<ssize_t>(chunk)) {
+            std::cerr << "Error writing raw X aux data at offset " << outOff << std::endl;
+            close(erwt3dFd);
+            close(rawFd);
+            ftruncate(erwt3dFd, static_cast<off_t>(mainFileBytes));
+            return false;
+        }
+        rawOff += chunk;
+        outOff += chunk;
+        remaining -= chunk;
+
+        if (rawOff % (RAW_X_AUX_COPY_CHUNK * 4) == 0 || remaining == 0) {
+            auto now = std::chrono::high_resolution_clock::now();
+            double elapsed = std::chrono::duration<double>(now - startTime).count();
+            double progress = 100.0 * static_cast<double>(rawOff) / static_cast<double>(rawAuxBytes);
+            double speed = elapsed > 0 ? (rawOff / (1024.0 * 1024.0)) / elapsed : 0.0;
+            std::cout << "\rRaw X aux progress: " << std::fixed << std::setprecision(1)
+                      << progress << "% (" << (rawOff / (1024*1024)) << " MB)"
+                      << " " << std::setprecision(1) << speed << " MB/s" << std::flush;
+        }
+    }
+    std::cout << std::endl;
+
+    close(rawFd);
+
+    // Write back header with raw X aux metadata
+    header.flags |= FLAG_HAS_RAW_X_AUX;
+    header.reserved[7] = alignedOffset;
+    header.reserved[8] = rawAuxBytes;
+    header.reserved[9] = planeBytes;
+    header.reserved[10] = RAW_X_AUX_VERSION;
+
+    if (pwrite(erwt3dFd, &header, sizeof(header), 0) != sizeof(header)) {
+        std::cerr << "Error: failed to write back header with raw X aux metadata" << std::endl;
+        close(erwt3dFd);
+        return false;
+    }
+
+    fsync(erwt3dFd);
+    close(erwt3dFd);
+
+    auto endTime = std::chrono::high_resolution_clock::now();
+    double elapsed = std::chrono::duration<double>(endTime - startTime).count();
+    std::cout << "Raw X auxiliary complete: " << (rawAuxBytes / (1024*1024))
+              << " MB in " << std::fixed << std::setprecision(1) << elapsed << "s"
+              << " (" << std::setprecision(1) << (rawAuxBytes / (1024.0*1024.0) / elapsed) << " MB/s)"
+              << std::endl;
+
+    if (stats) {
+        stats->raw_x_aux_offset = alignedOffset;
+        stats->raw_x_aux_bytes = rawAuxBytes;
+        stats->total_storage_ratio = projectedRatio;
+        stats->stored = true;
+    }
+
+    return true;
 }
 
 } // namespace erwt3d

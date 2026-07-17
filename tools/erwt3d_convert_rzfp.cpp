@@ -1,6 +1,7 @@
 #include "erwt3d/rzfp_auto_plan.hpp"
 #include "erwt3d/rzfp_writer.hpp"
 #include "erwt3d/rzfp_xplane_writer.hpp"
+#include "erwt3d/writer.hpp"
 
 #include <cstring>
 #include <fcntl.h>
@@ -26,10 +27,12 @@ static void printUsage(const char* prog) {
         << "  --precisions LIST       e.g. 12,14,16,18,20,22,24\n"
         << "  --fill-modes LIST       zero,mean\n"
         << "  --physical-order zyx|v05-yzx (default: zyx)\n"
-        << "  --xplane-sidecar        Generate 2D RZFP X-plane sidecar (.xp)\n"
-        << "  --auto                  Auto-plan sidecar and read window\n"
-        << "  --auto-time-limit N     Hard time limit for auto plan (default: 600)\n"
-        << "  --auto-soft-time-limit N Soft time limit for auto plan (default: 300)\n";
+<< "  --xplane-sidecar        Generate 2D RZFP X-plane sidecar (.xp)\n"
+         << "  --auto                  Auto-plan sidecar and read window\n"
+         << "  --auto-time-limit N     Hard time limit for auto plan (default: 600)\n"
+         << "  --auto-soft-time-limit N Soft time limit for auto plan (default: 300)\n"
+         << "  --raw-x-aux MODE        Append raw X auxiliary region (auto|on|off, default: off)\n"
+         << "  --force-storage-edge    Allow storage ratio up to 1.45x\n";
 }
 
 static std::vector<uint8_t> parseExceptionCounts(const std::string& s) {
@@ -88,6 +91,8 @@ int main(int argc, char* argv[]) {
     bool auto_plan = false;
     uint64_t auto_time_limit = 600;
     uint64_t auto_soft_time_limit = 300;
+    bool rawXAux = false;
+    bool forceStorageEdge = false;
 
     for (int i = 1; i < argc; ++i) {
         auto next = [&]() -> const char* {
@@ -124,6 +129,16 @@ int main(int argc, char* argv[]) {
             auto_time_limit = std::stoull(next());
         } else if (std::strcmp(argv[i], "--auto-soft-time-limit") == 0) {
             auto_soft_time_limit = std::stoull(next());
+        } else if (std::strcmp(argv[i], "--raw-x-aux") == 0) {
+            std::string mode = next();
+            if (mode == "on" || mode == "auto") rawXAux = true;
+            else if (mode == "off") rawXAux = false;
+            else {
+                std::cerr << "Error: unknown --raw-x-aux mode: " << mode << " (valid: auto, on, off)" << std::endl;
+                return 1;
+            }
+        } else if (std::strcmp(argv[i], "--force-storage-edge") == 0) {
+            forceStorageEdge = true;
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             printUsage(argv[0]);
             return 0;
@@ -171,6 +186,19 @@ int main(int argc, char* argv[]) {
 
     std::cout << "RZFP conversion complete: " << outputPath << std::endl;
     std::cout << "storage_ratio: " << stats.storage_ratio << std::endl;
+
+    if (rawXAux) {
+        erwt3d::RawXAuxStats auxStats;
+        if (!erwt3d::appendRawXAuxToRzfpFile(outputPath, inputPath, cfg.nx, cfg.ny, cfg.nz,
+                                              &auxStats, forceStorageEdge)) {
+            std::cerr << "Error: Raw X auxiliary generation failed" << std::endl;
+            return 1;
+        }
+        std::cout << "Raw X auxiliary: " << (auxStats.stored ? "stored" : "skipped")
+                  << " (" << (auxStats.raw_x_aux_bytes / (1024*1024)) << " MB)"
+                  << ", total ratio: " << std::fixed << std::setprecision(3)
+                  << auxStats.total_storage_ratio << "x" << std::endl;
+    }
 
     if (xplane_sidecar) {
         erwt3d::RzfpXPlaneCodecConfig xcfg;

@@ -114,6 +114,8 @@ void printUsage(const char* progName) {
     std::cerr << "  --leaf-size N       Leaf block size (default: 4)" << std::endl;
     std::cerr << "  --panel-axis x       Enable X micro-panels (only x supported)" << std::endl;
     std::cerr << "  --panel-stride N     Store every Nth local X plane (must divide super-size)" << std::endl;
+    std::cerr << "  --raw-x-aux MODE     Append raw X auxiliary region (auto|on|off, default: off)" << std::endl;
+    std::cerr << "  --force-storage-edge Allow storage ratio up to 1.45x" << std::endl;
 }
 
 int main(int argc, char* argv[]) {
@@ -128,6 +130,8 @@ int main(int argc, char* argv[]) {
     uint32_t panelAxis = 0;
     uint32_t panelStride = 0;
     bool compress = false;
+    bool rawXAux = false;
+    bool forceStorageEdge = false;
     
     // Parse arguments
     for (int i = 1; i < argc; ++i) {
@@ -165,6 +169,16 @@ int main(int argc, char* argv[]) {
             panelStride = std::stoul(argv[++i]);
         } else if (std::strcmp(argv[i], "--compress") == 0) {
             compress = true;
+        } else if (std::strcmp(argv[i], "--raw-x-aux") == 0 && i + 1 < argc) {
+            std::string mode = argv[++i];
+            if (mode == "on" || mode == "auto") rawXAux = true;
+            else if (mode == "off") rawXAux = false;
+            else {
+                std::cerr << "Error: unknown --raw-x-aux mode: " << mode << " (valid: auto, on, off)" << std::endl;
+                return 1;
+            }
+        } else if (std::strcmp(argv[i], "--force-storage-edge") == 0) {
+            forceStorageEdge = true;
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             printUsage(argv[0]);
             return 0;
@@ -229,7 +243,7 @@ int main(int argc, char* argv[]) {
                                          superSize, superSize, superSize,
                                          leafSize, leafSize, leafSize,
                                          numThreads, memoryLimitMB,
-                                         panelAxis, panelStride, compress)) {
+                                         panelAxis, panelStride, compress, rawXAux, forceStorageEdge)) {
             std::cerr << "Error: Failed to convert raw to ERWT3D" << std::endl;
             return 1;
         }
