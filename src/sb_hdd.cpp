@@ -19,6 +19,7 @@
 #include "erwt3d/thread_pool.hpp"
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <unistd.h>
 #include <fcntl.h>
 
@@ -522,6 +523,61 @@ bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr
     pool.waitAll();
     for (auto& f : futs) if (!f.get()) return false;
     return true;
+}
+
+HDDReadWindowConfig calibrateHDD(int raw_fd, uint64_t raw_size) {
+    HDDReadWindowConfig cfg;
+    if (raw_fd < 0 || raw_size < 1024 * 1024) return cfg;
+
+    using Clock = std::chrono::steady_clock;
+
+    // Sequential bandwidth: read a 256MB segment from the middle
+    std::vector<char> buf(256ULL * 1024 * 1024);
+    uint64_t seqOff = raw_size / 2;
+    if (seqOff + buf.size() > raw_size) seqOff = raw_size > buf.size() ? raw_size - buf.size() : 0;
+    posix_fadvise(raw_fd, static_cast<off_t>(seqOff), static_cast<off_t>(buf.size()), POSIX_FADV_DONTNEED);
+
+    auto t0 = Clock::now();
+    size_t done = 0;
+    while (done < buf.size()) {
+        ssize_t n = pread(raw_fd, buf.data() + done, buf.size() - done,
+                          static_cast<off_t>(seqOff + done));
+        if (n <= 0) break;
+        done += static_cast<size_t>(n);
+    }
+    auto t1 = Clock::now();
+    double seqSec = std::chrono::duration<double>(t1 - t0).count();
+    if (seqSec > 0.0 && done > 0) {
+        cfg.sequential_mb_s = (static_cast<double>(done) / (1024.0 * 1024.0)) / seqSec;
+    }
+
+    // Random 1MB read latency: 128 samples, uniformly distributed
+    const uint64_t numSamples = 128;
+    const uint64_t sampleSize = 1024 * 1024;
+    std::vector<char> randBuf(sampleSize);
+    std::vector<double> latencies;
+    latencies.reserve(numSamples);
+
+    for (uint64_t i = 0; i < numSamples; ++i) {
+        uint64_t off = (static_cast<uint64_t>(rand()) * raw_size) / RAND_MAX;
+        if (off + sampleSize > raw_size) off = raw_size - sampleSize;
+        posix_fadvise(raw_fd, static_cast<off_t>(off), static_cast<off_t>(sampleSize), POSIX_FADV_DONTNEED);
+
+        auto rt0 = Clock::now();
+        ssize_t n = pread(raw_fd, randBuf.data(), sampleSize, static_cast<off_t>(off));
+        auto rt1 = Clock::now();
+
+        if (n == static_cast<ssize_t>(sampleSize)) {
+            latencies.push_back(std::chrono::duration<double, std::milli>(rt1 - rt0).count());
+        }
+    }
+
+    if (!latencies.empty()) {
+        std::sort(latencies.begin(), latencies.end());
+        cfg.seek_ms = latencies[latencies.size() / 2]; // median
+    }
+
+    return cfg;
 }
 
 } // namespace erwt3d

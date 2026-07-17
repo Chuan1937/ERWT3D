@@ -70,7 +70,11 @@ SBBatchPlan buildSBBatchPlan(const std::vector<const SBTaskPlan*>& plans);
 // Execute batch with HDD-optimized windowed reads
 bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr,
                         float* const* outputs, int numThreads, size_t memoryLimitMB,
-                        const HDDReadWindowConfig& wcfg, bool pinThreads = false,
-                        SBBatchProfile* profile = nullptr);
+                         const HDDReadWindowConfig& wcfg, bool pinThreads = false,
+                         SBBatchProfile* profile = nullptr);
+
+// Calibrate HDD characteristics from a raw data file.
+// Returns configured HDDReadWindowConfig with measured seek_ms and sequential_mb_s.
+HDDReadWindowConfig calibrateHDD(int raw_fd, uint64_t raw_size);
 
 } // namespace erwt3d
