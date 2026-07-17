@@ -120,6 +120,7 @@ private:
     // Raw X auxiliary (full-coverage uncompressed X-plane region)
     int rawXAuxFd_ = -1;
     bool rawXAuxAvailable_ = false;
+    bool rawXAuxDirect_ = false;
     uint64_t rawXAuxOffset_ = 0;
     uint64_t rawXAuxPlaneBytes_ = 0;
     std::vector<uint8_t> rawXAuxAlignedBuf_;

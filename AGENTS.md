@@ -106,7 +106,38 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 
 ## 当前性能
 
-G 盘 HDD，`--hdd` 模式，4GB 内存限制（布局修正后 Z-fastest）：
+### P2: Axis-Aware Hybrid Storage (branch: `perf/p2-axis-aware-hybrid`)
+
+G 盘 HDD，`--hdd` 模式，4GB 内存限制：
+
+| 数据集 | 格式 | T_composite | 存储比 | 备注 |
+|--------|------|------------|--------|------|
+| **20GB** | **LZ4 + Raw X Aux** | **15.47s** | **1.432x** | X random 直接读 raw X aux（19.99s），Y/Z 约 32-35s |
+| 20GB | LZ4 + sidecar s2 | 25.37s | 0.479x | 旧最优方案 |
+| **50GB** | **RZFP + Raw X Aux** | **50.92s** | **1.421x** | whole 策略 + warm cache；cold cache 约 125s |
+| 50GB | RZFP | 99.06s | 0.421x | 旧结果（更快磁盘） |
+
+### P2 关键突破
+
+| 指标 | 旧值 | P2 值 | 提升 |
+|------|------|-------|------|
+| X random (20GB) | ~63s | 19.99s | **3.2x** |
+| X random (50GB) | 317.6s | 22.18s | **14.3x** |
+| 20GB T_composite | 25.37s | 15.47s | **39%** |
+
+### P2 架构
+
+- **FLAG_HAS_RAW_X_AUX** (bit 7)：完整 raw X-plane 数据追加到主文件末尾
+- **Raw X 读取**：独立 fd + POSIX_FADV_DONTNEED，零解压、零转置、零散射
+- **LZ4 合并窗口并行读取**：256MB 窗口合并 + 8 线程并行解压 + readahead 预读
+- **RZFP prefix checkpoint**：每 16 leaves 保存偏移，最多 15 项扫描（原 4096 项）
+- **存储预算**：1.445x 软限制，1.45x 硬限制，--force-storage-edge 允许更高
+- **命令**：`--raw-x-aux auto|on|off` + `--force-storage-edge`
+
+> **G 盘限速说明**：G 盘顺序读仅 ~66 MB/s（WSL 9p 协议），远低于原 D 盘环境（~300 MB/s）。
+> 在 D 盘（300 MB/s）预期：20GB ~10-14s，50GB ~35-48s。
+
+### 旧结果（布局修正后 Z-fastest）
 
 | 数据集 | 格式 | T_composite | 存储比 | 备注 |
 |--------|------|------------|--------|------|
