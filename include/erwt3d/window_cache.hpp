@@ -44,6 +44,11 @@ public:
         std::vector<uint8_t>&& data
     );
 
+    bool putShared(
+        const WindowCacheKey& key,
+        std::shared_ptr<const std::vector<uint8_t>> data
+    );
+
     void setCapacityBytes(uint64_t capacity_bytes);
     void clear();
 
