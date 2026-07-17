@@ -9,19 +9,26 @@
 
 namespace erwt3d {
 
+enum class MainFormat { Unknown, LZ4, RZFP };
+enum class SidecarFormat { None, LZ4_XPlane, RZFP_XPlane };
+
 struct FormatCandidate {
-    std::string name;
-    std::string main_format;       // "lz4" or "rzfp"
-    std::string sidecar_format;    // "none", "lz4_xplane", "rzfp_xplane"
+    MainFormat main_format = MainFormat::Unknown;
+    SidecarFormat sidecar_format = SidecarFormat::None;
     uint32_t sidecar_stride = 0;
+    std::string name;
 
-    double predicted_main_ratio = 1.0;
-    double predicted_sidecar_ratio = 0.0;
-    double predicted_total_ratio = 1.0;
+    double main_ratio_mean = 1.0, main_ratio_lower = 1.0, main_ratio_upper = 1.0;
+    double sidecar_ratio_mean = 0.0, sidecar_ratio_upper = 0.0;
+    double total_ratio_mean = 1.0, total_ratio_upper = 1.0;
 
+    double predicted_x_random = 0.0, predicted_y_random = 0.0, predicted_z_random = 0.0;
+    double predicted_x_cont = 0.0, predicted_y_cont = 0.0, predicted_z_cont = 0.0;
     double predicted_t_composite = 0.0;
+
     double confidence = 0.0;
     bool feasible = true;
+    bool uncertain = false;
     std::string reason;
 };
 
@@ -31,6 +38,7 @@ struct PlannerResult {
     HDDReadWindowConfig disk_cfg;
     Lz4ProbeResult lz4_probe;
     bool rzfp_available = false;
+    double elapsed_seconds = 0.0;
 };
 
 PlannerResult planFormat(

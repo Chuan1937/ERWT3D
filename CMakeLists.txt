@@ -179,6 +179,9 @@ if(ERWT3D_ENABLE_RZFP)
     add_executable(erwt3d_lz4_probe tools/erwt3d_lz4_probe.cpp)
     target_link_libraries(erwt3d_lz4_probe PRIVATE erwt3d)
 
+    add_executable(erwt3d_auto_plan tools/erwt3d_auto_plan.cpp)
+    target_link_libraries(erwt3d_auto_plan PRIVATE erwt3d)
+
     enable_testing()
     add_subdirectory(tests)
 endif()

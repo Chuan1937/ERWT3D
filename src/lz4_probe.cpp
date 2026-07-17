@@ -201,6 +201,7 @@ Lz4ProbeResult probeLz4Compression(const std::string& raw_path,
             totalCompSampled += pr.comp_size;
             if (pr.compressed) ++compressedCount;
             ++superblockCount;
+            result.ratios.push_back(static_cast<double>(pr.comp_size) / static_cast<double>(pr.raw_size));
         }
     }
 
@@ -213,21 +214,30 @@ Lz4ProbeResult probeLz4Compression(const std::string& raw_path,
         return result;
     }
 
+    // Compute real statistics from per-superblock ratios
     result.main_ratio_estimate = static_cast<double>(totalCompSampled) / static_cast<double>(totalRawSampled);
     result.compressed_block_fraction = static_cast<double>(compressedCount) / static_cast<double>(superblockCount);
     result.sampled_superblocks = superblockCount;
     result.sampled_raw_bytes = totalRawSampled;
+    result.slabs_sampled = slabStarts.size();
 
-    double stderr = 0.0;
-    if (superblockCount > 1) {
-        double meanRatio = result.main_ratio_estimate;
+    if (!result.ratios.empty()) {
+        std::sort(result.ratios.begin(), result.ratios.end());
+        size_t n = result.ratios.size();
+        result.main_ratio_median = result.ratios[n / 2];
+        result.main_ratio_p10 = result.ratios[std::max(size_t(0), n * 10 / 100)];
+        result.main_ratio_p90 = result.ratios[std::min(n - 1, n * 90 / 100)];
+
         double sumSq = 0.0;
-        for (auto& f : std::vector<std::future<ProbeResult>>{}) {} // can't easily recompute
-        // Approximate: use 0.01 as typical stddev for small samples
-        stderr = 0.02 / std::sqrt(static_cast<double>(superblockCount));
+        for (auto r : result.ratios) {
+            double d = r - result.main_ratio_estimate;
+            sumSq += d * d;
+        }
+        result.main_ratio_stddev = std::sqrt(sumSq / static_cast<double>(n));
+        double ci = 1.96 * result.main_ratio_stddev / std::sqrt(static_cast<double>(n));
+        result.main_ratio_lower = std::max(0.0, result.main_ratio_estimate - ci);
+        result.main_ratio_upper = result.main_ratio_estimate + ci;
     }
-    result.main_ratio_lower = std::max(0.0, result.main_ratio_estimate - stderr);
-    result.main_ratio_upper = result.main_ratio_estimate + stderr;
 
     auto t1 = Clock::now();
     result.elapsed_seconds = std::chrono::duration<double>(t1 - t0).count();
