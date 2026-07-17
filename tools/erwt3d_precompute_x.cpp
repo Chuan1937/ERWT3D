@@ -43,9 +43,7 @@ struct SidecarBuildState {
     std::vector<XPChunkIndex> index;
     uint64_t chunkIdx;
     uint64_t totalStorageBytes;
-    std::vector<char> compBuf;
     std::vector<float> rawRow;
-    std::vector<std::vector<float>> planeChunks;
 };
 
 
