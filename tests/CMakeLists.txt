@@ -1,0 +1,37 @@
+add_executable(test_relative_error test_relative_error.cpp)
+target_link_libraries(test_relative_error PRIVATE erwt3d)
+
+add_executable(test_rzfp_codec test_rzfp_codec.cpp)
+target_link_libraries(test_rzfp_codec PRIVATE erwt3d)
+
+add_executable(test_raw_xplane_sampler test_raw_xplane_sampler.cpp)
+target_link_libraries(test_raw_xplane_sampler PRIVATE erwt3d)
+
+add_executable(test_sidecar_batch_reader test_sidecar_batch_reader.cpp)
+target_link_libraries(test_sidecar_batch_reader PRIVATE erwt3d)
+
+add_executable(test_rzfp_auto_plan test_rzfp_auto_plan.cpp)
+target_link_libraries(test_rzfp_auto_plan PRIVATE erwt3d)
+
+add_executable(test_rzfp_reader_strategies test_rzfp_reader_strategies.cpp)
+target_link_libraries(test_rzfp_reader_strategies PRIVATE erwt3d)
+
+add_executable(test_official_raw_layout test_official_raw_layout.cpp)
+target_link_libraries(test_official_raw_layout PRIVATE erwt3d)
+
+add_executable(test_rzfp_writer_zfastest test_rzfp_writer_zfastest.cpp)
+target_link_libraries(test_rzfp_writer_zfastest PRIVATE erwt3d)
+
+add_executable(test_gen_fast_data test_gen_fast_data.cpp)
+target_link_libraries(test_gen_fast_data PRIVATE erwt3d)
+
+add_test(NAME relative_error_strict COMMAND test_relative_error strict)
+add_test(NAME relative_error_legacy COMMAND test_relative_error legacy)
+add_test(NAME rzfp_codec COMMAND test_rzfp_codec)
+add_test(NAME raw_xplane_sampler COMMAND test_raw_xplane_sampler)
+add_test(NAME sidecar_batch_reader COMMAND test_sidecar_batch_reader)
+add_test(NAME rzfp_auto_plan COMMAND test_rzfp_auto_plan)
+add_test(NAME rzfp_reader_strategies COMMAND test_rzfp_reader_strategies)
+add_test(NAME official_raw_layout COMMAND test_official_raw_layout $<TARGET_FILE:erwt3d_precompute_x>)
+add_test(NAME rzfp_writer_zfastest COMMAND test_rzfp_writer_zfastest)
+add_test(NAME gen_fast_data COMMAND test_gen_fast_data $<TARGET_FILE:gen_fast_data>)

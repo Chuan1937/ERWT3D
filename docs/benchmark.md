@@ -8,6 +8,37 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 存储得分：≤1.5x → 20分，每超10% → 扣1分
 ```
 
+## 最新结果（v0.6.0，Z-fastest 布局修正）
+
+测试环境：G 盘 HDD，~200-220 MB/s 顺序带宽，4GB 内存限制。
+
+### 20GB（801×2405×2501）
+
+| 格式 | T_composite | 存储比 | 备注 |
+|------|------------|--------|------|
+| LZ4 main | 35.89s | 0.432x | 全部 19760 superblock 压缩 |
+| LZ4 + sidecar s1 | 27.19s | 0.526x | X random 12.7s，Y/Z 受页缓存影响 |
+| **LZ4 + sidecar s2** | **25.37s** | **0.479x** | **最优**，3轮均值 CV≈2% |
+| LZ4 + sidecar s3 | 24.60s | 0.464x | 命中率 33%，X 偏慢 |
+| RZFP main | 51.26s | 0.607x | X random 需 fullscan |
+
+### 50GB（2001×2201×3000）
+
+| 格式 | T_composite | 存储比 | 备注 |
+|------|------------|--------|------|
+| LZ4 main | 138.41s | 1.044x | LZ4 无法压缩，52GB 未压缩 |
+| **RZFP main** | **99.06s** | **0.421x** | **最优**，fast-full 13.2B pts 0 fail |
+
+### RZFP 验证
+
+| 数据集 | 方法 | 检查点数 | 失败 |
+|--------|------|---------|------|
+| 20GB | fast-full | 4.8B | 0 |
+| 50GB | fast-full | 13.2B | 0 |
+
+> Z-fastest 布局修正（`offset = (x*ny+y)*nz+z`）后重新生成所有文件。
+> 以下为旧版本历史数据，使用 X-fastest 布局，在 D 盘测试（~345 MB/s）。
+
 ## 测试环境
 
 - 存储：D 盘机械硬盘，WSL 9p 挂载
@@ -114,10 +145,12 @@ Z random 已接近顺序带宽极限（341/345 = 98.9%）。X random 仍受限�
 | v0.2 | batch size 动态化 + 全局排序 | 34.42s | 87.67s |
 | v0.3 | __restrict__ + X-plane stride=3 | 33.21s | ~85s |
 | v0.4 | 计时含写出 + ftruncate 预分配 + 诊断 | 37.99s | 105.91s |
-| **v0.5.0** | **LeafOp 紧凑化 + X-plane 压缩 sidecar** | **17.49s** | **104.74s** |
-| **v0.5.1** | **流式 writer + batch reader + 缓冲复用** | **17.49s** | **104.74s** |
+| v0.5.0 | LeafOp 紧凑化 + X-plane 压缩 sidecar | 17.49s | 104.74s |
+| v0.5.1 | 流式 writer + batch reader + 缓冲复用 | 17.49s | 104.74s |
+| **v0.6.0** | **Z-fastest 布局修正 + RZFP + plane-major sidecar** | **25.37s** | **99.06s** |
 
 v0.3 结果不含文件写出，不可与 v0.4+ 直接对比。
+v0.6.0 在 G 盘测试（~200-220 MB/s），v0.5.x 及以前在 D 盘测试（~345 MB/s），绝对时间不可直接对比。
 
 ### v0.5.0 改进
 

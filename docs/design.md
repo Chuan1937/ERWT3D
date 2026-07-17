@@ -132,32 +132,19 @@ readahead(fd, future_offset, future_size);          // 预取后续窗口
 | Y  | 13 × 40 = 520 | 13MB 行内连续 | ~520 |
 | X  | 38 × 40 = 1520 | 13MB / 494MB | ~1520 |
 
-## 存储比例
+## 存储比例（with LZ4 compression）
 
-| 数据集 | 原始大小 | 文件大小 | 比例 |
-|--------|----------|----------|------|
-| 20GB (801×2405×2501) | 18.0 GB | 19.3 GB | 1.075x |
-| 50GB (2001×2201×3000) | 49.2 GB | 51.3 GB | 1.044x |
+| 数据集 | 原始大小 | LZ4 压缩 | RZFP 压缩 |
+|--------|----------|----------|-----------|
+| 20GB (801×2405×2501) | 18.0 GB | 7.8 GB (0.432x) | 10.9 GB (0.607x) |
+| 50GB (2001×2201×3000) | 49.2 GB | 52 GB (1.044x, uncompressed) | 21 GB (0.421x) |
 
-## 可选扩展：X-Panel
+## 可选扩展：X-plane sidecar (.xp)
 
-convert 时加 `--panel-axis x --panel-stride N`，在每个 superblock 内预存每 N 个本地 X 值的 YZ 平面：
+使用 `erwt3d_precompute_x` 工具生成独立 sidecar 文件：
+- 外置文件 `data.erwt3d.xp`，不污染主文件布局
+- Plane-major 生成：每个 X-plane 只读一次，8 线程并行压缩 z-chunk
+- 默认 chunk_z_rows=256，LZ4 每 chunk 独立压缩
+- 自动 stride 决策或手动指定
 
-```
-每个 superblock 增加: (64/N) × 64 × 64 × 4B
-stride=4: 增加 16 × 16KB = 256KB/superblock → 存储增加 ~27%
-```
-
-仅覆盖 stride 整除的 X 值，其余仍走 superblock 路径。
-
-## 可选扩展：X-Plane
-
-使用 `erwt3d_precompute_x` 工具，在文件末尾追加连续 X 切片平面数据：
-
-```
-每个 X 平面: ny × nz × 4B（20GB 数据集约 23MB/平面）
-stride=1: 存储翻倍（2x）
-stride=4: 存储增加 ~27%（1.27x）
-```
-
-读取 X 切片时，若该 X 值有对应平面，只需 1 次 pread 即可读取完整切片。
+20GB LZ4 + sidecar stride=2: 7.8 GB + 868 MB = 0.479x

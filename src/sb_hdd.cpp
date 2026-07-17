@@ -19,6 +19,8 @@
 #include "erwt3d/thread_pool.hpp"
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
+#include <random>
 #include <unistd.h>
 #include <fcntl.h>
 
@@ -522,6 +524,64 @@ bool executeSBBatchHDD(int fd, const SBBatchPlan& batch, const ERWT3DHeader& hdr
     pool.waitAll();
     for (auto& f : futs) if (!f.get()) return false;
     return true;
+}
+
+HDDReadWindowConfig calibrateHDD(int raw_fd, uint64_t raw_size) {
+    HDDReadWindowConfig cfg;
+    if (raw_fd < 0 || raw_size < 1024 * 1024) return cfg;
+
+    using Clock = std::chrono::steady_clock;
+
+    // Sequential bandwidth: 3 regions (head, middle, tail), 256MB each
+    const uint64_t seqChunk = 256ULL * 1024 * 1024;
+    std::vector<char> seqBuf(seqChunk);
+    std::vector<double> seqMBS;
+    for (int region = 0; region < 3; ++region) {
+        uint64_t off = (region == 0) ? 0 : (region == 1) ? raw_size / 2 : raw_size - seqChunk;
+        if (off + seqChunk > raw_size) off = raw_size > seqChunk ? raw_size - seqChunk : 0;
+        posix_fadvise(raw_fd, static_cast<off_t>(off), static_cast<off_t>(seqChunk), POSIX_FADV_DONTNEED);
+
+        auto t0 = Clock::now();
+        size_t done = 0;
+        while (done < seqChunk) {
+            ssize_t n = pread(raw_fd, seqBuf.data() + done, seqChunk - done, static_cast<off_t>(off + done));
+            if (n <= 0) break;
+            done += static_cast<size_t>(n);
+        }
+        auto t1 = Clock::now();
+        double sec = std::chrono::duration<double>(t1 - t0).count();
+        if (sec > 0.0 && done > 0) seqMBS.push_back((static_cast<double>(done) / (1024.0 * 1024.0)) / sec);
+    }
+    if (!seqMBS.empty()) {
+        cfg.sequential_mb_s = seqMBS[seqMBS.size() / 2]; // median
+    }
+
+    // Random 1MB reads: 128 samples, 64-bit uniform random, 4KB-aligned
+    const uint64_t sampleSize = 1024 * 1024;
+    std::vector<char> randBuf(sampleSize);
+    std::mt19937_64 rng(42);
+    std::uniform_int_distribution<uint64_t> dist(0, std::max<uint64_t>(raw_size, sampleSize) - sampleSize);
+    std::vector<double> latencies;
+
+    for (uint64_t i = 0; i < 128; ++i) {
+        uint64_t off = dist(rng) & ~4095ULL;
+        if (off + sampleSize > raw_size) off = raw_size - sampleSize;
+        posix_fadvise(raw_fd, static_cast<off_t>(off), static_cast<off_t>(sampleSize), POSIX_FADV_DONTNEED);
+
+        auto rt0 = Clock::now();
+        ssize_t n = pread(raw_fd, randBuf.data(), sampleSize, static_cast<off_t>(off));
+        auto rt1 = Clock::now();
+        if (n == static_cast<ssize_t>(sampleSize)) {
+            latencies.push_back(std::chrono::duration<double, std::milli>(rt1 - rt0).count());
+        }
+    }
+
+    if (!latencies.empty()) {
+        std::sort(latencies.begin(), latencies.end());
+        cfg.seek_ms = latencies[latencies.size() / 2];
+    }
+
+    return cfg;
 }
 
 } // namespace erwt3d

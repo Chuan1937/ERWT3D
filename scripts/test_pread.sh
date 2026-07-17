@@ -10,7 +10,7 @@ cat > /tmp/test_pread.c << 'EOF'
 #include <unistd.h>
 
 int main() {
-    int fd = open("/mnt/d/CUP/cup_3d_small.erwt3d", O_RDONLY);
+    int fd = open("/mnt/g/CUP/cup_3d_small.erwt3d", O_RDONLY);
     if (fd < 0) { perror("open"); return 1; }
     
     char buf[1048576];

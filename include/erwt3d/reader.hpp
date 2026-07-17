@@ -110,6 +110,7 @@ private:
     bool xpAvailable_ = false;
     std::vector<uint8_t> xpCompBuf_;
     std::vector<uint8_t> xpRawBuf_;
+    std::vector<float> xPlaneRawBuf_;
     void loadSidecar_();
     bool tryReadSliceXPSidecar_(uint64_t x, float* output, IOProfile* profile);
     bool tryReadBatchXPSidecar_(const std::vector<SliceBatchRequest>& requests,

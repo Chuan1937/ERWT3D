@@ -1,5 +1,6 @@
 #include "erwt3d/reader.hpp"
 #include "erwt3d/morton.hpp"
+#include "erwt3d/raw_layout.hpp"
 #include "erwt3d/thread_pool.hpp"
 #include "erwt3d/sb_task.hpp"
 #include <algorithm>
@@ -474,8 +475,8 @@ bool ERWT3DReader::readFull(float* output, int numThreads, size_t memoryLimitMB)
                                     for (uint64_t x = 0; x < lx; ++x) {
                                         uint64_t globalX = baseX + x;
                                         if (globalX >= nx) break;
-                                        uint64_t srcIdx = (z * ly + y) * lx + x;
-                                        uint64_t dstIdx = (globalZ * ny + globalY) * nx + globalX;
+                                         uint64_t srcIdx = (z * ly + y) * lx + x;
+                                        uint64_t dstIdx = (globalX * ny + globalY) * nz + globalZ;
                                         output[dstIdx] = leafData[srcIdx];
                                     }
                                 }
@@ -541,8 +542,12 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
                                     uint64_t gz = bz + z; if (gz >= nz) break;
                                     for (uint64_t y = 0; y < ly; ++y) {
                                         uint64_t gy = by + y; if (gy >= ny) break;
-                                        uint64_t off = ((gz * ny + gy) * nx + bx) * sizeof(float);
-                                        pwrite(outFd, ld + (z * ly + y) * lx, vx * sizeof(float), off);
+                                for (uint64_t x = 0; x < vx; ++x) {
+                                    uint64_t gx = bx + x;
+                                    uint64_t off = ((gx * ny + gy) * nz + gz) * sizeof(float);
+                                    float v = ld[(z * ly + y) * lx + x];
+                                    pwrite(outFd, &v, sizeof(float), off);
+                                }
                                     }
                                 }
                             }
@@ -586,9 +591,12 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
                                 uint64_t globalZ = baseZ + z; if (globalZ >= nz) break;
                                 for (uint64_t y = 0; y < ly; ++y) {
                                     uint64_t globalY = baseY + y; if (globalY >= ny) break;
-                                    float* dst = outMap + (globalZ * ny + globalY) * nx + baseX;
-                                    const float* src = leafData + (z * ly + y) * lx;
-                                    std::memcpy(dst, src, validLx * sizeof(float));
+                                    for (uint64_t x = 0; x < validLx; ++x) {
+                                        uint64_t globalX = baseX + x;
+                                        uint64_t srcIdx = (z * ly + y) * lx + x;
+                                        uint64_t dstIdx = (globalX * ny + globalY) * nz + globalZ;
+                                        outMap[dstIdx] = leafData[srcIdx];
+                                    }
                                 }
                             }
                         }
@@ -670,7 +678,10 @@ bool ERWT3DReader::tryReadSliceXPSidecar_(uint64_t x, float* output, IOProfile* 
         }
 
         uint64_t zStart = static_cast<uint64_t>(c) * xpHeader_.chunk_z_rows;
-        std::memcpy(output + zStart * ny, xpRawBuf_.data(), ci.raw_size);
+        uint64_t rowsInChunk = std::min(ci.raw_size / (ny * sizeof(float)),
+                                         xpHeader_.nz - zStart);
+        const float* chunk = reinterpret_cast<const float*>(xpRawBuf_.data());
+        transposeZYToYZ(chunk, output + zStart, rowsInChunk, ny, xpHeader_.nz);
     }
 
     if (profile) {
@@ -784,7 +795,10 @@ bool ERWT3DReader::tryReadBatchXPSidecar_(const std::vector<SliceBatchRequest>& 
 
             float* output = requests[t.request_idx].output;
             uint64_t zStart = static_cast<uint64_t>(t.chunk_idx_in_plane) * xpHeader_.chunk_z_rows;
-            std::memcpy(output + zStart * ny, xpRawBuf_.data(), t.raw_size);
+            uint64_t rowsInChunk = std::min(t.raw_size / (ny * sizeof(float)),
+                                             xpHeader_.nz - zStart);
+            const float* chunk = reinterpret_cast<const float*>(xpRawBuf_.data());
+            transposeZYToYZ(chunk, output + zStart, rowsInChunk, ny, xpHeader_.nz);
             handled[t.request_idx] = true;
         }
 
@@ -841,9 +855,11 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
                     uint64_t off = getXPlaneOffset(header_) + planeIdx * planeBytes;
                     adviseWillNeed(fd_, off, planeBytes);
                     auto readStart = std::chrono::high_resolution_clock::now();
-                    ssize_t n = pread(fd_, output, planeBytes, off);
+                    xPlaneRawBuf_.resize(header_.ny * header_.nz);
+                    ssize_t n = pread(fd_, xPlaneRawBuf_.data(), planeBytes, off);
                 auto readEnd = std::chrono::high_resolution_clock::now();
                 if (n == static_cast<ssize_t>(planeBytes)) {
+                    transposeZYToYZ(xPlaneRawBuf_.data(), output, header_.nz, header_.ny, header_.nz);
                     auto planEnd = std::chrono::high_resolution_clock::now();
                     double planMs = std::chrono::duration<double, std::milli>(planEnd - planStart).count();
                     double readMs = std::chrono::duration<double, std::milli>(readEnd - readStart).count();
@@ -982,8 +998,12 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
                 if (planeIdx < planeCount) {
                     uint64_t planeBytes = header_.ny * header_.nz * sizeof(float);
                     uint64_t off = getXPlaneOffset(header_) + planeIdx * planeBytes;
-                    ssize_t n = pread(fd_, r.output, planeBytes, off);
-                    if (n == static_cast<ssize_t>(planeBytes)) continue;
+                    xPlaneRawBuf_.resize(header_.ny * header_.nz);
+                    ssize_t n = pread(fd_, xPlaneRawBuf_.data(), planeBytes, off);
+                    if (n == static_cast<ssize_t>(planeBytes)) {
+                        transposeZYToYZ(xPlaneRawBuf_.data(), r.output, header_.nz, header_.ny, header_.nz);
+                        continue;
+                    }
                 }
             }
         }

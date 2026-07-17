@@ -1,0 +1,223 @@
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <fcntl.h>
+#include <iostream>
+#include <unistd.h>
+#include <vector>
+#include <atomic>
+#include <thread>
+#include <sstream>
+
+namespace {
+
+int g_failures = 0;
+
+void check(bool condition, const char* msg) {
+    if (!condition) {
+        std::cerr << "FAIL: " << msg << std::endl;
+        ++g_failures;
+    }
+}
+
+bool pwriteAll(int fd, const void* buf, size_t bytes, uint64_t offset) {
+    const auto* src = static_cast<const uint8_t*>(buf);
+    size_t done = 0;
+    while (done < bytes) {
+        ssize_t n = pwrite(fd, src + done, bytes - done, static_cast<off_t>(offset + done));
+        if (n == 0) return false;
+        if (n < 0) { if (errno == EINTR) continue; return false; }
+        done += static_cast<size_t>(n);
+    }
+    return true;
+}
+
+void generateChunk(uint64_t nx, uint64_t ny, uint64_t nz,
+                   uint64_t x_start, uint64_t x_end,
+                   const char* path, std::atomic<bool>& failed) {
+    int fd = open(path, O_WRONLY);
+    if (fd < 0) { failed.store(true); return; }
+
+    std::vector<float> row(nz);
+
+    for (uint64_t x = x_start; x < x_end; ++x) {
+        const uint64_t x_offset = x * ny * nz * sizeof(float);
+        for (uint64_t y = 0; y < ny; ++y) {
+            const uint64_t y_offset = y * nz * sizeof(float);
+            for (uint64_t z = 0; z < nz; ++z) {
+                row[z] = static_cast<float>(x * 1000000ULL + y * 1000ULL + z);
+            }
+            if (!pwriteAll(fd, row.data(), nz * sizeof(float), x_offset + y_offset)) {
+                failed.store(true);
+                close(fd);
+                return;
+            }
+        }
+    }
+    close(fd);
+}
+
+// Test real gen_fast_data binary
+void testRealBinary(const std::string& binPath) {
+    std::cout << "=== real gen_fast_data binary ===" << std::endl;
+
+    // Test valid generation
+    {
+        int rc = std::system((binPath + " 16 8 4 /tmp/gfd_real_valid.raw 4 42 2>&1 > /dev/null").c_str());
+        check(rc == 0, "real binary: valid generation succeeds");
+        int fd_sz_ = open("/tmp/gfd_real_valid.raw", O_RDONLY); check(fd_sz_ >= 0, "real binary: open for size"); uint64_t fileSize_ = static_cast<uint64_t>(lseek(fd_sz_, 0, SEEK_END)); close(fd_sz_);
+        check(fileSize_ == 16*8*4*(uint64_t)sizeof(float), "real binary: file size correct");
+
+        // Verify content: all values in [0,1], at least 10 distinct values, some non-zero
+        int fd_c = open("/tmp/gfd_real_valid.raw", O_RDONLY);
+        check(fd_c >= 0, "real binary: reopen for content");
+        std::vector<float> vals(16*8*4);
+        size_t rdone = 0, rtot = vals.size() * sizeof(float);
+        while (rdone < rtot) {
+            ssize_t n = read(fd_c, reinterpret_cast<uint8_t*>(vals.data()) + rdone, rtot - rdone);
+            if (n <= 0) break;
+            rdone += static_cast<size_t>(n);
+        }
+        close(fd_c);
+        check(rdone == rtot, "real binary: read content");
+
+        bool allInRange = true, hasNonZero = false;
+        for (auto v : vals) {
+            if (v < 0.0f || v > 1.0f) { allInRange = false; break; }
+            if (v != 0.0f) hasNonZero = true;
+        }
+        check(allInRange, "real binary: all values in [0,1]");
+        check(hasNonZero, "real binary: has non-zero values");
+
+        // Determinism: same seed → same output
+        std::system((binPath + " 16 8 4 /tmp/gfd_real_det1.raw 4 42 2>&1 > /dev/null").c_str());
+        std::system((binPath + " 16 8 4 /tmp/gfd_real_det2.raw 4 42 2>&1 > /dev/null").c_str());
+        int f1 = open("/tmp/gfd_real_det1.raw", O_RDONLY);
+        int f2 = open("/tmp/gfd_real_det2.raw", O_RDONLY);
+        check(f1 >= 0 && f2 >= 0, "real binary: deterministic copies");
+        std::vector<uint8_t> d1(fileSize_), d2(fileSize_);
+        read(f1, d1.data(), fileSize_); read(f2, d2.data(), fileSize_);
+        close(f1); close(f2);
+        check(d1 == d2, "real binary: same seed produces identical output");
+        unlink("/tmp/gfd_real_det1.raw"); unlink("/tmp/gfd_real_det2.raw");
+
+        // Different seed → different output
+        std::system((binPath + " 16 8 4 /tmp/gfd_real_diff.raw 4 43 2>&1 > /dev/null").c_str());
+        int f3 = open("/tmp/gfd_real_diff.raw", O_RDONLY);
+        std::vector<uint8_t> d3(fileSize_);
+        read(f3, d3.data(), fileSize_);
+        close(f3);
+        check(d1 != d3, "real binary: different seed produces different output");
+        unlink("/tmp/gfd_real_diff.raw");
+
+        unlink("/tmp/gfd_real_valid.raw");
+    }
+
+    // Test invalid output dir
+    {
+        int rc = std::system((binPath + " 4 4 4 /nonexistent_dir/test.raw 1 42 2>&1 > /dev/null").c_str());
+        check(rc != 0, "real binary: invalid dir fails");
+    }
+
+    // Test threads=0
+    {
+        int rc = std::system((binPath + " 4 4 4 /tmp/gfd_zero.raw 0 42 2>&1 > /dev/null").c_str());
+        check(rc != 0, "real binary: threads=0 fails");
+    }
+
+    // Test 0 dimension
+    {
+        int rc = std::system((binPath + " 0 4 4 /tmp/gfd_zero.raw 1 42 2>&1 > /dev/null").c_str());
+        check(rc != 0, "real binary: nx=0 fails");
+    }
+}
+
+// Test internal helper (in-process, like the real tool)
+void testParallelWrite(const std::string& path,
+                       uint64_t nx, uint64_t ny, uint64_t nz,
+                       int nthreads) {
+    unlink(path.c_str());
+
+    int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    check(fd >= 0, "create file");
+    uint64_t file_bytes = nx * ny * nz * sizeof(float);
+    check(ftruncate(fd, static_cast<off_t>(file_bytes)) == 0, "ftruncate");
+    close(fd);
+
+    std::atomic<bool> failed{false};
+    std::vector<std::thread> threads;
+    uint64_t chunk = (nx + nthreads - 1) / nthreads;
+    for (int i = 0; i < nthreads; ++i) {
+        uint64_t xs = i * chunk;
+        uint64_t xe = std::min(xs + chunk, nx);
+        if (xs >= nx) break;
+        threads.emplace_back(generateChunk, nx, ny, nz, xs, xe, path.c_str(), std::ref(failed));
+    }
+    for (auto& t : threads) t.join();
+
+    check(!failed.load(), "no worker failures");
+    check(!threads.empty(), "threads created");
+
+    int fd2 = open(path.c_str(), O_RDONLY);
+    check(fd2 >= 0, "open for size");
+    uint64_t fileSize = static_cast<uint64_t>(lseek(fd2, 0, SEEK_END));
+    close(fd2);
+    check(fileSize == file_bytes, "file size correct");
+
+    std::vector<float> data(nx * ny * nz);
+    fd = open(path.c_str(), O_RDONLY);
+    check(fd >= 0, "open for read");
+    size_t total = data.size() * sizeof(float);
+    size_t done = 0;
+    while (done < total) {
+        ssize_t n = read(fd, reinterpret_cast<uint8_t*>(data.data()) + done, total - done);
+        if (n <= 0) break;
+        done += static_cast<size_t>(n);
+    }
+    close(fd);
+    check(done == total, "read full file");
+
+    for (uint64_t x = 0; x < nx; ++x) {
+        uint64_t x_base = x * 1000000ULL;
+        for (uint64_t y = 0; y < ny; ++y) {
+            uint64_t y_base = y * 1000ULL;
+            for (uint64_t z = 0; z < nz; ++z) {
+                uint64_t idx = (x * ny + y) * nz + z;
+                float expected = static_cast<float>(x_base + y_base + z);
+                if (data[idx] != expected) {
+                    std::cerr << "FAIL: value mismatch at (" << x << "," << y << "," << z
+                              << ") expected=" << expected << " got=" << data[idx] << std::endl;
+                    ++g_failures;
+                    unlink(path.c_str());
+                    return;
+                }
+            }
+        }
+    }
+    unlink(path.c_str());
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    std::string binPath;
+    if (argc >= 2) binPath = argv[1];
+
+    if (!binPath.empty()) {
+        testRealBinary(binPath);
+    }
+
+    std::vector<int> threadCounts = {1, 4};
+    for (int nthreads : threadCounts) {
+        std::cout << "=== gen_fast_data " << nthreads << " threads ===" << std::endl;
+        testParallelWrite("/tmp/gen_fast_data_test.raw", 16, 8, 4, nthreads);
+        testParallelWrite("/tmp/gen_fast_data_test.raw", 5, 7, 11, nthreads);
+    }
+
+    if (g_failures == 0) {
+        std::cout << "PASS" << std::endl;
+        return 0;
+    }
+    std::cerr << g_failures << " failures" << std::endl;
+    return 1;
+}
