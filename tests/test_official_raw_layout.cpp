@@ -416,10 +416,6 @@ int main(int argc, char** argv) {
                                   /*xpanel=*/false, 0);
 #endif
 
-        // NOTE: Sidecar/legacy X-plane read tests disabled due to pre-existing
-        // reader bug where X-slices read via sidecar/legacy path return incorrect data.
-        // The precompute_x tool correctly writes data; the reader's sidecar
-        // reconstruction path needs debugging. Enable when fixed.
         if (sz.nx * sz.ny * sz.nz >= 3000) {
 #ifdef ERWT3D_HAVE_LZ4
             testXPlaneSidecar(basePrefix + "_" + sz.name, sz.nx, sz.ny, sz.nz, 1);
@@ -428,6 +424,28 @@ int main(int argc, char** argv) {
 #endif
         }
     }
+
+    // Test: parallel compressed embedded panels must be rejected
+#ifdef ERWT3D_HAVE_LZ4
+    {
+        std::cout << "\n=== Parallel compressed panel rejection ===" << std::endl;
+        const std::string rp = g_testTmpDir + "/test_panel_reject.raw";
+        const std::string ep = g_testTmpDir + "/test_panel_reject.erwt3d";
+
+        check(writeRawFile(rp, 17, 19, 21), "panel-reject: write raw");
+        bool ok = erwt3d::writeERWT3DFromFile(
+            ep, rp, 17, 19, 21,
+            /*superX=*/4, /*superY=*/4, /*superZ=*/4,
+            /*leafX=*/2, /*leafY=*/2, /*leafZ=*/2,
+            /*numThreads=*/4, /*memoryLimitMB=*/256,
+            /*panelAxis=*/0, /*panelStride=*/2,
+            /*compress=*/true);
+        check(!ok, "panel-reject: parallel compressed panels rejected");
+        check(access(ep.c_str(), F_OK) != 0,
+              "panel-reject: no output file left behind");
+        unlink(rp.c_str());
+    }
+#endif
 
     if (g_failures == 0) {
         std::cout << "\nPASS" << std::endl;

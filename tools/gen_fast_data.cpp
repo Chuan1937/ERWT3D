@@ -76,14 +76,29 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    uint64_t total = nx * ny * nz;
-    if (total == 0 || nx == 0 || ny == 0 || nz == 0) {
+    if (nx == 0 || ny == 0 || nz == 0) {
         fprintf(stderr, "dimensions must be > 0\n");
         return 1;
     }
 
-    if (total > std::numeric_limits<uint64_t>::max() / sizeof(float)) {
-        fprintf(stderr, "dimensions too large\n");
+    // Safe multiplication to avoid overflow
+    auto checkedMul = [](uint64_t a, uint64_t b, uint64_t& out) -> bool {
+        if (a != 0 && b > std::numeric_limits<uint64_t>::max() / a) return false;
+        out = a * b;
+        return true;
+    };
+
+    uint64_t total = 0;
+    uint64_t file_bytes = 0;
+    if (!checkedMul(nx, ny, total) ||
+        !checkedMul(total, nz, total) ||
+        !checkedMul(total, sizeof(float), file_bytes)) {
+        fprintf(stderr, "dimensions overflow\n");
+        return 1;
+    }
+
+    if (total == 0) {
+        fprintf(stderr, "dimensions must be > 0\n");
         return 1;
     }
 
@@ -93,7 +108,6 @@ int main(int argc, char** argv) {
 
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) { perror("open"); return 1; }
-    uint64_t file_bytes = total * sizeof(float);
     if (ftruncate(fd, static_cast<off_t>(file_bytes)) != 0) {
         perror("ftruncate");
         close(fd);
@@ -105,7 +119,8 @@ int main(int argc, char** argv) {
 
     std::atomic<bool> failed{false};
     std::vector<std::thread> threads;
-    uint64_t chunk = (nx + nthreads - 1) / nthreads;
+    uint64_t chunk = nx / static_cast<uint64_t>(nthreads) +
+                     (nx % static_cast<uint64_t>(nthreads) != 0);
     for (int i = 0; i < nthreads; ++i) {
         uint64_t xs = i * chunk;
         uint64_t xe = std::min(xs + chunk, nx);

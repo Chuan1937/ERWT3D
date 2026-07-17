@@ -67,6 +67,49 @@ void testRealBinary(const std::string& binPath) {
         check(rc == 0, "real binary: valid generation succeeds");
         int fd_sz_ = open("/tmp/gfd_real_valid.raw", O_RDONLY); check(fd_sz_ >= 0, "real binary: open for size"); uint64_t fileSize_ = static_cast<uint64_t>(lseek(fd_sz_, 0, SEEK_END)); close(fd_sz_);
         check(fileSize_ == 16*8*4*(uint64_t)sizeof(float), "real binary: file size correct");
+
+        // Verify content: all values in [0,1], at least 10 distinct values, some non-zero
+        int fd_c = open("/tmp/gfd_real_valid.raw", O_RDONLY);
+        check(fd_c >= 0, "real binary: reopen for content");
+        std::vector<float> vals(16*8*4);
+        size_t rdone = 0, rtot = vals.size() * sizeof(float);
+        while (rdone < rtot) {
+            ssize_t n = read(fd_c, reinterpret_cast<uint8_t*>(vals.data()) + rdone, rtot - rdone);
+            if (n <= 0) break;
+            rdone += static_cast<size_t>(n);
+        }
+        close(fd_c);
+        check(rdone == rtot, "real binary: read content");
+
+        bool allInRange = true, hasNonZero = false;
+        for (auto v : vals) {
+            if (v < 0.0f || v > 1.0f) { allInRange = false; break; }
+            if (v != 0.0f) hasNonZero = true;
+        }
+        check(allInRange, "real binary: all values in [0,1]");
+        check(hasNonZero, "real binary: has non-zero values");
+
+        // Determinism: same seed → same output
+        std::system((binPath + " 16 8 4 /tmp/gfd_real_det1.raw 4 42 2>&1 > /dev/null").c_str());
+        std::system((binPath + " 16 8 4 /tmp/gfd_real_det2.raw 4 42 2>&1 > /dev/null").c_str());
+        int f1 = open("/tmp/gfd_real_det1.raw", O_RDONLY);
+        int f2 = open("/tmp/gfd_real_det2.raw", O_RDONLY);
+        check(f1 >= 0 && f2 >= 0, "real binary: deterministic copies");
+        std::vector<uint8_t> d1(fileSize_), d2(fileSize_);
+        read(f1, d1.data(), fileSize_); read(f2, d2.data(), fileSize_);
+        close(f1); close(f2);
+        check(d1 == d2, "real binary: same seed produces identical output");
+        unlink("/tmp/gfd_real_det1.raw"); unlink("/tmp/gfd_real_det2.raw");
+
+        // Different seed → different output
+        std::system((binPath + " 16 8 4 /tmp/gfd_real_diff.raw 4 43 2>&1 > /dev/null").c_str());
+        int f3 = open("/tmp/gfd_real_diff.raw", O_RDONLY);
+        std::vector<uint8_t> d3(fileSize_);
+        read(f3, d3.data(), fileSize_);
+        close(f3);
+        check(d1 != d3, "real binary: different seed produces different output");
+        unlink("/tmp/gfd_real_diff.raw");
+
         unlink("/tmp/gfd_real_valid.raw");
     }
 

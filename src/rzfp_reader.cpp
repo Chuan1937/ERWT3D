@@ -602,6 +602,15 @@ RzfpReader::RzfpReader(const std::string& path) : path_(path), fd_(-1) {
     fd_ = open(path.c_str(), O_RDONLY);
     if (fd_ < 0) return;
 
+    // Get file size before any allocation
+    struct stat st;
+    if (fstat(fd_, &st) != 0) {
+        close(fd_);
+        fd_ = -1;
+        return;
+    }
+    const uint64_t fileSize = static_cast<uint64_t>(st.st_size);
+
     if (pread(fd_, &header_, sizeof(header_), 0) != sizeof(header_)) {
         close(fd_);
         fd_ = -1;
@@ -616,9 +625,24 @@ RzfpReader::RzfpReader(const std::string& path) : path_(path), fd_(-1) {
 
     const uint64_t totalSB = rzfpTotalSuperblocks(header_);
     const uint64_t totalLeaves = rzfpTotalLeaves(header_);
+    const uint64_t indexBytes = totalSB * sizeof(RzfpSuperblockIndex);
+    const uint64_t descriptorBytes = totalLeaves * sizeof(RzfpLeafDescriptor);
+
+    // Validate region ordering and bounds before allocation
+    if (sizeof(RzfpFileHeader) > fileSize ||
+        indexBytes > fileSize - sizeof(RzfpFileHeader)) {
+        close(fd_); fd_ = -1; return;
+    }
+    if (header_.descriptor_offset < sizeof(RzfpFileHeader) + indexBytes ||
+        descriptorBytes > fileSize - header_.descriptor_offset) {
+        close(fd_); fd_ = -1; return;
+    }
+    if (header_.payload_offset < header_.descriptor_offset + descriptorBytes ||
+        header_.payload_offset > fileSize) {
+        close(fd_); fd_ = -1; return;
+    }
 
     sb_index_.resize(totalSB);
-    const uint64_t indexBytes = totalSB * sizeof(RzfpSuperblockIndex);
     if (!readFullyAt(fd_, sb_index_.data(), indexBytes, sizeof(RzfpFileHeader))) {
         close(fd_);
         fd_ = -1;
@@ -626,35 +650,37 @@ RzfpReader::RzfpReader(const std::string& path) : path_(path), fd_(-1) {
     }
 
     descriptors_.resize(totalLeaves);
-    const uint64_t descriptorBytes = totalLeaves * sizeof(RzfpLeafDescriptor);
     if (!readFullyAt(fd_, descriptors_.data(), descriptorBytes, header_.descriptor_offset)) {
         close(fd_);
         fd_ = -1;
         return;
     }
 
-    // Validate structure integrity
-    struct stat st;
-    if (fstat(fd_, &st) == 0) {
-        const uint64_t fileSize = static_cast<uint64_t>(st.st_size);
-        if (header_.descriptor_offset + descriptorBytes > fileSize) {
+    // Validate superblock index entries
+    for (uint64_t i = 0; i < totalSB; ++i) {
+        const auto& idx = sb_index_[i];
+        if (idx.payload_offset < header_.payload_offset ||
+            idx.payload_offset > fileSize ||
+            idx.payload_bytes > fileSize - idx.payload_offset) {
             close(fd_); fd_ = -1; return;
-        }
-        if (header_.payload_offset > fileSize) {
-            close(fd_); fd_ = -1; return;
-        }
-        for (uint64_t i = 0; i < totalSB; ++i) {
-            const auto& idx = sb_index_[i];
-            if (idx.payload_offset > fileSize ||
-                idx.payload_offset + idx.payload_bytes > fileSize) {
-                close(fd_); fd_ = -1; return;
-            }
         }
     }
 
-    // Validate descriptor codecs
+    // Validate descriptors: codec range and per-SB size sum
     for (uint64_t i = 0; i < totalLeaves; ++i) {
         if (static_cast<uint8_t>(descriptorCodec(descriptors_[i])) > 5) {
+            close(fd_); fd_ = -1; return;
+        }
+    }
+    for (uint64_t sb = 0; sb < totalSB; ++sb) {
+        uint64_t leafStart = sb * rzfpTotalLeafsPerSuper(header_);
+        uint64_t sumSizes = 0;
+        for (uint64_t j = 0; j < rzfpTotalLeafsPerSuper(header_); ++j) {
+            uint64_t li = leafStart + j;
+            if (li >= totalLeaves) break;
+            sumSizes += descriptorSize(descriptors_[li]);
+        }
+        if (sumSizes != sb_index_[sb].payload_bytes) {
             close(fd_); fd_ = -1; return;
         }
     }
@@ -698,9 +724,24 @@ bool RzfpReader::openXPlaneSidecar() {
         return false;
     }
 
+    // Validate entry bounds
+    struct stat xpStat;
+    uint64_t xpFileSize = 0;
+    if (fstat(fd, &xpStat) == 0) {
+        xpFileSize = static_cast<uint64_t>(xpStat.st_size);
+    }
     for (uint64_t i = 0; i < hdr.nx; ++i) {
-        xplane_offsets_[i] = entries[i].offset;
-        xplane_sizes_[i] = entries[i].size;
+        const auto& e = entries[i];
+        if (xpFileSize > 0) {
+            if (e.size == 0 || e.size > 512 * 1024 * 1024) {  // max 512 MB per plane
+                close(fd); return false;
+            }
+            if (e.offset > xpFileSize || e.size > xpFileSize - e.offset) {
+                close(fd); return false;
+            }
+        }
+        xplane_offsets_[i] = e.offset;
+        xplane_sizes_[i] = e.size;
     }
 
     xplane_fd_ = fd;

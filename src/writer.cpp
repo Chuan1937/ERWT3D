@@ -218,6 +218,8 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
                   << "or use erwt3d_precompute_x --mode sidecar for external X-plane acceleration."
                   << std::endl;
         close(inFd);
+        outFile.close();
+        unlink(outputPath.c_str());
         return false;
     }
     uint64_t planeBytes = superY * superZ * sizeof(float);
