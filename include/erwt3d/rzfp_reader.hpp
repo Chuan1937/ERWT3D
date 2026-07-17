@@ -5,6 +5,7 @@
 #include "slice.hpp"
 #include "sb_hdd.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -29,7 +30,31 @@ struct RzfpReadProfile {
     double io_time_ms = 0.0;
     double decode_time_ms = 0.0;
     double scatter_time_ms = 0.0;
+    double sidecar_io_ms = 0.0;
+    double sidecar_decode_ms = 0.0;
     RzfpReadStrategy selected_strategy = RzfpReadStrategy::Auto;
+
+    std::atomic<uint64_t> scatter_ns{0};
+
+    RzfpReadProfile() = default;
+    RzfpReadProfile(const RzfpReadProfile& o)
+        : unique_superblocks(o.unique_superblocks), unique_leaves(o.unique_leaves),
+          requested_record_bytes(o.requested_record_bytes), actual_read_bytes(o.actual_read_bytes),
+          pread_calls(o.pread_calls), plan_time_ms(o.plan_time_ms), prefix_time_ms(o.prefix_time_ms),
+          io_time_ms(o.io_time_ms), decode_time_ms(o.decode_time_ms),
+          scatter_time_ms(o.scatter_time_ms), sidecar_io_ms(o.sidecar_io_ms),
+          sidecar_decode_ms(o.sidecar_decode_ms), selected_strategy(o.selected_strategy),
+          scatter_ns(o.scatter_ns.load()) {}
+    RzfpReadProfile& operator=(const RzfpReadProfile& o) {
+        unique_superblocks = o.unique_superblocks; unique_leaves = o.unique_leaves;
+        requested_record_bytes = o.requested_record_bytes; actual_read_bytes = o.actual_read_bytes;
+        pread_calls = o.pread_calls; plan_time_ms = o.plan_time_ms; prefix_time_ms = o.prefix_time_ms;
+        io_time_ms = o.io_time_ms; decode_time_ms = o.decode_time_ms;
+        scatter_time_ms = o.scatter_time_ms; sidecar_io_ms = o.sidecar_io_ms;
+        sidecar_decode_ms = o.sidecar_decode_ms; selected_strategy = o.selected_strategy;
+        scatter_ns.store(o.scatter_ns.load());
+        return *this;
+    }
 
     double readAmplification() const {
         return requested_record_bytes > 0

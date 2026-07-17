@@ -29,6 +29,11 @@ static double msSince(Clock::time_point t) {
     return std::chrono::duration<double, std::milli>(Clock::now() - t).count();
 }
 
+static uint64_t nsSince(Clock::time_point t) {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - t).count());
+}
+
 static bool readFullyAt(int fd, void* buffer, size_t bytes, uint64_t offset) {
     auto* dst = static_cast<uint8_t*>(buffer);
     size_t done = 0;
@@ -437,6 +442,7 @@ static bool executeWindowedRead(
 
         i = j;
     }
+    profile.scatter_time_ms = static_cast<double>(profile.scatter_ns.load()) * 1e-6;
     return true;
 }
 
@@ -466,7 +472,7 @@ static bool executeSelectiveLeaf(
         for (const auto& sc : task.scatters) {
             scatterDecodedLeaf(plan_hdr, sc.op, leaf, sc.output);
         }
-        profile.scatter_time_ms += msSince(sc_t0);
+        profile.scatter_ns.fetch_add(nsSince(sc_t0), std::memory_order_relaxed);
         return true;
     };
 
@@ -516,7 +522,7 @@ static bool executeWholeSuperblock(
             for (const auto& sc : task.scatters) {
                 scatterDecodedLeaf(plan_hdr, sc.op, leaf, sc.output);
             }
-            profile.scatter_time_ms += msSince(sc_t0);
+            profile.scatter_ns.fetch_add(nsSince(sc_t0), std::memory_order_relaxed);
         }
         return ok;
     };
@@ -569,7 +575,7 @@ static bool executeFullPayloadScan(
             for (const auto& sc : task.scatters) {
                 scatterDecodedLeaf(plan_hdr, sc.op, leaf, sc.output);
             }
-            profile.scatter_time_ms += msSince(sc_t0);
+            profile.scatter_ns.fetch_add(nsSince(sc_t0), std::memory_order_relaxed);
         }
         return ok;
     };
@@ -951,7 +957,7 @@ bool RzfpReader::readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
     std::vector<SliceBatchRequest> fallback;
     fallback.reserve(requests.size());
 
-    const auto t_start = Clock::now();
+    const auto t_plan = Clock::now();
 
     std::vector<SliceBatchRequest> x_requests;
     x_requests.reserve(requests.size());
@@ -963,6 +969,9 @@ bool RzfpReader::readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
         }
     }
 
+    // Plan time: only the request classification above (not sidecar I/O)
+    profile->plan_time_ms += msSince(t_plan);
+
     if (!x_requests.empty()) {
         if (!readXPlanesBatchFromSidecar(x_requests, config, *profile)) {
             fallback.insert(fallback.end(), x_requests.begin(), x_requests.end());
@@ -970,7 +979,6 @@ bool RzfpReader::readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
     }
 
     if (fallback.empty()) {
-        profile->plan_time_ms += msSince(t_start);
         return true;
     }
 
