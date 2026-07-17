@@ -442,6 +442,10 @@ std::string RzfpAutoPlanResult::toJson() const {
     json << "    \"enabled\": " << (enable_x_sidecar ? "true" : "false") << ",\n";
     json << "    \"predicted_x_speedup\": " << estimateXSpeedup(main_ratio_estimate, x_sidecar_ratio_estimate) << "\n";
     json << "  },\n";
+    json << "  \"raw_x_aux\": {\n";
+    json << "    \"enabled\": " << (enable_raw_x_aux ? "true" : "false") << ",\n";
+    json << "    \"total_ratio_upper\": " << raw_x_aux_total_ratio << "\n";
+    json << "  },\n";
     json << "  \"elapsed_seconds\": " << elapsed_seconds << ",\n";
     json << "  \"sampling_rounds\": " << sampling_rounds << ",\n";
     json << "  \"early_stopped\": " << (early_stopped ? "true" : "false") << ",\n";
@@ -641,6 +645,24 @@ bool runRzfpAutoPlan(
         out_result.enable_x_sidecar = true;
     } else {
         out_result.enable_x_sidecar = false;
+    }
+
+    // Raw X aux: deterministic storage cost = main ratio + 1.0 + alignment overhead
+    const double alignmentFraction =
+        static_cast<double>(RAW_X_AUX_ALIGN - 1) / static_cast<double>(raw_size);
+    const double rawXAuxTotalUpper =
+        out_result.main_ratio_upper + 1.0 + alignmentFraction;
+    out_result.raw_x_aux_total_ratio = rawXAuxTotalUpper;
+
+    // Prefer raw X aux over sidecar when it fits in budget
+    if (rawXAuxTotalUpper <= config.storage_safety_limit) {
+        out_result.enable_raw_x_aux = true;
+        out_result.enable_x_sidecar = false; // raw X aux supersedes sidecar
+    } else if (rawXAuxTotalUpper <= config.storage_limit) {
+        out_result.enable_raw_x_aux = true;
+        // Still fits under hard limit but needs --force-storage-edge
+    } else {
+        out_result.enable_raw_x_aux = false;
     }
 
     out_result.elapsed_seconds = timer.elapsedSeconds();

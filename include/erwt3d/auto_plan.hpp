@@ -16,6 +16,7 @@ struct FormatCandidate {
     MainFormat main_format = MainFormat::Unknown;
     SidecarFormat sidecar_format = SidecarFormat::None;
     uint32_t sidecar_stride = 0;
+    bool has_raw_x_aux = false;
     std::string name;
 
     double main_ratio_mean = 1.0, main_ratio_lower = 1.0, main_ratio_upper = 1.0;

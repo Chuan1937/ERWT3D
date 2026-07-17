@@ -33,8 +33,10 @@ static void addCandidate(
     double sidecarAddMB, double sidecarPreads,
     double storageBudget
 ) {
-    c.total_ratio_mean = c.main_ratio_mean + c.sidecar_ratio_mean;
-    c.total_ratio_upper = c.main_ratio_upper + c.sidecar_ratio_upper;
+    if (!c.has_raw_x_aux) {
+        c.total_ratio_mean = c.main_ratio_mean + c.sidecar_ratio_mean;
+        c.total_ratio_upper = c.main_ratio_upper + c.sidecar_ratio_upper;
+    }
     c.feasible = (c.total_ratio_upper <= storageBudget);
 
     if (!c.feasible) {
@@ -136,10 +138,27 @@ PlannerResult planFormat(
             double hitRate = (stride == 0) ? 0.0 : 1.0 / stride;
             double sidecarMB = rawMB * lz4SidecarRatio / stride;
             addCandidate(result.alternatives, c, result.disk_cfg, rawSize,
-                         hitRate, rawMB * c.main_ratio_mean, 100,
-                         sidecarMB, static_cast<double>(nx) / stride, storage_budget);
+                          hitRate, rawMB * c.main_ratio_mean, 100,
+                          sidecarMB, static_cast<double>(nx) / stride, storage_budget);
+            }
+
+            // LZ4 + Raw X Aux candidate
+            {
+                FormatCandidate c;
+                c.name = "LZ4 + Raw X Aux";
+                c.main_format = MainFormat::LZ4;
+                c.has_raw_x_aux = true;
+                c.main_ratio_mean = result.lz4_probe.main_ratio_estimate;
+                c.main_ratio_upper = result.lz4_probe.main_ratio_upper;
+                c.total_ratio_mean = c.main_ratio_mean + 1.0;
+                c.total_ratio_upper = c.main_ratio_upper + 1.0;
+                c.confidence = 0.6;
+                c.reason = "LZ4 + full raw X-plane region (zero-decompress X random)";
+                addCandidate(result.alternatives, c, result.disk_cfg, rawSize,
+                             1.0, rawMB * c.main_ratio_mean, 100,
+                             rawMB, static_cast<double>(nx), storage_budget);
+            }
         }
-    }
 
     // --- RZFP candidates ---
 #ifdef ERWT3D_HAVE_RZFP
@@ -186,9 +205,25 @@ PlannerResult planFormat(
                 c.sidecar_ratio_upper = rzfpResult.x_sidecar_ratio_upper;
                 c.confidence = 0.5;
                 c.reason = "RZFP + 2D X-plane sidecar";
+addCandidate(result.alternatives, c, result.disk_cfg, rawSize,
+                              1.0, rawMB * rzfpRatio, 100,
+                              rawMB * rzfpSidecarRatio, static_cast<double>(nx), storage_budget);
+            }
+
+            if (rzfpResult.enable_raw_x_aux) {
+                FormatCandidate c;
+                c.name = "RZFP + Raw X Aux";
+                c.main_format = MainFormat::RZFP;
+                c.has_raw_x_aux = true;
+                c.main_ratio_mean = rzfpRatio;
+                c.main_ratio_upper = rzfpUpper;
+                c.total_ratio_mean = rzfpRatio + 1.0;
+                c.total_ratio_upper = rzfpResult.raw_x_aux_total_ratio;
+                c.confidence = 0.6;
+                c.reason = "RZFP + full raw X-plane region (zero-decompress X random)";
                 addCandidate(result.alternatives, c, result.disk_cfg, rawSize,
                              1.0, rawMB * rzfpRatio, 100,
-                             rawMB * rzfpSidecarRatio, static_cast<double>(nx), storage_budget);
+                             rawMB, static_cast<double>(nx), storage_budget);
             }
         }
         close(raw_fd);

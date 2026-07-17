@@ -192,17 +192,17 @@ static void computeTaskOffsets(
     const std::vector<RzfpLeafDescriptor>& descriptors,
     const std::vector<RzfpSuperblockIndex>& sb_index,
     uint64_t leavesPerSB,
+    const std::unordered_map<uint64_t, std::vector<uint32_t>>& checkpoints,
     double& prefix_time_ms
 ) {
     auto t0 = Clock::now();
-    auto checkpoints = buildPrefixCheckpoints(tasks, descriptors, leavesPerSB);
 
     for (auto& t : tasks) {
         const uint64_t descBase = t.physical_sb_id * leavesPerSB;
         const auto descriptor = descriptors[descBase + t.morton];
         t.codec = descriptorCodec(descriptor);
         t.record_size = descriptorSize(descriptor);
-        uint32_t prefix = prefixFromCheckpoint(t.morton, checkpoints[t.physical_sb_id],
+        uint32_t prefix = prefixFromCheckpoint(t.morton, checkpoints.at(t.physical_sb_id),
                                                 descriptors, descBase);
         t.file_offset = sb_index[t.physical_sb_id].payload_offset + prefix;
     }
@@ -1165,7 +1165,8 @@ bool RzfpReader::readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
     }
 
     double prefix_time_ms = 0.0;
-    computeTaskOffsets(tasks, descriptors_, sb_index_, leavesPerSB, prefix_time_ms);
+    auto checkpoints = buildPrefixCheckpoints(tasks, descriptors_, leavesPerSB);
+    computeTaskOffsets(tasks, descriptors_, sb_index_, leavesPerSB, checkpoints, prefix_time_ms);
     std::sort(tasks.begin(), tasks.end(), [](const RzfpLeafTask& a, const RzfpLeafTask& b) {
         return a.file_offset < b.file_offset;
     });
@@ -1182,8 +1183,6 @@ bool RzfpReader::readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
         strategy = chooseStrategy(tasks, sb_index_, config, leavesPerSB);
     }
     profile->selected_strategy = strategy;
-
-    auto checkpoints = buildPrefixCheckpoints(tasks, descriptors_, leavesPerSB);
 
     bool ok = false;
     switch (strategy) {

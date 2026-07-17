@@ -136,6 +136,10 @@ G 盘 HDD，`--hdd` 模式，4GB 内存限制：
 | X random (50GB) | 317.6s | 22.18s | **14.3x** |
 | 20GB T_composite | 25.37s | 15.47s | **39%** |
 
+> **50GB 冷/热说明**：T_composite 50.92s 为 warm cache（whole 策略），
+> cold cache（auto/fullscan）约 125s。G 盘仅 ~66 MB/s（WSL 9p）。
+> 在 D 盘（300 MB/s）上预期：20GB ~10-14s，50GB ~35-48s。
+
 ### P2 架构
 
 - **FLAG_HAS_RAW_X_AUX** (bit 7)：完整 raw X-plane 数据追加到主文件末尾
@@ -146,6 +150,8 @@ G 盘 HDD，`--hdd` 模式，4GB 内存限制：
 - **命令**：`--raw-x-aux auto|on|off` + `--force-storage-edge`
 
 > **G 盘限速说明**：G 盘顺序读仅 ~66 MB/s（WSL 9p 协议），远低于原 D 盘环境（~300 MB/s）。
+> 50GB RZFP fullscan 策略在 G 盘上 Y random 读 21GB 耗时 ~300s（I/O 限速）。
+> 通过 `--read-strategy whole` 可利用 page cache 加速至 50.92s。
 > 在 D 盘（300 MB/s）预期：20GB ~10-14s，50GB ~35-48s。
 
 ### 旧结果（布局修正后 Z-fastest）
@@ -166,17 +172,15 @@ G 盘 HDD，`--hdd` 模式，4GB 内存限制：
 
 ### 推荐方案
 
-| 数据集 | 推荐格式 | T_composite | 存储比 | 说明 |
-|--------|----------|------------|--------|------|
-| 20GB | LZ4 + sidecar s2 | 25.37s | 0.479x | 主文件 7.8GB + sidecar 868MB，3轮均值 CV≈2% |
-| 50GB | RZFP | 99.06s | 0.421x | 50GB→21GB，无需 sidecar，单次代表性成绩 |
+| 目标 | 20GB | 50GB |
+|------|------|------|
+| **最高性能** | LZ4 + Raw X Aux | RZFP + Raw X Aux |
+| **最低存储** | LZ4 main / sidecar s2 | RZFP main |
 
-> **测试环境说明**：本批次在 G 盘 HDD 上测试，磁盘顺序读取带宽约 200–220 MB/s，
-> 低于之前 D 盘环境（~300 MB/s），因此绝对时间偏高。
-> 20GB LZ4+s2 T_composite 在 D 盘预期约 12–15s，50GB RZFP 预期约 60–70s。
-> 相对排名（20GB LZ4 优于 RZFP，50GB RZFP 优于 LZ4）不受磁盘差异影响。
-> LZ4 stride=2 在存储和性能之间取得最佳平衡。
-> 3 轮重复测试：LZ4+s2 T_composite 均值 25.37s，CV ~2%（首轮 22.09s 为 sidecar 生成后热缓存）。
+> Raw X auxiliary 是用额外存储（+1.0x）换取 X 轴近乎原始文件级的读取速度。
+> 存储预算允许时（≤1.45x），Raw X Aux 是最优方案；存储受限时回退到 old 方案。
+
+### 旧推荐（低存储）
 
 ### 关键发现
 
