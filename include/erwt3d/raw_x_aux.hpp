@@ -164,7 +164,7 @@ public:
     FileAppendTransaction(const FileAppendTransaction&) = delete;
     FileAppendTransaction& operator=(const FileAppendTransaction&) = delete;
     ~FileAppendTransaction() { if (!committed_) rollback(); }
-    bool commit() noexcept { committed_ = true; return true; }
+    void commit() noexcept { committed_ = true; }
     bool rollback() noexcept {
         if (fd_ < 0) return false;
         bool ok = true;
@@ -179,10 +179,14 @@ private:
 };
 
 template <typename HeaderType>
-class FileAppendTransactionWithHeader : public FileAppendTransaction {
+class FileAppendTransactionWithHeader {
 public:
     FileAppendTransactionWithHeader(int fd, uint64_t originalSize, const HeaderType& originalHeader)
-        : FileAppendTransaction(fd, originalSize), originalHeader_(originalHeader) {}
+        : fd_(fd), originalSize_(originalSize), originalHeader_(originalHeader) {}
+    FileAppendTransactionWithHeader(const FileAppendTransactionWithHeader&) = delete;
+    FileAppendTransactionWithHeader& operator=(const FileAppendTransactionWithHeader&) = delete;
+    ~FileAppendTransactionWithHeader() { if (!committed_) rollback(); }
+    void commit() noexcept { committed_ = true; }
     bool rollback() noexcept {
         if (fd_ < 0) return false;
         bool ok = true;
@@ -192,7 +196,10 @@ public:
         return ok;
     }
 private:
-    HeaderType originalHeader_;
+    int fd_ = -1;
+    uint64_t originalSize_ = 0;
+    HeaderType originalHeader_{};
+    bool committed_ = false;
 };
 
 inline RawXAuxValidationError validateRawXAuxRegion(

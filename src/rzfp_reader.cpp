@@ -769,7 +769,7 @@ void RzfpReader::initRawXAux_() {
     rawXAuxOffset_ = region.offset;
     rawXAuxPlaneBytes_ = region.plane_bytes;
 
-    rawXAuxFd_ = open(path_.c_str(), O_RDONLY | (rawXAuxUseDirect_ ? O_DIRECT : 0));
+    rawXAuxFd_ = open(path_.c_str(), O_RDONLY);
     if (rawXAuxFd_ < 0) return;
 
     rawXAuxAvailable_ = true;
@@ -782,17 +782,7 @@ bool RzfpReader::tryReadSliceRawXAux_(uint64_t x, float* output, RzfpReadProfile
     uint64_t offset = rawXAuxOffset_ + x * rawXAuxPlaneBytes_;
 
     auto io_t0 = Clock::now();
-    bool ok;
-    if (rawXAuxUseDirect_) {
-        const uint64_t alignedSize = (planeBytes + 511) & ~511ULL;
-        if (rawXAuxDirectBuf_.size() < alignedSize)
-            rawXAuxDirectBuf_.resize(alignedSize);
-        ok = readFullyAt(rawXAuxFd_, rawXAuxDirectBuf_.data(), alignedSize, offset);
-        if (ok) std::memcpy(output, rawXAuxDirectBuf_.data(), planeBytes);
-    } else {
-        ok = readFullyAt(rawXAuxFd_, output, planeBytes, offset);
-    }
-    if (!ok) return false;
+    if (!readFullyAt(rawXAuxFd_, output, planeBytes, offset)) return false;
 
     if (profile) {
         profile->io_time_ms += msSince(io_t0);
