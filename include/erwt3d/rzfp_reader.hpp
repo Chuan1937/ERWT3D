@@ -92,6 +92,7 @@ public:
 
     bool ok() const { return fd_ >= 0; }
     const RzfpFileHeader& header() const { return header_; }
+    const DeviceProfile& deviceProfile() const { return device_profile_; }
 
     bool readSlice(SliceAxis axis, uint64_t index, float* output,
                    int numThreads = 1, size_t memoryLimitMB = 4096,

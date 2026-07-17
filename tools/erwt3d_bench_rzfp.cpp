@@ -30,6 +30,10 @@ struct GroupResult {
     uint64_t outputBytesPerSlice = 0;
     erwt3d::RzfpReadProfile profile;
     std::string selectedStrategy;
+    std::string strategyReason;
+    double deviceSeqMBs = 0.0;
+    double deviceSeekMs = 0.0;
+    std::string cachePolicyStr;
 };
 
 static bool runGroup(erwt3d::RzfpReader& reader,
@@ -93,6 +97,12 @@ static bool runGroup(erwt3d::RzfpReader& reader,
 
     erwt3d::RzfpReadProfile accumulated;
 
+    switch (rzcfg.adaptive.cache_policy) {
+        case erwt3d::CachePolicy::StableAuto: result.cachePolicyStr = "stable-auto"; break;
+        case erwt3d::CachePolicy::DeterministicCold: result.cachePolicyStr = "cold"; break;
+        case erwt3d::CachePolicy::WarmAllowed: result.cachePolicyStr = "warm"; break;
+    }
+
     for (size_t batchStart = 0; batchStart < indices.size(); batchStart += maxBatch) {
         size_t batchEnd = std::min(batchStart + maxBatch, indices.size());
         size_t batchLen = batchEnd - batchStart;
@@ -137,10 +147,14 @@ static bool runGroup(erwt3d::RzfpReader& reader,
                     case erwt3d::RzfpReadStrategy::SelectiveLeaf: result.selectedStrategy = "selective"; break;
                     case erwt3d::RzfpReadStrategy::WholeSuperblock: result.selectedStrategy = "whole"; break;
                     case erwt3d::RzfpReadStrategy::FullPayloadScan: result.selectedStrategy = "fullscan"; break;
-                    default: result.selectedStrategy = "auto"; break;
+default: result.selectedStrategy = "auto"; break;
                 }
-            } break;
+            }
         }
+
+        result.deviceSeqMBs = reader.deviceProfile().sequential_mb_s;
+        result.deviceSeekMs = reader.deviceProfile().random_seek_ms;
+        result.strategyReason = result.selectedStrategy; // placeholder
 
         for (size_t i = 0; i < batchLen; ++i) {
             auto wStart = std::chrono::high_resolution_clock::now();
@@ -332,8 +346,9 @@ int main(int argc, char* argv[]) {
               << "  Continuous:" << continuousCount << " slices/axis\n"
               << "  Threads:   " << numThreads << "\n"
               << "  DecodeThr: " << decodeThreads << "\n"
-              << "  Strategy:  " << strategyStr << "\n"
-              << "  MemLimit:  " << memoryLimitMB << " MB\n"
+<< "  Strategy:  " << strategyStr << "\n"
+               << "  Cache:     " << cachePolicyStr << "\n"
+               << "  MemLimit:  " << memoryLimitMB << " MB\n"
               << "  HDD mode:  " << (hddMode ? "true" : "false") << "\n"
               << "  Window:    " << readWindowBytes << " bytes\n"
               << "  MaxGap:    " << maxGapBytes << " bytes\n"
@@ -379,7 +394,8 @@ int main(int argc, char* argv[]) {
     {
         std::ofstream sf(summaryPath);
         sf << "group,axis,mode,slice_count,group_time_ms,read_time_ms,write_time_ms,output_bytes_per_slice,"
-              "unique_sbs,unique_leaves,requested_bytes,actual_bytes,read_amp,preads,io_ms,decode_ms,scatter_ms,selected_strategy\n";
+              "unique_sbs,unique_leaves,requested_bytes,actual_bytes,read_amp,preads,io_ms,decode_ms,scatter_ms,selected_strategy,"
+              "device_seq_mb_s,device_seek_ms,cache_policy\n";
         for (int g = 0; g < 6; ++g) {
             const auto& r = results[g];
             const auto& p = r.profile;
@@ -391,9 +407,12 @@ int main(int argc, char* argv[]) {
                << p.requested_record_bytes << "," << p.actual_read_bytes << ","
                << std::setprecision(3) << p.readAmplification() << ","
                << p.pread_calls << ","
-               << std::setprecision(3) << p.io_time_ms << ","
-               << p.decode_time_ms << "," << p.scatter_time_ms << ","
-               << r.selectedStrategy << "\n";
+<< std::setprecision(3) << p.io_time_ms << ","
+                << p.decode_time_ms << "," << p.scatter_time_ms << ","
+                << r.selectedStrategy << ","
+                << std::fixed << std::setprecision(1) << r.deviceSeqMBs << ","
+                << std::setprecision(1) << r.deviceSeekMs << ","
+                << r.cachePolicyStr << "\n";
         }
     }
 
@@ -407,11 +426,12 @@ int main(int argc, char* argv[]) {
            << "continuous_count," << continuousCount << "\n"
            << "threads," << numThreads << "\n"
            << "decode_threads," << decodeThreads << "\n"
-           << "strategy," << strategyStr << "\n"
-           << "memory_limit_mb," << memoryLimitMB << "\n"
-           << "read_window_bytes," << readWindowBytes << "\n"
-           << "max_gap_bytes," << maxGapBytes << "\n"
-           << std::fixed << std::setprecision(3)
+<< "strategy," << strategyStr << "\n"
+            << "cache_policy," << cachePolicyStr << "\n"
+            << "memory_limit_mb," << memoryLimitMB << "\n"
+            << "read_window_bytes," << readWindowBytes << "\n"
+            << "max_gap_bytes," << maxGapBytes << "\n"
+            << std::fixed << std::setprecision(3)
            << "T_x_random_ms," << groupTimes[0] << "\n"
            << "T_y_random_ms," << groupTimes[1] << "\n"
            << "T_z_random_ms," << groupTimes[2] << "\n"
@@ -422,7 +442,10 @@ int main(int argc, char* argv[]) {
            << "T_composite_ms," << tComposite << "\n"
            << "file_bytes," << fileBytes << "\n"
            << "raw_bytes," << rawBytes << "\n"
-           << "storage_ratio," << storageRatio << "\n";
+           << "storage_ratio," << storageRatio << "\n"
+            << std::fixed << std::setprecision(1)
+            << "device_sequential_mb_s," << (results[0].deviceSeqMBs) << "\n"
+            << "device_seek_ms," << results[0].deviceSeekMs << "\n";
     }
 
     std::cout << "\n============================================================\n"
