@@ -116,7 +116,7 @@ void printUsage(const char* progName) {
     std::cerr << "  --panel-axis x       Enable X micro-panels (only x supported)" << std::endl;
     std::cerr << "  --panel-stride N     Store every Nth local X plane (must divide super-size)" << std::endl;
     std::cerr << "  --raw-x-aux MODE     Append raw X auxiliary region (auto|on|off, default: off)" << std::endl;
-    std::cerr << "  --force-storage-edge Allow storage ratio up to 1.45x" << std::endl;
+    std::cerr << "  --force-storage-edge Allow up to 1.45x (1.445-1.45 only; >1.45 always rejected)" << std::endl;
 }
 
 int main(int argc, char* argv[]) {

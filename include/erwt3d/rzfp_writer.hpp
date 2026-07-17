@@ -3,7 +3,7 @@
 #include "rzfp_codec.hpp"
 #include "rzfp_format.hpp"
 #include "format.hpp"
-#include "writer.hpp"
+#include "raw_x_aux.hpp"
 
 #include <cstdint>
 #include <string>
