@@ -80,6 +80,7 @@ set(LIB_SOURCES
     src/sb_panel.cpp
     src/api.cpp
     src/lz4_probe.cpp
+    src/auto_plan.cpp
 )
 
 if(ERWT3D_ENABLE_RZFP)
