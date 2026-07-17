@@ -111,6 +111,8 @@ G 盘 HDD，`--hdd` 模式，4GB 内存限制（布局修正后 Z-fastest）：
 | 数据集 | 格式 | T_composite | 存储比 | 备注 |
 |--------|------|------------|--------|------|
 | 20GB | LZ4 | 35.89s | 0.432x | 全部 superblock 压缩，X/Y/Z 随机切片访问均衡 |
+| 20GB | LZ4 + sidecar s1 | 27.19s | 0.526x | X random 12.7s（sidecar 加速），Y/Z 受页缓存影响 |
+| **20GB** | **LZ4 + sidecar s2** | **22.09s** | **0.479x** | **最优方案**，sidecar 868MB，X random 45.4s |
 | 20GB | RZFP | 51.26s | 0.607x | X random 需全文件扫描 (fullscan) |
 | 50GB | RZFP | 99.06s | 0.421x | ZFP 压缩有效，50GB→21GB |
 | 50GB | LZ4 | 138.41s | 1.044x | LZ4 自动跳过压缩（估算 0.915 > 0.90），52GB 未压缩 |
@@ -118,18 +120,20 @@ G 盘 HDD，`--hdd` 模式，4GB 内存限制（布局修正后 Z-fastest）：
 > 布局修正（Z-fastest）后重新生成所有文件并验证通过。
 > LZ4 20GB 所有 19760 个 superblock 均成功压缩。
 > RZFP 全量 fast-full 验证：20GB 4.8B 点 0 失败，50GB 13.2B 点 0 失败。
+> Sidecar 采用 plane-major 单次读取 + 8 线程并行压缩生成。
 
 ### 推荐方案
 
-| 数据集 | 推荐格式 | T_composite | 存储比 |
-|--------|----------|------------|--------|
-| 20GB | LZ4 | 35.89s | 0.432x |
-| 50GB | RZFP | 99.06s | 0.421x |
+| 数据集 | 推荐格式 | T_composite | 存储比 | 说明 |
+|--------|----------|------------|--------|------|
+| 20GB | LZ4 + sidecar s2 | 22.09s | 0.479x | 主文件 7.8GB + sidecar 868MB |
+| 50GB | RZFP | 99.06s | 0.421x | 50GB→21GB，无需 sidecar |
 
 > **测试环境说明**：本批次在 G 盘 HDD 上测试，磁盘顺序读取带宽约 200–220 MB/s，
 > 低于之前 D 盘环境（~300 MB/s），因此绝对时间偏高。
-> 20GB LZ4 T_composite 在 D 盘预期约 18–22s，50GB RZFP 预期约 60–70s。
+> 20GB LZ4+s2 T_composite 在 D 盘预期约 12–15s，50GB RZFP 预期约 60–70s。
 > 相对排名（20GB LZ4 优于 RZFP，50GB RZFP 优于 LZ4）不受磁盘差异影响。
+> LZ4 stride=2 在存储和性能之间取得最佳平衡。
 
 ### 关键发现
 
