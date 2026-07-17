@@ -48,63 +48,6 @@ struct SidecarBuildState {
     std::vector<std::vector<float>> planeChunks;
 };
 
-static bool buildChunk(SidecarBuildState& s, uint32_t chunkIdx) {
-    uint64_t zStart = static_cast<uint64_t>(chunkIdx % s.chunksPerPlane) * s.chunkZRows;
-    uint64_t zEnd = std::min(zStart + s.chunkZRows, s.nz);
-    uint64_t rowsInChunk = zEnd - zStart;
-    uint64_t planeFloats = s.ny * s.nz;
-    uint64_t chunkRawBytes = rowsInChunk * s.ny * sizeof(float);
-
-    // Each X-plane is contiguous in the official Z-fastest raw layout.
-    for (uint32_t pi = 0; pi < s.planeCount; ++pi) {
-        uint64_t x = static_cast<uint64_t>(pi) * s.stride;
-        if (x >= s.nx) x = s.nx - 1;
-
-        // Read the full YZ plane for this x.
-        uint64_t planeOff = x * planeFloats * sizeof(float);
-        ssize_t rd = pread(s.fdRaw, s.rawRow.data(), planeFloats * sizeof(float), planeOff);
-        if (rd != static_cast<ssize_t>(planeFloats * sizeof(float))) {
-            std::cerr << "\nError reading raw X-plane at x=" << x << std::endl;
-            return false;
-        }
-
-        // Extract the current z-chunk. Sidecar chunk layout:
-        //   chunk[zi * ny + y] = value(x, y, zStart + zi)
-        // In the raw plane, value(x, y, z) is at plane[y * nz + z].
-        std::fill(s.planeChunks[pi].begin(), s.planeChunks[pi].end(), 0.0f);
-        float* dst = s.planeChunks[pi].data();
-        const float* plane = reinterpret_cast<const float*>(s.rawRow.data());
-        for (uint64_t zi = 0; zi < rowsInChunk; ++zi) {
-            uint64_t z = zStart + zi;
-            for (uint64_t y = 0; y < s.ny; ++y) {
-                dst[zi * s.ny + y] = plane[y * s.nz + z];
-            }
-        }
-
-        const char* src = reinterpret_cast<const char*>(s.planeChunks[pi].data());
-        int cs = LZ4_compress_default(src, s.compBuf.data(),
-                                      static_cast<int>(chunkRawBytes),
-                                      static_cast<int>(s.compBuf.size()));
-        if (cs <= 0) {
-            std::cerr << "\nLZ4 compress failed for plane " << pi
-                      << " chunk " << chunkIdx << std::endl;
-            return false;
-        }
-
-        uint64_t globalChunkIdx = static_cast<uint64_t>(pi) * s.chunksPerPlane +
-                                   (chunkIdx % s.chunksPerPlane);
-        s.index[globalChunkIdx].chunk_offset = s.dataOffset + s.totalStorageBytes;
-        s.index[globalChunkIdx].compressed_size = static_cast<uint32_t>(cs);
-        s.index[globalChunkIdx].raw_size = static_cast<uint32_t>(chunkRawBytes);
-        s.totalStorageBytes += cs;
-
-        if (pwrite(s.fdXp, s.compBuf.data(), cs, s.index[globalChunkIdx].chunk_offset) != cs) {
-            perror("write chunk");
-            return false;
-        }
-    }
-    return true;
-}
 
 // Estimate compression ratio by sampling a few X planes.
 static double estimateCompressionRatio(int fdRaw, uint64_t nx, uint64_t ny, uint64_t nz,
