@@ -18,9 +18,6 @@ constexpr uint64_t FLAG_HAS_X_PLANES = 1ULL << 3;
 constexpr uint64_t FLAG_COMPRESSED  = 1ULL << 4;
 constexpr uint64_t FLAG_HAS_XP_SIDECAR = 1ULL << 5;
 constexpr uint64_t FLAG_PHYSICAL_ORDER_YZX = 1ULL << 6;
-constexpr uint64_t FLAG_HAS_RAW_X_AUX = 1ULL << 7;
-
-constexpr uint32_t RAW_X_AUX_VERSION = 1;
 
 enum class PhysicalOrder : uint8_t {
     V05_YZX,
@@ -129,12 +126,6 @@ inline uint64_t getLeafsPerSuperZ(const ERWT3DHeader& header) {
 inline uint64_t getTotalLeafsPerSuper(const ERWT3DHeader& header) {
     return getLeafsPerSuperX(header) * getLeafsPerSuperY(header) * getLeafsPerSuperZ(header);
 }
-
-inline bool hasRawXAux(const ERWT3DHeader& h) { return (h.flags & FLAG_HAS_RAW_X_AUX) != 0; }
-inline uint64_t getRawXAuxOffset(const ERWT3DHeader& h) { return h.reserved[7]; }
-inline uint64_t getRawXAuxBytes(const ERWT3DHeader& h) { return h.reserved[8]; }
-inline uint64_t getRawXAuxPlaneBytes(const ERWT3DHeader& h) { return h.reserved[9]; }
-inline uint32_t getRawXAuxVersion(const ERWT3DHeader& h) { return static_cast<uint32_t>(h.reserved[10]); }
 
 inline bool hasXPanels(const ERWT3DHeader& h) { return (h.flags & FLAG_HAS_X_PANELS) != 0; }
 inline bool hasYPanels(const ERWT3DHeader& h) { return (h.flags & FLAG_HAS_Y_PANELS) != 0; }

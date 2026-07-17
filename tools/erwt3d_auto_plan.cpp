@@ -10,7 +10,6 @@ int main(int argc, char** argv) {
     uint64_t nx = 0, ny = 0, nz = 0;
     int threads = 8;
     double storage_budget = 1.45;
-    erwt3d::PlannerWorkload workload;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -27,27 +26,17 @@ int main(int argc, char** argv) {
         else if (arg == "--threads") threads = std::stoi(next());
         else if (arg == "--storage-budget") storage_budget = std::stod(next());
         else if (arg == "--output") output_json = next();
-        else if (arg == "--random-slices") {
-            uint64_t v = std::stoull(next());
-            workload.x_random_slices = workload.y_random_slices = workload.z_random_slices = v;
-        }
-        else if (arg == "--continuous-slices") {
-            uint64_t v = std::stoull(next());
-            workload.x_contiguous_slices = workload.y_contiguous_slices = workload.z_contiguous_slices = v;
-        }
     }
 
     if (raw_path.empty() || nx == 0 || ny == 0 || nz == 0) {
         std::cerr << "Usage: erwt3d_auto_plan --raw PATH --nx N --ny N --nz N [options]\n"
-                  << "  --threads N           (default: 8)\n"
-                  << "  --storage-budget X    (default: 1.45)\n"
-                  << "  --random-slices N     (default: 100)\n"
-                  << "  --continuous-slices N (default: 10)\n"
-                  << "  --output FILE.json    (optional)\n";
+                  << "  --threads N         (default: 8)\n"
+                  << "  --storage-budget X  (default: 1.45)\n"
+                  << "  --output FILE.json  (optional)\n";
         return 1;
     }
 
-    auto result = erwt3d::planFormat(raw_path, nx, ny, nz, threads, storage_budget, workload);
+    auto result = erwt3d::planFormat(raw_path, nx, ny, nz, threads, storage_budget);
 
     std::cout << std::fixed << std::setprecision(3);
     std::cout << "\n========== ERWT3D Auto Plan ==========\n";
@@ -68,10 +57,6 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "\nRecommended: " << result.recommended.name << "\n";
-    if (result.recommended.has_raw_x_aux)
-        std::cout << "  raw_x_aux: yes\n";
-    if (result.recommended.requires_force_storage_edge)
-        std::cout << "  requires --force-storage-edge\n";
     std::cout << "  uncertainty: " << (result.recommended.uncertain ? "yes" : "no") << "\n";
     std::cout << "  reason: " << result.recommended.reason << "\n";
     std::cout << "  elapsed: " << result.elapsed_seconds << "s\n";
@@ -82,8 +67,6 @@ int main(int argc, char** argv) {
         f << "  \"recommended\": \"" << result.recommended.name << "\",\n";
         f << "  \"total_ratio\": " << result.recommended.total_ratio_mean << ",\n";
         f << "  \"predicted_t_composite\": " << result.recommended.predicted_t_composite << ",\n";
-        f << "  \"has_raw_x_aux\": " << (result.recommended.has_raw_x_aux ? "true" : "false") << ",\n";
-        f << "  \"requires_force_storage_edge\": " << (result.recommended.requires_force_storage_edge ? "true" : "false") << ",\n";
         f << "  \"uncertain\": " << (result.recommended.uncertain ? "true" : "false") << ",\n";
         f << "  \"disk_sequential_mb_s\": " << result.disk_cfg.sequential_mb_s << ",\n";
         f << "  \"disk_seek_ms\": " << result.disk_cfg.seek_ms << "\n";

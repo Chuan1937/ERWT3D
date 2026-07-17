@@ -1,12 +1,10 @@
 #include "erwt3d/reader.hpp"
 #include "erwt3d/morton.hpp"
 #include "erwt3d/raw_layout.hpp"
-#include "erwt3d/raw_x_aux.hpp"
 #include "erwt3d/thread_pool.hpp"
 #include "erwt3d/sb_task.hpp"
 #include <algorithm>
 #include <fstream>
-#include <iostream>
 #include <vector>
 #include <cstring>
 #include <chrono>
@@ -14,7 +12,6 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
-#include <unordered_map>
 
 #ifdef ERWT3D_HAVE_LZ4
 #include <lz4.h>
@@ -103,16 +100,11 @@ ERWT3DReader::ERWT3DReader(const std::string& path, size_t cacheMB, bool useMmap
     if (hasXPSidecar(header_)) {
         loadSidecar_();
     }
-
-    initRawXAux_();
 }
 
 ERWT3DReader::~ERWT3DReader() {
     if (mmapData_ && mmapSize_ > 0) {
         munmap(mmapData_, mmapSize_);
-    }
-    if (rawXAuxFd_ >= 0) {
-        close(rawXAuxFd_);
     }
     if (fd_ >= 0) {
         close(fd_);
@@ -620,163 +612,6 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
     return true;
 }
 
-// --- Raw X auxiliary (full-coverage uncompressed X-plane region) ---
-
-void ERWT3DReader::initRawXAux_() {
-    if (!hasRawXAux(header_)) return;
-
-    RawXAuxRegion region;
-    region.offset = getRawXAuxOffset(header_);
-    region.bytes = getRawXAuxBytes(header_);
-    region.plane_bytes = getRawXAuxPlaneBytes(header_);
-    region.version = getRawXAuxVersion(header_);
-
-    struct stat st;
-    if (fstat(fd_, &st) != 0) return;
-    uint64_t fileSize = static_cast<uint64_t>(st.st_size);
-
-    // Compute minimum offset: must be after all file content
-    uint64_t mainEnd = sizeof(header_);
-    if (compressed_ && !compIndex_.empty()) {
-        for (const auto& entry : compIndex_) {
-            uint64_t end = entry.file_offset + entry.compressed_size;
-            if (end > mainEnd) mainEnd = end;
-        }
-        // Also account for the compression index itself
-        uint64_t idxEnd = getCompressionIndexOffset(header_) +
-                          getCompressedBlockCount(header_) * sizeof(CompressedBlockIndex);
-        if (idxEnd > mainEnd) mainEnd = idxEnd;
-    } else {
-        uint64_t sbTotal = 0;
-        if (checkedMulU64(getTotalSuperblocks(header_), getSuperblockBytes(header_), sbTotal))
-            mainEnd = header_.data_offset + sbTotal;
-    }
-    if (hasXPanels(header_)) {
-        uint64_t panelEnd = getPanelDataOffset(header_) + getPanelStorageBytes(header_);
-        if (panelEnd > mainEnd) mainEnd = panelEnd;
-        uint64_t panelIdxEnd = getPanelIndexOffset(header_) + getTotalSuperblocks(header_) * sizeof(uint64_t);
-        if (panelIdxEnd > mainEnd) mainEnd = panelIdxEnd;
-    }
-    if (hasXPlanes(header_)) {
-        uint64_t xPlaneTotal = 0;
-        if (checkedMulU64(getXPlaneCount(header_), header_.ny * header_.nz * sizeof(float), xPlaneTotal))
-            { uint64_t xpEnd = getXPlaneOffset(header_) + xPlaneTotal; if (xpEnd > mainEnd) mainEnd = xpEnd; }
-    }
-
-    uint64_t minimumOffset = (mainEnd + RAW_X_AUX_ALIGN - 1) & ~(RAW_X_AUX_ALIGN - 1);
-
-    auto err = validateRawXAuxRegion(fileSize, minimumOffset,
-                                      header_.nx, header_.ny, header_.nz, region);
-    if (err != RawXAuxValidationError::None) {
-        std::cerr << "Warning: Raw X auxiliary validation failed: "
-                  << rawXAuxValidationErrorStr(err)
-                  << " — falling back to main file reader" << std::endl;
-        return;
-    }
-
-    rawXAuxOffset_ = region.offset;
-    rawXAuxBytes_ = region.bytes;
-    rawXAuxPlaneBytes_ = region.plane_bytes;
-
-    int flags = O_RDONLY;
-    rawXAuxFd_ = open(path_.c_str(), flags);
-    if (rawXAuxFd_ < 0) return;
-
-    rawXAuxAvailable_ = true;
-}
-
-bool ERWT3DReader::tryReadSliceRawXAux_(uint64_t x, float* output) {
-    if (!rawXAuxAvailable_ || x >= header_.nx) return false;
-
-    uint64_t planeBytes = header_.ny * header_.nz * sizeof(float);
-    uint64_t offset = rawXAuxOffset_ + x * rawXAuxPlaneBytes_;
-
-    if (!readFullyAt(rawXAuxFd_, output, planeBytes, offset))
-        return false;
-
-    posix_fadvise(rawXAuxFd_, static_cast<off_t>(offset),
-                  static_cast<off_t>(planeBytes), POSIX_FADV_DONTNEED);
-
-    return true;
-}
-
-bool ERWT3DReader::tryReadBatchRawXAux_(
-    const std::vector<SliceBatchRequest>& requests,
-    std::vector<bool>& handled) {
-
-    if (!rawXAuxAvailable_ || requests.empty()) return false;
-
-    struct RawXAuxTask {
-        uint64_t x;
-        uint64_t file_offset;
-        float* output;
-        size_t req_idx;
-    };
-
-    std::vector<RawXAuxTask> tasks;
-    tasks.reserve(requests.size());
-    bool anyHit = false;
-
-    for (size_t i = 0; i < requests.size(); ++i) {
-        handled[i] = false;
-        if (requests[i].axis != SliceAxis::X) continue;
-        uint64_t x = requests[i].index;
-        if (x >= header_.nx) continue;
-        anyHit = true;
-        tasks.push_back({x, rawXAuxOffset_ + x * rawXAuxPlaneBytes_,
-                         requests[i].output, i});
-    }
-
-    if (!anyHit) return false;
-    if (tasks.empty()) return true;
-
-    uint64_t planeBytes = header_.ny * header_.nz * sizeof(float);
-
-    // Sort by file offset for sequential read
-    std::sort(tasks.begin(), tasks.end(),
-              [](const RawXAuxTask& a, const RawXAuxTask& b) {
-                  return a.file_offset < b.file_offset;
-              });
-
-    const uint64_t MAX_WINDOW = 256ULL * 1024 * 1024; // 256 MB max window
-
-    size_t i = 0;
-    while (i < tasks.size()) {
-        uint64_t wstart = tasks[i].file_offset;
-        uint64_t wend = wstart + planeBytes;
-        size_t j = i + 1;
-
-        // Merge adjacent or gapped planes into one window
-        while (j < tasks.size()) {
-            uint64_t next_offset = tasks[j].file_offset;
-            if (next_offset > wend + planeBytes) break; // gap > 1 plane
-            uint64_t proposed_end = next_offset + planeBytes;
-            if (proposed_end - wstart > MAX_WINDOW) break;
-            wend = proposed_end;
-            ++j;
-        }
-
-        uint64_t wsize = wend - wstart;
-
-        if (rawXAuxWindowBuf_.size() < wsize)
-                rawXAuxWindowBuf_.resize(wsize);
-            if (!readFullyAt(rawXAuxFd_, rawXAuxWindowBuf_.data(), wsize, wstart))
-                return false;
-            for (size_t k = i; k < j; ++k) {
-                uint64_t off_in_window = tasks[k].file_offset - wstart;
-                std::memcpy(tasks[k].output, rawXAuxWindowBuf_.data() + off_in_window, planeBytes);
-                handled[tasks[k].req_idx] = true;
-            }
-
-        posix_fadvise(rawXAuxFd_, static_cast<off_t>(wstart),
-                      static_cast<off_t>(wsize), POSIX_FADV_DONTNEED);
-
-        i = j;
-    }
-
-    return true;
-}
-
 // --- X-plane sidecar ---
 
 void ERWT3DReader::loadSidecar_() {
@@ -985,27 +820,6 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
 
     auto planStart = std::chrono::high_resolution_clock::now();
 
-    // Try raw X auxiliary fast path (full-coverage uncompressed X-plane region)
-    if (axis == SliceAxis::X && rawXAuxAvailable_) {
-        auto readStart = std::chrono::high_resolution_clock::now();
-        bool ok = tryReadSliceRawXAux_(index, output);
-        auto readEnd = std::chrono::high_resolution_clock::now();
-        if (ok) {
-            auto planEnd = std::chrono::high_resolution_clock::now();
-            if (profileIO_) {
-                lastProfile_ = IOProfile{};
-                lastProfile_.panel_hit = true;
-                lastProfile_.pread_calls = 1;
-                lastProfile_.bytes_read = header_.ny * header_.nz * sizeof(float);
-                lastProfile_.output_bytes = lastProfile_.bytes_read;
-                lastProfile_.superblocks_touched = 1;
-                lastProfile_.plan_time_ms = std::chrono::duration<double, std::milli>(planEnd - readEnd).count();
-                lastProfile_.read_time_ms = std::chrono::duration<double, std::milli>(readEnd - readStart).count();
-            }
-            return true;
-        }
-    }
-
     // Try X-plane sidecar fast path (compressed sidecar file)
     if (axis == SliceAxis::X && xpAvailable_) {
         uint32_t stride = xpHeader_.stride;
@@ -1165,30 +979,17 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
                                     const HDDReadWindowConfig& wcfg) {
     if (fd_ < 0 || requests.empty()) return false;
 
-    // Step 0: Try raw X auxiliary batch path for all X requests at once
-    std::vector<bool> rawXAuxHandled(requests.size(), false);
-    if (rawXAuxAvailable_) {
-        tryReadBatchRawXAux_(requests, rawXAuxHandled);
-    }
-
-    // Step 1: Try batch sidecar read for remaining X requests
-    std::vector<bool> xpHandled(requests.size(), false);
-    if (xpAvailable_) {
-        tryReadBatchXPSidecar_(requests, xpHandled);
-    }
-
-    // Step 2: Process remaining requests individually
+    // Split: X-plane slices read via fast path, rest via batch
     std::vector<SBTaskPlan> plans;
     std::vector<float*> outputs;
     std::vector<const SBTaskPlan*> pp;
-    std::vector<size_t> batchIdx;
+    std::vector<size_t> batchIdx; // indices into requests for batch path
 
     for (size_t i = 0; i < requests.size(); ++i) {
         const auto& r = requests[i];
-
-        if (rawXAuxHandled[i] || xpHandled[i]) continue;
-
-        // Try X-plane fast path
+        // Try X-plane sidecar batch path (all hits processed together below)
+        // Just mark for batch processing
+        // Try X-plane fast path first
         if (r.axis == SliceAxis::X && hasXPlanes(header_)) {
             uint32_t stride = getXPlaneStride(header_);
             if (r.index % stride == 0) {
@@ -1224,171 +1025,61 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
         batchIdx.push_back(i);
     }
 
+    // Try batch sidecar read for all X requests at once
+    if (xpAvailable_) {
+        std::vector<bool> handled(requests.size(), false);
+        if (tryReadBatchXPSidecar_(requests, handled)) {
+            // Rebuild plans/outputs/batchIdx excluding handled requests
+            std::vector<SBTaskPlan> newPlans;
+            std::vector<float*> newOutputs;
+            std::vector<size_t> newBatchIdx;
+            for (size_t bi = 0; bi < batchIdx.size(); ++bi) {
+                size_t reqIdx = batchIdx[bi];
+                if (!handled[reqIdx]) {
+                    newPlans.push_back(std::move(plans[bi]));
+                    newOutputs.push_back(outputs[bi]);
+                    newBatchIdx.push_back(reqIdx);
+                }
+            }
+            plans = std::move(newPlans);
+            outputs = std::move(newOutputs);
+            batchIdx = std::move(newBatchIdx);
+        }
+    }
+
     if (plans.empty()) return true;
     for (auto& p : plans) pp.push_back(&p);
 
     if (compressed_) {
-        // Merged-window parallel LZ4 reader
+        // Compressed path: read each superblock individually via readSuperblock
         auto batch = buildSBBatchPlan(pp);
         const uint64_t sbBV = getSuperblockBytes(header_);
-        const uint64_t totalSBs = compIndex_.size();
+        std::vector<uint8_t> sbBuf(sbBV);
 
-        // Collect unique SB tasks with scatter targets
-        struct CompressedSBTask {
-            uint64_t sb_idx;
-            uint64_t compressed_offset;
-            uint32_t compressed_size;
-            uint8_t is_compressed;
-            std::vector<size_t> scatter_indices; // into batch.batch_tasks
-        };
-
-        std::unordered_map<uint64_t, CompressedSBTask> sbMap;
-        sbMap.reserve(batch.batch_tasks.size());
-
-        for (size_t ti = 0; ti < batch.batch_tasks.size(); ++ti) {
-            const auto& bt = batch.batch_tasks[ti];
-            uint64_t sbIdx = (bt.file_offset - header_.data_offset) / sbBV;
-            if (sbIdx >= totalSBs) continue;
-
-            auto& entry = sbMap[sbIdx];
-            if (entry.scatter_indices.empty()) {
-                entry.sb_idx = sbIdx;
-                entry.compressed_offset = compIndex_[sbIdx].file_offset;
-                entry.compressed_size = compIndex_[sbIdx].compressed_size;
-                entry.is_compressed = compIndex_[sbIdx].is_compressed;
-            }
-            entry.scatter_indices.push_back(ti);
-        }
-
-        if (sbMap.empty()) return true;
-
-        // Sort by compressed file offset
-        std::vector<CompressedSBTask*> sortedSBs;
-        sortedSBs.reserve(sbMap.size());
-        for (auto& kv : sbMap) sortedSBs.push_back(&kv.second);
-        std::sort(sortedSBs.begin(), sortedSBs.end(),
-                  [](const CompressedSBTask* a, const CompressedSBTask* b) {
-                      return a->compressed_offset < b->compressed_offset;
-                  });
-
-        const uint64_t WINDOW_SIZE = 256ULL * 1024 * 1024;
-        const uint64_t MAX_GAP = 4ULL * 1024 * 1024;
-        const int decodeThreads = std::min(8, std::max(1, numThreads));
-
-        ThreadPool pool(static_cast<size_t>(decodeThreads));
-        std::vector<std::vector<uint8_t>> workerBufs(decodeThreads);
-        for (auto& wb : workerBufs) wb.resize(sbBV);
-
-        std::vector<uint8_t> windowBuf;
+        // Sort tasks by compressed file offset for sequential access
+        std::vector<size_t> taskOrder(batch.batch_tasks.size());
+        for (size_t i = 0; i < taskOrder.size(); ++i) taskOrder[i] = i;
+        std::sort(taskOrder.begin(), taskOrder.end(), [&](size_t a, size_t b) {
+            uint64_t sbIdxA = (batch.batch_tasks[a].file_offset - header_.data_offset) / sbBV;
+            uint64_t sbIdxB = (batch.batch_tasks[b].file_offset - header_.data_offset) / sbBV;
+            if (compressed_ && sbIdxA < compIndex_.size() && sbIdxB < compIndex_.size())
+                return compIndex_[sbIdxA].file_offset < compIndex_[sbIdxB].file_offset;
+            return batch.batch_tasks[a].file_offset < batch.batch_tasks[b].file_offset;
+        });
 
         adviseSequential(fd_);
 
-        size_t si = 0;
-        while (si < sortedSBs.size()) {
-            // Build window
-            uint64_t wstart = sortedSBs[si]->compressed_offset;
-            uint64_t wend = wstart + sortedSBs[si]->compressed_size;
-            size_t sj = si + 1;
-            while (sj < sortedSBs.size()) {
-                uint64_t next_off = sortedSBs[sj]->compressed_offset;
-                if (next_off > wend + MAX_GAP) break;
-                uint64_t next_end = next_off + sortedSBs[sj]->compressed_size;
-                if (next_end - wstart > WINDOW_SIZE) break;
-                wend = next_end;
-                ++sj;
+        uint64_t lastSbIdx = UINT64_MAX;
+        for (size_t ti = 0; ti < taskOrder.size(); ++ti) {
+            const auto& bt = batch.batch_tasks[taskOrder[ti]];
+            uint64_t sbIdx = (bt.file_offset - header_.data_offset) / sbBV;
+
+            if (sbIdx != lastSbIdx) {
+                if (!readSuperblock(sbIdx, sbBuf.data())) return false;
+                lastSbIdx = sbIdx;
             }
-
-            uint64_t wsize = wend - wstart;
-            if (windowBuf.size() < wsize)
-                windowBuf.resize(wsize);
-
-            // Prefetch next window
-            if (sj < sortedSBs.size()) {
-                uint64_t next_start = sortedSBs[sj]->compressed_offset;
-                readahead(fd_, static_cast<off_t>(next_start),
-                          static_cast<size_t>(128ULL * 1024 * 1024));
-            }
-
-            // Read window
-            ssize_t n = pread(fd_, windowBuf.data(), wsize, wstart);
-            if (n != static_cast<ssize_t>(wsize)) return false;
-
-            // Parallel decompress + scatter
-            size_t count = sj - si;
-            if (count <= 1 || decodeThreads <= 1) {
-                for (size_t k = si; k < sj; ++k) {
-                    auto* sb = sortedSBs[k];
-                    uint8_t* decompBuf = workerBufs[0].data();
-                    const uint8_t* srcData = windowBuf.data() +
-                        (sb->compressed_offset - wstart);
-
-                    if (sb->is_compressed) {
-#ifdef ERWT3D_HAVE_LZ4
-                        int dec = LZ4_decompress_safe(
-                            reinterpret_cast<const char*>(srcData),
-                            reinterpret_cast<char*>(decompBuf),
-                            static_cast<int>(sb->compressed_size),
-                            static_cast<int>(sbBV));
-                        if (dec != static_cast<int>(sbBV)) return false;
-#else
-                        return false;
-#endif
-                    } else {
-                        std::memcpy(decompBuf, srcData, sbBV);
-                    }
-
-                    for (size_t si2 : sb->scatter_indices) {
-                        const auto& bt = batch.batch_tasks[si2];
-                        SBTask t{bt.file_offset, bt.first_leaf, bt.leaf_count};
-                        unpackLeaves(header_, *bt.plan, t, decompBuf,
-                                     outputs[bt.output_id]);
-                    }
-                }
-            } else {
-                std::vector<std::future<bool>> futures;
-                const size_t per = (count + decodeThreads - 1) / decodeThreads;
-                for (int t = 0; t < decodeThreads; ++t) {
-                    const size_t kstart = si + static_cast<size_t>(t) * per;
-                    const size_t kend = std::min(kstart + per, sj);
-                    if (kstart >= kend) break;
-                    futures.push_back(pool.submit([&, kstart, kend, t]() -> bool {
-                        uint8_t* decompBuf = workerBufs[t].data();
-                        for (size_t k = kstart; k < kend; ++k) {
-                            auto* sb = sortedSBs[k];
-                            const uint8_t* srcData = windowBuf.data() +
-                                (sb->compressed_offset - wstart);
-
-                            if (sb->is_compressed) {
-#ifdef ERWT3D_HAVE_LZ4
-                                int dec = LZ4_decompress_safe(
-                                    reinterpret_cast<const char*>(srcData),
-                                    reinterpret_cast<char*>(decompBuf),
-                                    static_cast<int>(sb->compressed_size),
-                                    static_cast<int>(sbBV));
-                                if (dec != static_cast<int>(sbBV)) return false;
-#else
-                                return false;
-#endif
-                            } else {
-                                std::memcpy(decompBuf, srcData, sbBV);
-                            }
-
-                            for (size_t si2 : sb->scatter_indices) {
-                                const auto& bt = batch.batch_tasks[si2];
-                                SBTask t{bt.file_offset, bt.first_leaf, bt.leaf_count};
-                                unpackLeaves(header_, *bt.plan, t, decompBuf,
-                                             outputs[bt.output_id]);
-                            }
-                        }
-                        return true;
-                    }));
-                }
-                for (auto& f : futures) {
-                    if (!f.get()) return false;
-                }
-            }
-
-            si = sj;
+            SBTask t{bt.file_offset, bt.first_leaf, bt.leaf_count};
+            unpackLeaves(header_, *bt.plan, t, sbBuf.data(), outputs[bt.output_id]);
         }
         return true;
     }

@@ -1,7 +1,6 @@
 #include "erwt3d/rzfp_auto_plan.hpp"
 #include "erwt3d/rzfp_raw_sampler.hpp"
 #include "erwt3d/raw_layout.hpp"
-#include "erwt3d/raw_x_aux.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -40,6 +39,20 @@ private:
     Clock::time_point start_;
 };
 
+static bool readFullyAt(int fd, void* buffer, size_t bytes, uint64_t offset) {
+    auto* dst = static_cast<uint8_t*>(buffer);
+    size_t done = 0;
+    while (done < bytes) {
+        ssize_t n = pread(fd, dst + done, bytes - done, static_cast<off_t>(offset + done));
+        if (n == 0) return false;
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
+        done += static_cast<size_t>(n);
+    }
+    return true;
+}
 
 static uint64_t buildValidMask3D(
     uint64_t start_x,
@@ -442,10 +455,6 @@ std::string RzfpAutoPlanResult::toJson() const {
     json << "    \"enabled\": " << (enable_x_sidecar ? "true" : "false") << ",\n";
     json << "    \"predicted_x_speedup\": " << estimateXSpeedup(main_ratio_estimate, x_sidecar_ratio_estimate) << "\n";
     json << "  },\n";
-    json << "  \"raw_x_aux\": {\n";
-    json << "    \"enabled\": " << (enable_raw_x_aux ? "true" : "false") << ",\n";
-    json << "    \"total_ratio_upper\": " << raw_x_aux_total_ratio << "\n";
-    json << "  },\n";
     json << "  \"elapsed_seconds\": " << elapsed_seconds << ",\n";
     json << "  \"sampling_rounds\": " << sampling_rounds << ",\n";
     json << "  \"early_stopped\": " << (early_stopped ? "true" : "false") << ",\n";
@@ -645,24 +654,6 @@ bool runRzfpAutoPlan(
         out_result.enable_x_sidecar = true;
     } else {
         out_result.enable_x_sidecar = false;
-    }
-
-    // Raw X aux: deterministic storage cost = main ratio + 1.0 + alignment overhead
-    const double alignmentFraction =
-        static_cast<double>(RAW_X_AUX_ALIGN - 1) / static_cast<double>(raw_size);
-    const double rawXAuxTotalUpper =
-        out_result.main_ratio_upper + 1.0 + alignmentFraction;
-    out_result.raw_x_aux_total_ratio = rawXAuxTotalUpper;
-
-    // Prefer raw X aux over sidecar when it fits in budget
-    if (rawXAuxTotalUpper <= config.storage_safety_limit) {
-        out_result.enable_raw_x_aux = true;
-        out_result.enable_x_sidecar = false; // raw X aux supersedes sidecar
-    } else if (rawXAuxTotalUpper <= config.storage_limit) {
-        out_result.enable_raw_x_aux = true;
-        // Still fits under hard limit but needs --force-storage-edge
-    } else {
-        out_result.enable_raw_x_aux = false;
     }
 
     out_result.elapsed_seconds = timer.elapsedSeconds();

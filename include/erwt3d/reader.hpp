@@ -79,11 +79,9 @@ public:
     // 一键配置
     void setHDDMode();
 
-void setProfileIO(bool enable) { profileIO_ = enable; }
+    void setProfileIO(bool enable) { profileIO_ = enable; }
     bool profileIO() const { return profileIO_; }
     const IOProfile& lastProfile() const { return lastProfile_; }
-
-    bool rawXAuxAvailable() const { return rawXAuxAvailable_; }
 
 private:
     std::string path_;
@@ -117,18 +115,6 @@ private:
     bool tryReadSliceXPSidecar_(uint64_t x, float* output, IOProfile* profile);
     bool tryReadBatchXPSidecar_(const std::vector<SliceBatchRequest>& requests,
                                 std::vector<bool>& handled);
-    
-    // Raw X auxiliary (full-coverage uncompressed X-plane region)
-    int rawXAuxFd_ = -1;
-    bool rawXAuxAvailable_ = false;
-    uint64_t rawXAuxOffset_ = 0;
-    uint64_t rawXAuxBytes_ = 0;
-    uint64_t rawXAuxPlaneBytes_ = 0;
-    std::vector<uint8_t> rawXAuxWindowBuf_;
-    void initRawXAux_();
-    bool tryReadSliceRawXAux_(uint64_t x, float* output);
-    bool tryReadBatchRawXAux_(const std::vector<SliceBatchRequest>& requests,
-                              std::vector<bool>& handled);
     
     bool readExtents(const std::vector<Extent>& extents, void* buffer);
     bool readExtentsThreaded(const std::vector<Extent>& extents, void* buffer, int numThreads);
