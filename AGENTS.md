@@ -106,6 +106,17 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 
 ## 当前性能
 
+### P2-hardening (HEAD: 0f5c185)
+
+- **硬上限 1.45x 永久不可绕过**：`--force-storage-edge` 仅在 1.445-1.450 之间生效
+- **事务式追加 + 自动回滚**：写入失败自动 `ftruncate` 恢复原始文件
+- **`readFullyAt/writeFullyAt`**：处理短读写和 EINTR，所有路径统一
+- **checkedMulU64/checkedAddU64**：所有尺寸计算防溢出
+- **Raw X 元数据校验**：版本、维度、对齐、边界，损坏时自动回退到主文件读取
+- **RawXAuxMode Auto/On/Off**：三态语义，Auto 超预算静默跳过
+- **删除伪 O_DIRECT**：保留已验证的普通 pread + DONTNEED
+- **11/11 CTest 通过**：新增 `test_raw_x_aux` 覆盖 bit-exact、批量、损坏回退、模式测试
+
 ### P2: Axis-Aware Hybrid Storage (branch: `perf/p2-axis-aware-hybrid`)
 
 G 盘 HDD，`--hdd` 模式，4GB 内存限制：
