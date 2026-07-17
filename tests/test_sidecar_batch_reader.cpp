@@ -4,7 +4,6 @@
 
 #include <cmath>
 #include <cstdint>
-#include <cstdlib>
 #include <fcntl.h>
 #include <iostream>
 #include <unistd.h>
@@ -49,9 +48,8 @@ bool writeRawFile(const std::string& path, uint64_t nx, uint64_t ny, uint64_t nz
 } // namespace
 
 int main() {
-    std::system("mkdir -p /mnt/d/opencode_tests");
-    const std::string raw_path = "/mnt/d/opencode_tests/test_batch_raw.raw";
-    const std::string rzfp_path = "/mnt/d/opencode_tests/test_batch_raw.rzfp";
+    const std::string raw_path = "/tmp/erwt3d_test_batch_raw.raw";
+    const std::string rzfp_path = "/tmp/erwt3d_test_batch_raw.rzfp";
     const std::string xp_path = rzfp_path + ".xp";
     const uint64_t nx = 48;
     const uint64_t ny = 40;
@@ -114,7 +112,6 @@ int main() {
     check(profile.pread_calls <= static_cast<uint64_t>(x_indices.size()),
           "batch read merged preads");
 
-    close(open(raw_path.c_str(), O_RDONLY));
     unlink(raw_path.c_str());
     unlink(rzfp_path.c_str());
     unlink(xp_path.c_str());
