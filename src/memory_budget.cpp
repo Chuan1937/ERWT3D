@@ -87,8 +87,12 @@ MemoryBudget makeMemoryBudget(
             return budget;
         }
 
+        // The 50 GB competition volume has an approximately 21 GB compressed
+        // RZFP payload. Six GiB of workspace leaves room for all group outputs,
+        // two active read windows, metadata and a reserve while still allowing
+        // the bounded cache to retain the complete payload on a 128 GB node.
         uint64_t payloadPlusWorkspace = 0;
-        if (!checkedAdd(payload_bytes, 4ULL * GiB, payloadPlusWorkspace)) {
+        if (!checkedAdd(payload_bytes, 6ULL * GiB, payloadPlusWorkspace)) {
             payloadPlusWorkspace = std::numeric_limits<uint64_t>::max();
         }
 
@@ -157,8 +161,6 @@ MemoryBudget makeMemoryBudget(
         return budget;
     }
 
-    // Preserve at least half of the variable budget for compressed payload
-    // reuse whenever the output group does not itself require all memory.
     const uint64_t outputAllowance = std::max<uint64_t>(
         bytes_per_output_slice,
         remaining / 2
@@ -188,9 +190,6 @@ MemoryBudget makeMemoryBudget(
         payload_bytes
     );
 
-    // Any capacity removed by the payload cap remains intentionally unused;
-    // it is safer than silently reallocating it to output buffers and violating
-    // the expected balance between working memory and kernel page cache.
     if (budget.accountedBytes() > budget.total_bytes) {
         budget.error = "internal memory budget accounting exceeded the limit";
         return budget;
