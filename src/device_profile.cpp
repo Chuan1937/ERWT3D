@@ -65,9 +65,6 @@ DeviceProfile calibrateDeviceProfile(
         return profile;
     }
 
-    // Sequential I/O: read up to three non-overlapping regions. Probe ranges
-    // are dropped before timing so an earlier benchmark cannot inflate the
-    // measured physical-device bandwidth through the page cache.
     {
         const uint64_t regionBytes = config.sequential_region_bytes;
         const uint32_t count = std::min<uint32_t>(config.sequential_region_count, 3);
@@ -116,10 +113,6 @@ DeviceProfile calibrateDeviceProfile(
             const double median = speeds[speeds.size() / 2];
             profile.sequential_mb_s = median;
 
-            // A large sample spread usually means one or more ranges were
-            // served from cache or a shared-storage tier. For strategy safety,
-            // prefer the lower physical estimate instead of overestimating the
-            // disk and accidentally selecting a large full scan.
             if (profile.maximum_sequential_mb_s >
                 std::max(1.0, profile.minimum_sequential_mb_s) * 1.75) {
                 profile.cache_contamination_suspected = true;
@@ -135,8 +128,6 @@ DeviceProfile calibrateDeviceProfile(
         }
     }
 
-    // Random seek probe. Each range is also dropped before timing to avoid
-    // measuring a memory hit as a disk seek.
     {
         const uint64_t probeBytes = config.random_probe_bytes;
         const uint32_t probeCount = config.random_probe_count;
@@ -236,7 +227,10 @@ DeviceProfile DeviceProfileCache::getOrCalibrate(
     const DeviceProfile profile =
         calibrateDeviceProfile(fd, file_size, config);
 
-    {
+    // A fallback from a small file is not a measured property of the device.
+    // Do not poison the device-wide cache; a later large competition file must
+    // still be able to perform the real calibration.
+    if (profile.calibrated) {
         std::lock_guard<std::mutex> lock(mutex_);
         cache_[key] = profile;
     }
