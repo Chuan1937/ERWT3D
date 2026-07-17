@@ -2,6 +2,7 @@
 
 #include "rzfp_format.hpp"
 #include "rzfp_xplane_codec.hpp"
+#include "device_profile.hpp"
 #include "slice.hpp"
 #include "sb_hdd.hpp"
 
@@ -63,11 +64,25 @@ struct RzfpReadProfile {
     }
 };
 
+struct RzfpAdaptiveConfig {
+    bool auto_calibrate_device = true;
+
+    CachePolicy cache_policy = CachePolicy::StableAuto;
+    double strategy_switch_margin = 0.15;
+
+    double max_fullscan_seconds = 120.0;
+    double fullscan_min_advantage = 0.20;
+
+    bool enable_strategy_probe = true;
+    uint64_t strategy_probe_bytes = 256ULL * 1024 * 1024;
+};
+
 struct RzfpReaderConfig {
     HDDReadWindowConfig hdd;
     RzfpReadStrategy strategy = RzfpReadStrategy::Auto;
     int decode_threads = 1;
     RzfpReadProfile* profile = nullptr;
+    RzfpAdaptiveConfig adaptive;
 };
 
 class RzfpReader {
@@ -102,6 +117,10 @@ private:
 
     std::vector<RzfpSuperblockIndex> sb_index_;
     std::vector<RzfpLeafDescriptor> descriptors_;
+
+    uint64_t file_size_ = 0;
+    DeviceProfile device_profile_;
+    bool device_profile_ready_ = false;
 
     // Optional 2D X-plane sidecar.
     bool has_xplane_ = false;
