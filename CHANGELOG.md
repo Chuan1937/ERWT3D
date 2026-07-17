@@ -2,6 +2,28 @@
 
 本文件记录 ERWT3D 的重要变更。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.7.0] - unreleased
+
+### Added
+
+- **P3: Adaptive and Cache-Stable I/O**（branch: `perf/p3-adaptive-cache-stable-io`）：
+  - **`DeviceProfile`**：运行时测量顺序带宽（3×128MB 中位数）和随机延迟（64×64KB 去极值）
+  - **`DeviceProfileCache`**：线程安全单例，按 `st_dev` 缓存
+  - **`CachePolicy`**：StableAuto / DeterministicCold / WarmAllowed
+  - **`RzfpAdaptiveConfig`**：15% 迟滞、120s Fullscan 超时、20% 最低优势
+  - **`chooseAdaptiveStrategy()`**：I/O + seek + decode 统一成本模型
+  - **Fullscan 灾难保护**：慢盘 + 大文件禁止 Fullscan；超时需额外优势
+  - **`--cache-policy` CLI**（stable-auto/cold/warm）
+
+### Changed
+
+- RZFP 策略选择不再使用硬编码 220 MB/s，改用实测带宽
+- 保守默认值：80 MB/s / 12ms（不再 220/9）
+
+### Fixed
+
+- 慢盘上 Y random 不再错误选择灾难性 FullPayloadScan
+
 ## [0.6.0] - 2026-07-17
 
 ### Changed

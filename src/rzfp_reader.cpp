@@ -257,6 +257,249 @@ static uint64_t totalPayloadBytes(const std::vector<RzfpSuperblockIndex>& sb_ind
     return total;
 }
 
+struct StrategyEstimate {
+    RzfpReadStrategy strategy;
+    uint64_t read_bytes = 0;
+    uint64_t pread_calls = 0;
+    uint64_t decoded_records = 0;
+    double io_seconds = 0.0;
+    double seek_seconds = 0.0;
+    double decode_seconds = 0.0;
+    double total_seconds = 0.0;
+    bool allowed = true;
+    std::string rejection_reason;
+};
+
+struct StrategyDecision {
+    RzfpReadStrategy selected;
+    StrategyEstimate selective;
+    StrategyEstimate whole;
+    StrategyEstimate fullscan;
+    bool uncertain = false;
+    std::string reason;
+};
+
+static uint64_t estimateWholeWindowBytes(
+    const std::vector<RzfpLeafTask>& tasks,
+    const std::vector<RzfpSuperblockIndex>& sb_index,
+    uint64_t read_window,
+    uint64_t max_gap,
+    uint64_t& pread_calls
+) {
+    std::unordered_set<uint64_t> touched_sbs;
+    for (const auto& t : tasks) touched_sbs.insert(t.physical_sb_id);
+
+    std::vector<ReadInterval> sb_intervals;
+    sb_intervals.reserve(touched_sbs.size());
+    for (uint64_t sbid : touched_sbs) {
+        sb_intervals.push_back({sb_index[sbid].payload_offset, sb_index[sbid].payload_bytes, sbid});
+    }
+    std::sort(sb_intervals.begin(), sb_intervals.end(), [](const ReadInterval& a, const ReadInterval& b) {
+        return a.offset < b.offset;
+    });
+
+    pread_calls = 0;
+    uint64_t bytes = 0;
+    for (size_t i = 0; i < sb_intervals.size();) {
+        uint64_t wstart = sb_intervals[i].offset;
+        uint64_t wend = wstart + sb_intervals[i].size;
+        size_t j = i + 1;
+        while (j < sb_intervals.size()) {
+            const uint64_t off = sb_intervals[j].offset;
+            if (off > wend + max_gap) break;
+            if (off + sb_intervals[j].size - wstart > read_window) break;
+            wend = off + sb_intervals[j].size;
+            ++j;
+        }
+        bytes += wend - wstart;
+        ++pread_calls;
+        i = j;
+    }
+    return bytes;
+}
+
+static StrategyDecision chooseAdaptiveStrategy(
+    int fd,
+    const std::vector<RzfpLeafTask>& tasks,
+    const std::vector<RzfpSuperblockIndex>& sb_index,
+    const RzfpReaderConfig& config,
+    uint64_t leavesPerSB,
+    const DeviceProfile& deviceProfile
+) {
+    StrategyDecision decision;
+
+    const uint64_t read_window = config.hdd.read_window_bytes > 0
+                                     ? config.hdd.read_window_bytes
+                                     : (512ULL * 1024 * 1024);
+    const uint64_t max_gap = config.hdd.max_gap_bytes > 0
+                                 ? config.hdd.max_gap_bytes
+                                 : (8ULL * 1024 * 1024);
+
+    double seqMBs = config.hdd.sequential_mb_s;
+    if (seqMBs <= 0.0 && config.adaptive.auto_calibrate_device) {
+        seqMBs = deviceProfile.sequential_mb_s;
+    }
+    if (seqMBs <= 1.0) seqMBs = 80.0;
+
+    double seekMs = config.hdd.seek_ms;
+    if (seekMs <= 0.0 && deviceProfile.calibrated) {
+        seekMs = deviceProfile.random_seek_ms;
+    }
+    if (seekMs <= 0.0) seekMs = 12.0;
+
+    const double seqBytePerSec = seqMBs * 1024.0 * 1024.0;
+
+    // Decode rate: conservative default, updated from profile history
+    double decodeRecordsPerSec = 500000.0; // ~2us per leaf
+
+    // --- Selective estimate ---
+    uint64_t selective_preads = 0;
+    decision.selective.strategy = RzfpReadStrategy::SelectiveLeaf;
+    decision.selective.read_bytes = estimateSelectiveBytes(tasks, read_window, max_gap, selective_preads);
+    decision.selective.pread_calls = selective_preads;
+    decision.selective.decoded_records = tasks.size();
+    decision.selective.io_seconds = static_cast<double>(decision.selective.read_bytes) / seqBytePerSec;
+    decision.selective.seek_seconds = static_cast<double>(selective_preads) * seekMs / 1000.0;
+    decision.selective.decode_seconds = static_cast<double>(tasks.size()) / decodeRecordsPerSec;
+    decision.selective.total_seconds = decision.selective.io_seconds + decision.selective.seek_seconds + decision.selective.decode_seconds;
+
+    // --- Whole estimate ---
+    uint64_t whole_preads = 0;
+    decision.whole.strategy = RzfpReadStrategy::WholeSuperblock;
+    decision.whole.read_bytes = estimateWholeWindowBytes(tasks, sb_index, read_window, max_gap, whole_preads);
+    decision.whole.pread_calls = whole_preads;
+    decision.whole.decoded_records = tasks.size();
+    decision.whole.io_seconds = static_cast<double>(decision.whole.read_bytes) / seqBytePerSec;
+    decision.whole.seek_seconds = static_cast<double>(whole_preads) * seekMs / 1000.0;
+    decision.whole.decode_seconds = static_cast<double>(tasks.size()) / decodeRecordsPerSec;
+    decision.whole.total_seconds = decision.whole.io_seconds + decision.whole.seek_seconds + decision.whole.decode_seconds;
+
+    // --- Fullscan estimate ---
+    const uint64_t fullscan_bytes = totalPayloadBytes(sb_index);
+    decision.fullscan.strategy = RzfpReadStrategy::FullPayloadScan;
+    decision.fullscan.read_bytes = fullscan_bytes;
+    decision.fullscan.pread_calls = std::max<uint64_t>(1, (fullscan_bytes + read_window - 1) / read_window);
+    decision.fullscan.decoded_records = tasks.size();
+    decision.fullscan.io_seconds = static_cast<double>(fullscan_bytes) / seqBytePerSec;
+    decision.fullscan.seek_seconds = static_cast<double>(decision.fullscan.pread_calls) * seekMs / 1000.0;
+    decision.fullscan.decode_seconds = static_cast<double>(tasks.size()) / decodeRecordsPerSec;
+    decision.fullscan.total_seconds = decision.fullscan.io_seconds + decision.fullscan.seek_seconds + decision.fullscan.decode_seconds;
+
+    // --- Fullscan protection ---
+    if (decision.fullscan.total_seconds > config.adaptive.max_fullscan_seconds) {
+        decision.fullscan.allowed = false;
+        decision.fullscan.rejection_reason = "predicted full scan exceeds max (" +
+            std::to_string(static_cast<int>(decision.fullscan.total_seconds)) + "s > " +
+            std::to_string(static_cast<int>(config.adaptive.max_fullscan_seconds)) + "s)";
+    }
+
+    if (seqMBs < 100.0 && fullscan_bytes > 8ULL * 1024 * 1024 * 1024) {
+        decision.fullscan.allowed = false;
+        decision.fullscan.rejection_reason = "large full scan (" +
+            std::to_string(fullscan_bytes / (1024*1024*1024)) + " GB) disabled on slow device (" +
+            std::to_string(static_cast<int>(seqMBs)) + " MB/s)";
+    }
+
+    // --- Select best strategy ---
+    const double margin = config.adaptive.strategy_switch_margin;
+
+    StrategyEstimate candidates[3] = {decision.selective, decision.whole, decision.fullscan};
+    std::sort(candidates, candidates + 3, [](const StrategyEstimate& a, const StrategyEstimate& b) {
+        return a.total_seconds < b.total_seconds;
+    });
+
+    const StrategyEstimate& best = candidates[0];
+    const StrategyEstimate& second = candidates[1];
+
+    double gap = best.total_seconds > 0
+                     ? (second.total_seconds - best.total_seconds) / best.total_seconds
+                     : 0.0;
+
+    if (!best.allowed) {
+        // If best is Fullscan and not allowed, fall through to next best
+        if (candidates[1].allowed) {
+            decision.selected = candidates[1].strategy;
+            decision.reason = "best strategy (" + std::to_string(static_cast<int>(best.strategy)) +
+                              ") rejected: " + best.rejection_reason;
+        } else if (candidates[2].allowed) {
+            decision.selected = candidates[2].strategy;
+            decision.reason = "top 2 strategies rejected, falling back";
+        } else {
+            decision.selected = RzfpReadStrategy::SelectiveLeaf;
+            decision.reason = "all strategies rejected, forced SelectiveLeaf";
+        }
+    } else if (gap >= margin) {
+        decision.selected = best.strategy;
+        decision.reason = "best strategy wins by " + std::to_string(static_cast<int>(gap * 100)) + "% margin";
+    } else {
+        // Uncertain: prefer reads-less-bytes first, Whole > Selective > Fullscan
+        decision.uncertain = true;
+        const StrategyEstimate* prefs[3] = {&decision.whole, &decision.selective, &decision.fullscan};
+        for (const auto* s : prefs) {
+            if (s->allowed) {
+                decision.selected = s->strategy;
+                decision.reason = "uncertain (" + std::to_string(static_cast<int>(gap * 100)) +
+                                  "% gap); preferring lower read volume (" +
+                                  std::to_string(s->read_bytes / (1024*1024)) + " MB)";
+                break;
+            }
+        }
+    }
+
+    // Fullscan minimum advantage check
+    if (decision.selected == RzfpReadStrategy::FullPayloadScan) {
+        double advantage = decision.fullscan.total_seconds > 0
+            ? std::min((decision.selective.total_seconds - decision.fullscan.total_seconds) / decision.fullscan.total_seconds,
+                       (decision.whole.total_seconds - decision.fullscan.total_seconds) / decision.fullscan.total_seconds)
+            : 0.0;
+        if (advantage < config.adaptive.fullscan_min_advantage && decision.selective.allowed) {
+            decision.selected = decision.selective.strategy;
+            decision.reason = "Fullscan min advantage (" + std::to_string(static_cast<int>(advantage * 100)) +
+                              "%) below threshold (" + std::to_string(static_cast<int>(config.adaptive.fullscan_min_advantage * 100)) + "%)";
+        }
+    }
+
+    // Strategy probe: when uncertain, run a small pilot to measure real throughput
+    if (decision.uncertain && config.adaptive.enable_strategy_probe &&
+        config.adaptive.strategy_probe_bytes > 0 && !sb_index.empty() && fd >= 0) {
+        const uint64_t probeBytes = std::min<uint64_t>(config.adaptive.strategy_probe_bytes,
+                                                        sb_index[0].payload_bytes * 4);
+        uint64_t probeStart = sb_index[0].payload_offset;
+        std::vector<uint8_t> probeBuf(probeBytes);
+
+        auto probeT0 = Clock::now();
+        bool probeOk = readFullyAt(fd, probeBuf.data(), probeBytes, probeStart);
+        auto probeT1 = Clock::now();
+
+        if (probeOk) {
+            double probeElapsed = std::chrono::duration<double>(probeT1 - probeT0).count();
+            double observedMBs = (probeBytes / (1024.0 * 1024.0)) / std::max(probeElapsed, 0.001);
+            double scale = std::max(0.5, std::min(2.0, observedMBs / std::max(seqMBs, 1.0)));
+
+            // Re-evaluate with observed scale for the top 2 strategies
+            double selAdj = decision.selective.total_seconds * (1.0 / scale);
+            double wholeAdj = decision.whole.total_seconds * (1.0 / scale);
+            double fullAdj = decision.fullscan.total_seconds * (1.0 / scale);
+
+            if (selAdj < wholeAdj && selAdj < fullAdj && decision.selective.allowed) {
+                decision.selected = RzfpReadStrategy::SelectiveLeaf;
+                decision.uncertain = false;
+                decision.reason = "probe corrected (observed " + std::to_string(static_cast<int>(observedMBs)) +
+                                  " MB/s, scale " + std::to_string(static_cast<int>(scale * 100)) + "%)";
+            } else if (wholeAdj < selAdj && wholeAdj < fullAdj && decision.whole.allowed) {
+                decision.selected = RzfpReadStrategy::WholeSuperblock;
+                decision.uncertain = false;
+                decision.reason = "probe corrected (observed " + std::to_string(static_cast<int>(observedMBs)) + " MB/s)";
+            }
+
+            posix_fadvise(fd, static_cast<off_t>(probeStart),
+                          static_cast<off_t>(probeBytes), POSIX_FADV_DONTNEED);
+        }
+    }
+
+    return decision;
+}
+
 static RzfpReadStrategy chooseStrategy(
     const std::vector<RzfpLeafTask>& tasks,
     const std::vector<RzfpSuperblockIndex>& sb_index,
@@ -273,7 +516,6 @@ static RzfpReadStrategy chooseStrategy(
                                  ? config.hdd.max_gap_bytes
                                  : (8ULL * 1024 * 1024);
 
-    // Drive parameters for the cost model.
     const double seek_ms = config.hdd.seek_ms > 0.0 ? config.hdd.seek_ms : 9.0;
     const double seq_mb_s = config.hdd.sequential_mb_s > 0.0 ? config.hdd.sequential_mb_s : 220.0;
     const double seq_byte_ms = 1.0 / (seq_mb_s * 1024.0 * 1024.0 / 1000.0);
@@ -294,13 +536,9 @@ static RzfpReadStrategy chooseStrategy(
                                      ? static_cast<double>(tasks.size()) / static_cast<double>(totalLeaves)
                                      : 1.0;
 
-    // Full payload scan reads everything in one large sequential sweep.
-    // On HDD this is often faster than a selective read that drags in most
-    // of the file through many small windows.
     const uint64_t fullscan_preads = std::max<uint64_t>(1, (fullscan_bytes + read_window - 1) / read_window);
     const double fullscan_time = estimateTime(fullscan_bytes, fullscan_preads);
 
-    // Whole-superblock merges touched superblock payloads.
     uint64_t whole_preads = 0;
     std::vector<ReadInterval> sb_intervals;
     sb_intervals.reserve(touched_sbs.size());
@@ -329,15 +567,12 @@ static RzfpReadStrategy chooseStrategy(
     const double selective_time = estimateTime(selective_bytes, selective_preads);
     const double whole_time = estimateTime(whole_sb_bytes, whole_preads);
 
-    // If the selective read would already consume most of the payload, a single
-    // sequential full scan wins due to lower seek overhead.
     if (selective_bytes > fullscan_bytes * 0.85 || fullscan_time < selective_time * 0.9) {
         if (leaf_coverage > 0.05 || fullscan_bytes < selective_bytes * 1.2) {
             return RzfpReadStrategy::FullPayloadScan;
         }
     }
 
-    // Prefer whole-SB when it is clearly cheaper than selective.
     if (whole_time < selective_time && whole_sb_bytes < selective_bytes * 1.05) {
         return RzfpReadStrategy::WholeSuperblock;
     }
@@ -727,6 +962,7 @@ RzfpReader::RzfpReader(const std::string& path) : path_(path), fd_(-1) {
 
     openXPlaneSidecar();
     initRawXAux_();
+    file_size_ = fileSize;
 }
 
 RzfpReader::~RzfpReader() {
@@ -1203,9 +1439,28 @@ bool RzfpReader::readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
 
     RzfpReadStrategy strategy = config.strategy;
     if (strategy == RzfpReadStrategy::Auto) {
-        strategy = chooseStrategy(tasks, sb_index_, config, leavesPerSB);
+        if (config.adaptive.auto_calibrate_device && !device_profile_ready_) {
+            device_profile_ = DeviceProfileCache::instance().getOrCalibrate(fd_, file_size_);
+            device_profile_ready_ = true;
+        }
+        auto decision = chooseAdaptiveStrategy(fd_, tasks, sb_index_, config, leavesPerSB, device_profile_);
+        strategy = decision.selected;
     }
     profile->selected_strategy = strategy;
+
+    if (config.adaptive.cache_policy == CachePolicy::DeterministicCold) {
+        uint64_t payloadStart = header_.payload_offset;
+        uint64_t payloadEnd = payloadStart;
+        for (const auto& sb : sb_index_) {
+            uint64_t end = 0;
+            if (checkedAddU64(sb.payload_offset, sb.payload_bytes, end) && end > payloadEnd)
+                payloadEnd = end;
+        }
+        if (payloadEnd > payloadStart) {
+            posix_fadvise(fd_, static_cast<off_t>(payloadStart),
+                          static_cast<off_t>(payloadEnd - payloadStart), POSIX_FADV_DONTNEED);
+        }
+    }
 
     bool ok = false;
     switch (strategy) {

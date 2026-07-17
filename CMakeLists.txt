@@ -77,6 +77,7 @@ set(LIB_SOURCES
     src/thread_pool.cpp
     src/sb_common.cpp
     src/sb_hdd.cpp
+    src/device_profile.cpp
     src/sb_panel.cpp
     src/api.cpp
     src/lz4_probe.cpp
