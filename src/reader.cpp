@@ -635,14 +635,35 @@ void ERWT3DReader::initRawXAux_() {
     if (fstat(fd_, &st) != 0) return;
     uint64_t fileSize = static_cast<uint64_t>(st.st_size);
 
-    // Compute minimum offset: must be after all compressed content
-    uint64_t minimumOffset = sizeof(header_);
+    // Compute minimum offset: must be after all file content
+    uint64_t mainEnd = sizeof(header_);
     if (compressed_ && !compIndex_.empty()) {
         for (const auto& entry : compIndex_) {
             uint64_t end = entry.file_offset + entry.compressed_size;
-            if (end > minimumOffset) minimumOffset = end;
+            if (end > mainEnd) mainEnd = end;
         }
+        // Also account for the compression index itself
+        uint64_t idxEnd = getCompressionIndexOffset(header_) +
+                          getCompressedBlockCount(header_) * sizeof(CompressedBlockIndex);
+        if (idxEnd > mainEnd) mainEnd = idxEnd;
+    } else {
+        uint64_t sbTotal = 0;
+        if (checkedMulU64(getTotalSuperblocks(header_), getSuperblockBytes(header_), sbTotal))
+            mainEnd = header_.data_offset + sbTotal;
     }
+    if (hasXPanels(header_)) {
+        uint64_t panelEnd = getPanelDataOffset(header_) + getPanelStorageBytes(header_);
+        if (panelEnd > mainEnd) mainEnd = panelEnd;
+        uint64_t panelIdxEnd = getPanelIndexOffset(header_) + getTotalSuperblocks(header_) * sizeof(uint64_t);
+        if (panelIdxEnd > mainEnd) mainEnd = panelIdxEnd;
+    }
+    if (hasXPlanes(header_)) {
+        uint64_t xPlaneTotal = 0;
+        if (checkedMulU64(getXPlaneCount(header_), header_.ny * header_.nz * sizeof(float), xPlaneTotal))
+            { uint64_t xpEnd = getXPlaneOffset(header_) + xPlaneTotal; if (xpEnd > mainEnd) mainEnd = xpEnd; }
+    }
+
+    uint64_t minimumOffset = (mainEnd + RAW_X_AUX_ALIGN - 1) & ~(RAW_X_AUX_ALIGN - 1);
 
     auto err = validateRawXAuxRegion(fileSize, minimumOffset,
                                       header_.nx, header_.ny, header_.nz, region);
@@ -670,8 +691,7 @@ bool ERWT3DReader::tryReadSliceRawXAux_(uint64_t x, float* output) {
     uint64_t planeBytes = header_.ny * header_.nz * sizeof(float);
     uint64_t offset = rawXAuxOffset_ + x * rawXAuxPlaneBytes_;
 
-    ssize_t n = pread(rawXAuxFd_, output, planeBytes, offset);
-    if (n != static_cast<ssize_t>(planeBytes)) return false;
+    if (!readFullyAt(rawXAuxFd_, output, planeBytes, offset)) return false;
 
     posix_fadvise(rawXAuxFd_, static_cast<off_t>(offset),
                   static_cast<off_t>(planeBytes), POSIX_FADV_DONTNEED);
@@ -738,8 +758,7 @@ bool ERWT3DReader::tryReadBatchRawXAux_(
         uint64_t wsize = wend - wstart;
 
         std::vector<uint8_t> winBuf(wsize);
-        ssize_t n = pread(rawXAuxFd_, winBuf.data(), wsize, wstart);
-        if (n != static_cast<ssize_t>(wsize)) return false;
+        if (!readFullyAt(rawXAuxFd_, winBuf.data(), wsize, wstart)) return false;
 
         for (size_t k = i; k < j; ++k) {
             uint64_t off_in_window = tasks[k].file_offset - wstart;

@@ -146,7 +146,9 @@ static std::vector<RzfpLeafTask> buildLeafTasks(
 
 static constexpr uint32_t PREFIX_CHECKPOINT_STRIDE = 16;
 
-static std::unordered_map<uint64_t, std::vector<uint32_t>> buildPrefixCheckpoints(
+using PrefixCheckpointMap = std::unordered_map<uint64_t, std::vector<uint32_t>>;
+
+static PrefixCheckpointMap buildPrefixCheckpoints(
     const std::vector<RzfpLeafTask>& tasks,
     const std::vector<RzfpLeafDescriptor>& descriptors,
     uint64_t leavesPerSB
@@ -192,7 +194,7 @@ static void computeTaskOffsets(
     const std::vector<RzfpLeafDescriptor>& descriptors,
     const std::vector<RzfpSuperblockIndex>& sb_index,
     uint64_t leavesPerSB,
-    const std::unordered_map<uint64_t, std::vector<uint32_t>>& checkpoints,
+    const PrefixCheckpointMap& checkpoints,
     double& prefix_time_ms
 ) {
     auto t0 = Clock::now();
@@ -494,7 +496,7 @@ static bool executeSelectiveLeaf(
 static bool executeWholeSuperblock(
     int fd,
     const std::vector<RzfpLeafTask>& tasks,
-    const std::unordered_map<uint64_t, std::vector<uint32_t>>& checkpoints,
+    const PrefixCheckpointMap& checkpoints,
     const std::vector<RzfpLeafDescriptor>& descriptors,
     const std::vector<RzfpSuperblockIndex>& sb_index,
     const ERWT3DHeader& plan_hdr,
@@ -551,11 +553,11 @@ static bool executeFullPayloadScan(
     const RzfpFileHeader& header,
     const ERWT3DHeader& plan_hdr,
     const RzfpReaderConfig& config,
-    RzfpReadProfile& profile
+    RzfpReadProfile& profile,
+    const PrefixCheckpointMap& checkpoints
 ) {
     const uint64_t leavesPerSB = rzfpTotalLeafsPerSuper(header);
     auto groups = groupTasksBySuperblock(tasks);
-    auto checkpoints = buildPrefixCheckpoints(tasks, descriptors, leavesPerSB);
 
     std::vector<ReadInterval> intervals;
     intervals.reserve(sb_index.size());
@@ -729,8 +731,10 @@ void RzfpReader::initRawXAux_() {
     // Minimum offset: after all RZFP payload
     uint64_t minimumOffset = header_.payload_offset;
     for (const auto& sb : sb_index_) {
-        uint64_t end = sb.payload_offset + sb.payload_bytes;
-        if (end > minimumOffset) minimumOffset = end;
+        uint64_t end = 0;
+        if (checkedAddU64(sb.payload_offset, sb.payload_bytes, end)) {
+            if (end > minimumOffset) minimumOffset = end;
+        }
     }
 
     auto err = validateRawXAuxRegion(fileSize, minimumOffset,
@@ -1193,7 +1197,7 @@ bool RzfpReader::readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
             ok = executeWholeSuperblock(fd_, tasks, checkpoints, descriptors_, sb_index_, plan_hdr, config, *profile, leavesPerSB);
             break;
         case RzfpReadStrategy::FullPayloadScan:
-            ok = executeFullPayloadScan(fd_, tasks, sb_index_, descriptors_, header_, plan_hdr, config, *profile);
+            ok = executeFullPayloadScan(fd_, tasks, sb_index_, descriptors_, header_, plan_hdr, config, *profile, checkpoints);
             break;
         default:
             ok = executeSelectiveLeaf(fd_, tasks, plan_hdr, config, *profile);

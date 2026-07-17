@@ -16,7 +16,7 @@ namespace erwt3d {
 constexpr double RAW_X_AUX_HARD_LIMIT = 1.450;
 constexpr double RAW_X_AUX_MAX_RATIO = 1.445;
 constexpr double RAW_X_AUX_AUTO_LIMIT = 1.440;
-constexpr uint64_t RAW_X_AUX_MIN_RAW_BYTES_FOR_RATIO_CHECK = 10ULL * 1024 * 1024; // skip ratio check for tiny test datasets
+constexpr uint64_t RAW_X_AUX_MIN_RAW_BYTES_FOR_RATIO_CHECK = 10ULL * 1024 * 1024;
 constexpr uint32_t RAW_X_AUX_ALIGN = 4096;
 constexpr uint64_t RAW_X_AUX_COPY_CHUNK = 256ULL * 1024 * 1024;
 
@@ -48,6 +48,16 @@ struct RawXAuxStats {
                status == RawXAuxStatus::AlreadyPresent;
     }
 };
+
+inline bool isRawXAuxBudgetSkip(const RawXAuxStats& stats) {
+    return stats.status == RawXAuxStatus::SkippedStorageBudget;
+}
+
+inline void setRawXAuxFailure(RawXAuxStats* stats, const std::string& message) {
+    if (!stats) return;
+    stats->status = RawXAuxStatus::Failed;
+    stats->message = message;
+}
 
 struct RawXAuxRegion {
     uint64_t offset = 0;
@@ -125,30 +135,64 @@ inline bool writeFullyAt(int fd, const void* buffer, uint64_t bytes, uint64_t of
     return true;
 }
 
+class ScopedFd {
+public:
+    explicit ScopedFd(int fd = -1) noexcept : fd_(fd) {}
+    ~ScopedFd() { reset(); }
+    ScopedFd(const ScopedFd&) = delete;
+    ScopedFd& operator=(const ScopedFd&) = delete;
+    ScopedFd(ScopedFd&& other) noexcept : fd_(other.release()) {}
+    ScopedFd& operator=(ScopedFd&& other) noexcept {
+        if (this != &other) reset(other.release());
+        return *this;
+    }
+    int get() const noexcept { return fd_; }
+    bool valid() const noexcept { return fd_ >= 0; }
+    int release() noexcept { int r = fd_; fd_ = -1; return r; }
+    void reset(int newFd = -1) noexcept {
+        if (fd_ >= 0) close(fd_);
+        fd_ = newFd;
+    }
+private:
+    int fd_ = -1;
+};
+
 class FileAppendTransaction {
 public:
     FileAppendTransaction(int fd, uint64_t originalSize)
         : fd_(fd), originalSize_(originalSize) {}
-
     FileAppendTransaction(const FileAppendTransaction&) = delete;
     FileAppendTransaction& operator=(const FileAppendTransaction&) = delete;
-
-    ~FileAppendTransaction() {
-        if (!committed_) rollback();
-    }
-
-    bool commit() { committed_ = true; return true; }
-
-    bool rollback() {
+    ~FileAppendTransaction() { if (!committed_) rollback(); }
+    bool commit() noexcept { committed_ = true; return true; }
+    bool rollback() noexcept {
         if (fd_ < 0) return false;
-        if (ftruncate(fd_, static_cast<off_t>(originalSize_)) != 0) return false;
-        return fsync(fd_) == 0;
+        bool ok = true;
+        if (ftruncate(fd_, static_cast<off_t>(originalSize_)) != 0) ok = false;
+        if (fsync(fd_) != 0) ok = false;
+        return ok;
     }
-
 private:
     int fd_;
     uint64_t originalSize_;
     bool committed_ = false;
+};
+
+template <typename HeaderType>
+class FileAppendTransactionWithHeader : public FileAppendTransaction {
+public:
+    FileAppendTransactionWithHeader(int fd, uint64_t originalSize, const HeaderType& originalHeader)
+        : FileAppendTransaction(fd, originalSize), originalHeader_(originalHeader) {}
+    bool rollback() noexcept {
+        if (fd_ < 0) return false;
+        bool ok = true;
+        if (ftruncate(fd_, static_cast<off_t>(originalSize_)) != 0) ok = false;
+        if (!writeFullyAt(fd_, &originalHeader_, sizeof(originalHeader_), 0)) ok = false;
+        if (fsync(fd_) != 0) ok = false;
+        return ok;
+    }
+private:
+    HeaderType originalHeader_;
 };
 
 inline RawXAuxValidationError validateRawXAuxRegion(
