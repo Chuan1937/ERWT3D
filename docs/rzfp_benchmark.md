@@ -1,130 +1,118 @@
 # RZFP 基准测试结果
 
-除非特别说明，所有时间均为本地测试机上的 wall-clock 读取 + 写入时间。
+所有时间均为 G 盘 HDD 上的 wall-clock 读取+写入时间，Z-fastest 布局修正后重新生成并验证。
 
-## Probe 结果
+## 20GB 真实数据（801×2405×2501）
 
-Probe 使用 1 000 000 个分层采样 Leaf，内部相对误差界 `0.00075`，比赛误差界 `0.001`，物理顺序 `ZYX`。
+### RZFP 主文件
 
-### 64³ 合成随机 [0,1]
-
-```text
-violation_count:        0
-max_relative_error:     0.000999
-projected_file_ratio:   0.610x
-raw_fallback_ratio:     5.5%
+```
+T_x_random:      177.1s
+T_y_random:       63.6s
+T_z_random:       56.8s
+T_x_continuous:    6.06s
+T_y_continuous:    2.03s
+T_z_continuous:    1.85s
+T_composite:      51.26s
+storage_ratio:     0.607x (10.9 GB)
+verification:      fast-full 4.8B points, 0 failures, max_rel_error=0.001
 ```
 
-### 17×19×21 边界测试
+### LZ4 主文件
 
-```text
-violation_count:        0
-max_relative_error:     0.000999
-projected_file_ratio:   0.790x
-raw_fallback_ratio:     15.3%
+```
+T_x_random:      129.3s
+T_y_random:       39.5s
+T_z_random:       39.9s
+T_x_continuous:    3.96s
+T_y_continuous:    1.40s
+T_z_continuous:    1.32s
+T_composite:      35.89s
+storage_ratio:     0.432x (7.8 GB)
+verification:      100K random points, 0 failures
 ```
 
-### 20GB 真实数据（`801×2405×2501`）
+### LZ4 + X-plane sidecar stride=1
 
-```text
-violation_count:        0
-max_relative_error:     0.000999
-projected_file_ratio:   0.878x
-raw_fallback_ratio:     30.8%
-codec_distribution:
-  RawFloat32:            30.8%
-  ZfpAccuracyExceptions: 69.1%
-  ZfpPrecision:          <0.1%
+```
+T_x_random:       12.7s
+T_y_random:      102.1s
+T_z_random:       44.5s
+T_x_continuous:    1.25s
+T_y_continuous:    1.25s
+T_z_continuous:    1.37s
+T_composite:      27.19s
+storage_ratio:     0.526x (7.8 GB + 1.7 GB)
 ```
 
-### 50GB 真实数据（`2001×2201×3000`）
+### LZ4 + X-plane sidecar stride=2 （推荐）
 
-```text
-violation_count:        0
-max_relative_error:     0.001000
-projected_file_ratio:   0.843x
-raw_fallback_ratio:     23.8%
-codec_distribution:
-  RawFloat32:            23.8%
-  ZfpAccuracyExceptions: 55.1%
-  ZfpPrecision:          18.9%
-  ZfpAccuracy:           2.2%
+```
+T_x_random:       45.4s
+T_y_random:       40.9s
+T_z_random:       39.3s
+T_x_continuous:    4.53s
+T_y_continuous:    1.43s
+T_z_continuous:    1.39s
+T_composite:      22.09s
+storage_ratio:     0.479x (7.8 GB + 868 MB)
 ```
 
-## 小规模端到端
+## 50GB 真实数据（2001×2201×3000）
 
-| 体积 | 转换后存储比 | 完整校验 |
-|------|-------------|----------|
-| 64³  | 0.586x      | 通过     |
-| 17³  | 1.000x      | 通过     |
+### RZFP 主文件（推荐）
 
-## 比赛基准（小规模，100 随机 / 10 连续）
-
-机器：本地 SSD，单线程，512 MB 内存限制。
-
-```text
-X random:     0.0085s
-Y random:     0.0073s
-Z random:     0.0077s
-X continuous: 0.0016s
-Y continuous: 0.0015s
-Z continuous: 0.0017s
-T_composite:  0.0047s
-storage_ratio: 0.586x
+```
+T_x_random:      317.6s
+T_y_random:      139.3s
+T_z_random:      118.8s
+T_x_continuous:    5.63s
+T_y_continuous:    9.29s
+T_z_continuous:    3.72s
+T_composite:      99.06s
+storage_ratio:     0.421x (21 GB)
+verification:      fast-full 13.2B points, 0 failures, max_rel_error=0.001
 ```
 
-## HDD 比赛基准
+### LZ4 主文件
 
-机器：D 盘 HDD，单 I/O 线程，8 个解码线程，4 GB 内存限制，512 MB 读窗口，8 MB 最大 gap，策略 `auto`。
-
-### 20GB 真实数据（`801×2405×2501`）
-
-格式：RZFP 主文件 + 2D X-plane sidecar（stride = 1）。
-
-```text
-T_x_random:     ~15s
-T_y_random:     ~?
-T_z_random:     ~?
-T_x_continuous: ~?
-T_y_continuous: ~?
-T_z_continuous: ~?
-T_composite:    23.80s
-storage_ratio:  1.369x
+```
+T_x_random:      453.7s
+T_y_random:      184.3s
+T_z_random:      174.0s
+T_x_continuous:    7.75s
+T_y_continuous:    6.15s
+T_z_continuous:    4.69s
+T_composite:     138.41s
+storage_ratio:     1.044x (52 GB, 未压缩)
 ```
 
-X-plane sidecar 是 X 随机访问最大的收益点；20GB 数据集的 YZ 平面空间相关性好，sidecar 压缩率可行。
+## 推荐方案
 
-### 50GB 真实数据（`2001×2201×3000`）
+| 数据集 | 推荐格式 | T_composite | 存储比 |
+|--------|----------|------------|--------|
+| 20GB | LZ4 + sidecar s2 | 22.09s | 0.479x |
+| 50GB | RZFP | 99.06s | 0.421x |
 
-格式：仅 RZFP 主文件，不使用 X-plane sidecar。
+## 自动规划器验证
 
-```text
-T_x_random:     ~?
-T_y_random:     ~?
-T_z_random:     ~?
-T_x_continuous: ~?
-T_y_continuous: ~?
-T_z_continuous: ~?
-T_composite:    83.58s
-storage_ratio:  0.804x
-```
+使用 `erwt3d_auto_plan`，基于 LZ4 Probe + RZFP AutoPlan + HDD 校准：
 
-50GB 数据集不适合加 sidecar：sidecar 压缩率仅约 0.979x，16 GB 的 sidecar 会污染 page cache，反而降低性能。关键改进是读窗口从 128 MB/2 MB 提升到 512 MB/8 MB（此前同配置约 123s）。
+| 数据集 | Planner 推荐 | 实际最优 | 一致？ |
+|--------|-------------|---------|-------|
+| 20GB | LZ4 + sidecar s2 (ratio=0.419) | LZ4 + sidecar s2 | ✓ |
+| 50GB | RZFP main (ratio=0.420) | RZFP main | ✓ |
 
-> **注意：** 83.58s 是当前最佳测量值，正式基准需要补充多轮冷缓存与热缓存重复性测试。该工作已在 PR #50 中跟踪。
+## 测试环境
 
-## 存储格式建议
-
-| 数据集 | 推荐格式 | 原因 |
-|--------|----------|------|
-| 20GB   | LZ4 + 2D X-plane sidecar | sidecar 在该卷上压缩效果好，读取更快 |
-| 50GB   | 仅 RZFP 主文件 | 存储比已低于 1.0x，且当前 Reader 成绩最快 |
+- 磁盘：G 盘 HDD，顺序读约 200-220 MB/s
+- CPU：16 线程
+- 内存限制：4 GB（正式 benchmark）
+- 编译器：GCC 15，-O3 -march=native
+- 布局修正：Z-fastest raw → internal X-fastest Leaf
 
 ## 尚未完成的基准工作
 
-- 83.58s 的冷缓存 vs 热缓存可重复性研究
-- 与 v0.5.1/v0.6.0 LZ4 基线在同一 HDD 上的 A-B-A 对比
-- 20GB sidecar 方案下 Y/Z 随机与所有连续组的单组时间
-- 50GB 无 sidecar 方案下六个轴/模式的单组时间
-
-所有全量基准必须按项目规则在 D 盘 HDD 上运行。
+- 3 冷 + 3 热缓存重复性测试
+- stride=3 和 stride=4 的快速比较
+- 不同 HDD 窗口参数（window/gap/threads）的单因素邻域优化
