@@ -319,6 +319,7 @@ static uint64_t estimateWholeWindowBytes(
 }
 
 static StrategyDecision chooseAdaptiveStrategy(
+    int fd,
     const std::vector<RzfpLeafTask>& tasks,
     const std::vector<RzfpSuperblockIndex>& sb_index,
     const RzfpReaderConfig& config,
@@ -455,6 +456,44 @@ static StrategyDecision chooseAdaptiveStrategy(
             decision.selected = decision.selective.strategy;
             decision.reason = "Fullscan min advantage (" + std::to_string(static_cast<int>(advantage * 100)) +
                               "%) below threshold (" + std::to_string(static_cast<int>(config.adaptive.fullscan_min_advantage * 100)) + "%)";
+        }
+    }
+
+    // Strategy probe: when uncertain, run a small pilot to measure real throughput
+    if (decision.uncertain && config.adaptive.enable_strategy_probe &&
+        config.adaptive.strategy_probe_bytes > 0 && !sb_index.empty() && fd >= 0) {
+        const uint64_t probeBytes = std::min<uint64_t>(config.adaptive.strategy_probe_bytes,
+                                                        sb_index[0].payload_bytes * 4);
+        uint64_t probeStart = sb_index[0].payload_offset;
+        std::vector<uint8_t> probeBuf(probeBytes);
+
+        auto probeT0 = Clock::now();
+        bool probeOk = readFullyAt(fd, probeBuf.data(), probeBytes, probeStart);
+        auto probeT1 = Clock::now();
+
+        if (probeOk) {
+            double probeElapsed = std::chrono::duration<double>(probeT1 - probeT0).count();
+            double observedMBs = (probeBytes / (1024.0 * 1024.0)) / std::max(probeElapsed, 0.001);
+            double scale = std::max(0.5, std::min(2.0, observedMBs / std::max(seqMBs, 1.0)));
+
+            // Re-evaluate with observed scale for the top 2 strategies
+            double selAdj = decision.selective.total_seconds * (1.0 / scale);
+            double wholeAdj = decision.whole.total_seconds * (1.0 / scale);
+            double fullAdj = decision.fullscan.total_seconds * (1.0 / scale);
+
+            if (selAdj < wholeAdj && selAdj < fullAdj && decision.selective.allowed) {
+                decision.selected = RzfpReadStrategy::SelectiveLeaf;
+                decision.uncertain = false;
+                decision.reason = "probe corrected (observed " + std::to_string(static_cast<int>(observedMBs)) +
+                                  " MB/s, scale " + std::to_string(static_cast<int>(scale * 100)) + "%)";
+            } else if (wholeAdj < selAdj && wholeAdj < fullAdj && decision.whole.allowed) {
+                decision.selected = RzfpReadStrategy::WholeSuperblock;
+                decision.uncertain = false;
+                decision.reason = "probe corrected (observed " + std::to_string(static_cast<int>(observedMBs)) + " MB/s)";
+            }
+
+            posix_fadvise(fd, static_cast<off_t>(probeStart),
+                          static_cast<off_t>(probeBytes), POSIX_FADV_DONTNEED);
         }
     }
 
@@ -1404,7 +1443,8 @@ bool RzfpReader::readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
             device_profile_ = DeviceProfileCache::instance().getOrCalibrate(fd_, file_size_);
             device_profile_ready_ = true;
         }
-        strategy = chooseAdaptiveStrategy(tasks, sb_index_, config, leavesPerSB, device_profile_).selected;
+        auto decision = chooseAdaptiveStrategy(fd_, tasks, sb_index_, config, leavesPerSB, device_profile_);
+        strategy = decision.selected;
     }
     profile->selected_strategy = strategy;
 
