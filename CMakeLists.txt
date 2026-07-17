@@ -79,6 +79,7 @@ set(LIB_SOURCES
     src/sb_hdd.cpp
     src/sb_panel.cpp
     src/api.cpp
+    src/lz4_probe.cpp
 )
 
 if(ERWT3D_ENABLE_RZFP)
@@ -173,6 +174,9 @@ if(ERWT3D_ENABLE_RZFP)
 
     add_executable(erwt3d_rzfp_auto tools/erwt3d_rzfp_auto.cpp)
     target_link_libraries(erwt3d_rzfp_auto PRIVATE erwt3d)
+
+    add_executable(erwt3d_lz4_probe tools/erwt3d_lz4_probe.cpp)
+    target_link_libraries(erwt3d_lz4_probe PRIVATE erwt3d)
 
     enable_testing()
     add_subdirectory(tests)
