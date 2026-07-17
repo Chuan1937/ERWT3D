@@ -1,5 +1,6 @@
 #include "erwt3d/window_cache.hpp"
 
+#include <iterator>
 #include <utility>
 
 namespace erwt3d {
@@ -30,7 +31,16 @@ bool BoundedWindowCache::put(
     const WindowCacheKey& key,
     std::vector<uint8_t>&& data
 ) {
-    const uint64_t bytes = static_cast<uint64_t>(data.size());
+    auto shared = std::make_shared<const std::vector<uint8_t>>(std::move(data));
+    return putShared(key, std::move(shared));
+}
+
+bool BoundedWindowCache::putShared(
+    const WindowCacheKey& key,
+    std::shared_ptr<const std::vector<uint8_t>> data
+) {
+    if (!data) return false;
+    const uint64_t bytes = static_cast<uint64_t>(data->size());
 
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -45,8 +55,7 @@ bool BoundedWindowCache::put(
         return false;
     }
 
-    auto shared = std::make_shared<const std::vector<uint8_t>>(std::move(data));
-    lru_.push_front(Entry{key, std::move(shared), bytes});
+    lru_.push_front(Entry{key, std::move(data), bytes});
     index_[key] = lru_.begin();
     resident_bytes_ += bytes;
 
