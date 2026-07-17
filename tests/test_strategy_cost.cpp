@@ -104,6 +104,30 @@ void testHysteresisPrefersLowerReadVolume() {
     CHECK(decision.selected == erwt3d::RzfpReadStrategy::WholeSuperblock);
 }
 
+void testHysteresisDoesNotPromoteDistantThirdPlace() {
+    erwt3d::StrategyCostInput input;
+    // Selective and Whole are the close leaders. Fullscan is deliberately much
+    // slower but has fewer bytes, so a broken global lower-volume tie-break
+    // would incorrectly promote it.
+    input.selective_bytes = 100ULL * MiB;
+    input.selective_preads = 0;
+    input.whole_bytes = 105ULL * MiB;
+    input.whole_preads = 0;
+    input.fullscan_bytes = 20ULL * MiB;
+    input.fullscan_preads = 500;
+    input.sequential_mb_s = 100.0;
+    input.seek_ms = 10.0;
+
+    erwt3d::RzfpAdaptiveConfig config;
+    config.strategy_switch_margin = 0.15;
+    config.fullscan_min_advantage = 0.0;
+    const auto decision =
+        erwt3d::chooseAdaptiveStrategyFromCosts(input, config);
+
+    CHECK(decision.uncertain);
+    CHECK(decision.selected == erwt3d::RzfpReadStrategy::SelectiveLeaf);
+}
+
 void testClearWinnerIsSelected() {
     erwt3d::StrategyCostInput input;
     input.selective_bytes = 80ULL * MiB;
@@ -171,6 +195,7 @@ int main() {
     testTimeLimitMayBeExceededWithRealAdvantage();
     testFastHddMaySelectFullscan();
     testHysteresisPrefersLowerReadVolume();
+    testHysteresisDoesNotPromoteDistantThirdPlace();
     testClearWinnerIsSelected();
     testPilotRecalculatesIoSeparately();
     testPilotCannotBypassSlowDeviceBlock();
