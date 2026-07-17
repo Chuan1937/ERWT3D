@@ -364,14 +364,6 @@ static bool executeWindowedRead(
     const uint64_t max_gap = wcfg.max_gap_bytes > 0 ? wcfg.max_gap_bytes : (8ULL * 1024 * 1024);
     const int decode_threads = std::max(1, config.decode_threads);
 
-    std::vector<std::unique_ptr<RzfpCodec>> codecs;
-    for (int t = 0; t < decode_threads; ++t) {
-        codecs.emplace_back(std::make_unique<RzfpCodec>());
-    }
-    ThreadPool pool(static_cast<size_t>(decode_threads), false);
-
-    std::vector<uint8_t> window_buf;
-
     auto computeWindowEnd = [&](size_t start) -> std::pair<uint64_t, size_t> {
         uint64_t wstart = sorted[start].offset;
         uint64_t wend = wstart + sorted[start].size;
@@ -387,33 +379,50 @@ static bool executeWindowedRead(
         return {wend, j};
     };
 
+    std::vector<uint8_t> bufA, bufB;
+    std::vector<std::unique_ptr<RzfpCodec>> codecs;
+    for (int t = 0; t < decode_threads; ++t) {
+        codecs.emplace_back(std::make_unique<RzfpCodec>());
+    }
+    ThreadPool decodePool(static_cast<size_t>(decode_threads), false);
+    ThreadPool ioPool(1, false);
+
+    const auto readWindow = [&](uint8_t* dst, uint64_t wstart, uint64_t wsize) -> bool {
+        auto t0 = Clock::now();
+        bool ok = readFullyAt(fd, dst, wsize, wstart);
+        profile.io_time_ms += msSince(t0);
+        if (ok) {
+            ++profile.pread_calls;
+            profile.actual_read_bytes += wsize;
+        }
+        return ok;
+    };
+
     size_t i = 0;
-    while (i < sorted.size()) {
-        const uint64_t wstart = sorted[i].offset;
-        auto [wend, j] = computeWindowEnd(i);
+    auto [wend0, j0] = computeWindowEnd(i);
+    uint64_t wstart = sorted[i].offset, wsize = wend0 - wstart;
+    if (bufA.size() < wsize) bufA.resize(wsize);
+    if (!readWindow(bufA.data(), wstart, wsize)) return false;
 
-        const uint64_t wsize = wend - wstart;
-        if (window_buf.size() < wsize) window_buf.resize(wsize);
+    std::future<bool> ioFuture;
+    bool hasNext = (j0 < sorted.size());
 
-        auto io_t0 = Clock::now();
-        if (!readFullyAt(fd, window_buf.data(), wsize, wstart)) {
-            std::cerr << "Error: RZFP read window failed at offset " << wstart << std::endl;
-            return false;
-        }
-        profile.io_time_ms += msSince(io_t0);
-        ++profile.pread_calls;
-        profile.actual_read_bytes += wsize;
+    while (true) {
+        const size_t j = j0;
 
-        // Prefetch the next window so the drive can overlap seek/transfer
-        // with the decode phase of the current window.
-        if (j < sorted.size()) {
-            const uint64_t next_start = sorted[j].offset;
-            auto [next_end, next_j] = computeWindowEnd(j);
-            (void)next_j;
-            const uint64_t next_size = next_end - next_start;
-            readahead(fd, static_cast<off_t>(next_start), static_cast<size_t>(next_size));
+        // Start async read of next window into bufB while decoding bufA
+        if (hasNext) {
+            auto [nextWend, nextJ] = computeWindowEnd(j);
+            uint64_t nextStart = sorted[j].offset;
+            uint64_t nextSize = nextWend - nextStart;
+            j0 = nextJ;
+            if (bufB.size() < nextSize) bufB.resize(nextSize);
+            ioFuture = ioPool.submit([&, nextStart, nextSize]() {
+                return readWindow(bufB.data(), nextStart, nextSize);
+            });
         }
 
+        // Decode current window
         auto dec_t0 = Clock::now();
         const size_t count = j - i;
         const int threads_to_use = static_cast<int>(std::min<size_t>(decode_threads, count));
@@ -421,7 +430,7 @@ static bool executeWindowedRead(
         if (threads_to_use <= 1) {
             for (size_t k = i; k < j; ++k) {
                 const auto& in = sorted[k];
-                if (!decode_cb(in.user, window_buf.data() + (in.offset - wstart), *codecs[0])) {
+                if (!decode_cb(in.user, bufA.data() + (in.offset - wstart), *codecs[0])) {
                     decode_ok = false;
                 }
             }
@@ -432,11 +441,11 @@ static bool executeWindowedRead(
                 const size_t start = i + static_cast<size_t>(t) * per;
                 const size_t end = std::min(start + per, j);
                 if (start >= end) break;
-                futures.push_back(pool.submit([&, start, end, t]() {
+                futures.push_back(decodePool.submit([&, start, end, t, wstart]() {
                     bool ok = true;
                     for (size_t k = start; k < end; ++k) {
                         const auto& in = sorted[k];
-                        if (!decode_cb(in.user, window_buf.data() + (in.offset - wstart), *codecs[t])) {
+                        if (!decode_cb(in.user, bufA.data() + (in.offset - wstart), *codecs[t])) {
                             ok = false;
                         }
                     }
@@ -448,14 +457,25 @@ static bool executeWindowedRead(
             }
         }
         profile.decode_time_ms += msSince(dec_t0);
+        if (!decode_ok) return false;
 
-        if (!decode_ok) {
-            std::cerr << "Error: RZFP decode failed in window starting at offset " << wstart << std::endl;
+        if (!hasNext) break;
+
+        // Wait for next window I/O
+        if (!ioFuture.get()) {
+            uint64_t ns = sorted[j].offset;
+            std::cerr << "Error: RZFP read window failed at offset " << ns << std::endl;
             return false;
         }
 
+        // Swap buffers
+        std::swap(bufA, bufB);
+        wstart = sorted[j].offset;
+        wsize = static_cast<uint64_t>(bufA.size());
         i = j;
+        hasNext = (j0 < sorted.size());
     }
+
     profile.scatter_time_ms = static_cast<double>(profile.scatter_ns.load()) * 1e-6;
     return true;
 }
@@ -749,7 +769,7 @@ void RzfpReader::initRawXAux_() {
     rawXAuxOffset_ = region.offset;
     rawXAuxPlaneBytes_ = region.plane_bytes;
 
-    rawXAuxFd_ = open(path_.c_str(), O_RDONLY);
+    rawXAuxFd_ = open(path_.c_str(), O_RDONLY | (rawXAuxUseDirect_ ? O_DIRECT : 0));
     if (rawXAuxFd_ < 0) return;
 
     rawXAuxAvailable_ = true;
@@ -762,8 +782,17 @@ bool RzfpReader::tryReadSliceRawXAux_(uint64_t x, float* output, RzfpReadProfile
     uint64_t offset = rawXAuxOffset_ + x * rawXAuxPlaneBytes_;
 
     auto io_t0 = Clock::now();
-    ssize_t n = pread(rawXAuxFd_, output, planeBytes, offset);
-    if (n != static_cast<ssize_t>(planeBytes)) return false;
+    bool ok;
+    if (rawXAuxUseDirect_) {
+        const uint64_t alignedSize = (planeBytes + 511) & ~511ULL;
+        if (rawXAuxDirectBuf_.size() < alignedSize)
+            rawXAuxDirectBuf_.resize(alignedSize);
+        ok = readFullyAt(rawXAuxFd_, rawXAuxDirectBuf_.data(), alignedSize, offset);
+        if (ok) std::memcpy(output, rawXAuxDirectBuf_.data(), planeBytes);
+    } else {
+        ok = readFullyAt(rawXAuxFd_, output, planeBytes, offset);
+    }
+    if (!ok) return false;
 
     if (profile) {
         profile->io_time_ms += msSince(io_t0);

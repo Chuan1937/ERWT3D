@@ -362,6 +362,78 @@ void testRealHardLimit() {
     PASS();
 }
 
+// --- Transaction rollback test: simulate partial append ---
+
+void testTransactionRollback() {
+    TEST("Transaction rollback (partial append recovery)");
+    const auto td = generateData(17, 19, 23);
+    std::string rawPath = "/tmp/test_raw_x_aux_rollback.raw";
+    std::string path = "/tmp/test_raw_x_aux_rollback.erwt3d";
+    writeRaw(td, rawPath);
+
+    erwt3d::writeERWT3DFromFile(path, rawPath, td.nx, td.ny, td.nz,
+                                 64, 64, 64, 4, 4, 4,
+                                 1, 2048, 0, 0, false,
+                                 erwt3d::RawXAuxMode::Off);
+
+    struct stat st0;
+    stat(path.c_str(), &st0);
+    uint64_t origSize = static_cast<uint64_t>(st0.st_size);
+
+    // Read original header
+    int fd = open(path.c_str(), O_RDWR);
+    erwt3d::ERWT3DHeader origHdr;
+    erwt3d::readFullyAt(fd, &origHdr, sizeof(origHdr), 0);
+
+    // Simulate partial append: write garbage after the file, truncate to larger
+    uint64_t fakeEnd = (origSize + 4095) & ~4095ULL;
+    ftruncate(fd, static_cast<off_t>(fakeEnd + 1024));
+    fsync(fd);
+
+    // Write a fake flag to simulate a header that claims raw X aux exists but data is garbage
+    origHdr.flags |= (1ULL << 7); // FLAG_HAS_RAW_X_AUX
+    origHdr.reserved[7] = fakeEnd;
+    origHdr.reserved[8] = 1024;
+    origHdr.reserved[9] = td.ny * td.nz * 4;
+    origHdr.reserved[10] = 1;
+    erwt3d::writeFullyAt(fd, &origHdr, sizeof(origHdr), 0);
+    fsync(fd);
+    close(fd);
+
+    // Reader should handle this: validation should fail (data is garbage, not raw X aux)
+    // and fall back to main file reader
+    erwt3d::ERWT3DReader reader(path);
+    std::vector<float> actual;
+    if (!readXSlice(reader, 0, actual)) FAIL("Should read via main path after corrupt raw X aux");
+
+    // Now properly append raw X aux
+    fd = open(path.c_str(), O_RDWR);
+    ftruncate(fd, static_cast<off_t>(origSize));
+    fsync(fd);
+    erwt3d::writeFullyAt(fd, &origHdr, sizeof(origHdr), 0); // restore original header
+    erwt3d::ERWT3DHeader cleanHdr;
+    cleanHdr = origHdr;
+    cleanHdr.flags &= ~(1ULL << 7); // clear raw X aux flag
+    erwt3d::writeFullyAt(fd, &cleanHdr, sizeof(cleanHdr), 0);
+    fsync(fd);
+    close(fd);
+
+    erwt3d::RawXAuxStats auxStats;
+    if (!erwt3d::appendRawXAuxToFile(path, rawPath, td.nx, td.ny, td.nz, &auxStats, true))
+        FAIL("Re-append should succeed");
+    if (!auxStats.stored()) FAIL("Re-append should store");
+
+    // Re-open and verify
+    erwt3d::ERWT3DReader reader2(path);
+    std::vector<float> actual2;
+    if (!readXSlice(reader2, 0, actual2)) FAIL("Read after re-append");
+    auto expected = expectedXSlice(td, 0);
+    if (!bitExact(actual2, expected)) FAIL("Mismatch after re-append");
+
+    unlink(rawPath.c_str()); unlink(path.c_str());
+    PASS();
+}
+
 } // namespace
 
 int main() {
@@ -375,6 +447,7 @@ int main() {
     testReaderWithoutRawXAux();
     testRzfpRawXAux();
     testRealHardLimit();
+    testTransactionRollback();
 
     std::cout << "\n" << (failures == 0 ? "ALL TESTS PASSED" : "FAILURES: ") 
               << (failures > 0 ? std::to_string(failures) : "") << std::endl;

@@ -679,6 +679,9 @@ void ERWT3DReader::initRawXAux_() {
     rawXAuxPlaneBytes_ = region.plane_bytes;
 
     int flags = O_RDONLY;
+    if (rawXAuxUseDirect_) {
+        flags |= O_DIRECT;
+    }
     rawXAuxFd_ = open(path_.c_str(), flags);
     if (rawXAuxFd_ < 0) return;
 
@@ -691,7 +694,17 @@ bool ERWT3DReader::tryReadSliceRawXAux_(uint64_t x, float* output) {
     uint64_t planeBytes = header_.ny * header_.nz * sizeof(float);
     uint64_t offset = rawXAuxOffset_ + x * rawXAuxPlaneBytes_;
 
-    if (!readFullyAt(rawXAuxFd_, output, planeBytes, offset)) return false;
+    if (rawXAuxUseDirect_) {
+        const uint64_t alignedSize = (planeBytes + 511) & ~511ULL;
+        if (rawXAuxDirectBuf_.size() < alignedSize)
+            rawXAuxDirectBuf_.resize(alignedSize);
+        if (!readFullyAt(rawXAuxFd_, rawXAuxDirectBuf_.data(), alignedSize, offset))
+            return false;
+        std::memcpy(output, rawXAuxDirectBuf_.data(), planeBytes);
+    } else {
+        if (!readFullyAt(rawXAuxFd_, output, planeBytes, offset))
+            return false;
+    }
 
     posix_fadvise(rawXAuxFd_, static_cast<off_t>(offset),
                   static_cast<off_t>(planeBytes), POSIX_FADV_DONTNEED);
@@ -757,14 +770,27 @@ bool ERWT3DReader::tryReadBatchRawXAux_(
 
         uint64_t wsize = wend - wstart;
 
-        if (rawXAuxWindowBuf_.size() < wsize)
-            rawXAuxWindowBuf_.resize(wsize);
-        if (!readFullyAt(rawXAuxFd_, rawXAuxWindowBuf_.data(), wsize, wstart)) return false;
-
-        for (size_t k = i; k < j; ++k) {
-            uint64_t off_in_window = tasks[k].file_offset - wstart;
-            std::memcpy(tasks[k].output, rawXAuxWindowBuf_.data() + off_in_window, planeBytes);
-            handled[tasks[k].req_idx] = true;
+        if (rawXAuxUseDirect_) {
+            const uint64_t alignedSz = (wsize + 511) & ~511ULL;
+            if (rawXAuxDirectBuf_.size() < alignedSz)
+                rawXAuxDirectBuf_.resize(alignedSz);
+            if (!readFullyAt(rawXAuxFd_, rawXAuxDirectBuf_.data(), alignedSz, wstart))
+                return false;
+            for (size_t k = i; k < j; ++k) {
+                uint64_t off_in_window = tasks[k].file_offset - wstart;
+                std::memcpy(tasks[k].output, rawXAuxDirectBuf_.data() + off_in_window, planeBytes);
+                handled[tasks[k].req_idx] = true;
+            }
+        } else {
+            if (rawXAuxWindowBuf_.size() < wsize)
+                rawXAuxWindowBuf_.resize(wsize);
+            if (!readFullyAt(rawXAuxFd_, rawXAuxWindowBuf_.data(), wsize, wstart))
+                return false;
+            for (size_t k = i; k < j; ++k) {
+                uint64_t off_in_window = tasks[k].file_offset - wstart;
+                std::memcpy(tasks[k].output, rawXAuxWindowBuf_.data() + off_in_window, planeBytes);
+                handled[tasks[k].req_idx] = true;
+            }
         }
 
         posix_fadvise(rawXAuxFd_, static_cast<off_t>(wstart),
