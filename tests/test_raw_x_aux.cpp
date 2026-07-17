@@ -298,6 +298,70 @@ void testReaderWithoutRawXAux() {
     PASS();
 }
 
+// --- RZFP Raw X Aux test ---
+
+void testRzfpRawXAux() {
+    TEST("RZFP Raw X Aux (17x19x23)");
+    const auto td = generateData(17, 19, 23);
+    std::string rawPath = "/tmp/test_raw_x_aux_rzfp.raw";
+    std::string rzfpPath = "/tmp/test_raw_x_aux_rzfp.rzfp";
+    writeRaw(td, rawPath);
+
+    erwt3d::RzfpWriterConfig cfg;
+    cfg.nx = 17; cfg.ny = 19; cfg.nz = 23;
+    cfg.threads = 4;
+    if (!erwt3d::writeRzfpFile(rawPath, rzfpPath, cfg)) FAIL("RZFP write failed");
+
+    erwt3d::RawXAuxStats auxStats;
+    if (!erwt3d::appendRawXAuxToRzfpFile(rzfpPath, rawPath, td.nx, td.ny, td.nz, &auxStats, true))
+        FAIL("RZFP raw X aux append failed");
+    if (!auxStats.stored()) FAIL("RZFP raw X aux should be stored");
+
+    erwt3d::RzfpReader reader(rzfpPath);
+    std::vector<float> actual(td.ny * td.nz);
+    erwt3d::RzfpReaderConfig rcfg;
+    for (uint64_t x : {0ULL, 8ULL, 16ULL}) {
+        if (!reader.readSlice(erwt3d::SliceAxis::X, x, actual.data(), 1, 2048))
+            FAIL("RZFP read X=" + std::to_string(x));
+        auto expected = expectedXSlice(td, x);
+        if (!bitExact(actual, expected))
+            FAIL("RZFP X=" + std::to_string(x) + " mismatch");
+    }
+
+    // Y/Z fallback still works
+    std::vector<float> ySlice(td.nx * td.nz);
+    if (!reader.readSlice(erwt3d::SliceAxis::Y, 0, ySlice.data(), 1, 2048))
+        FAIL("RZFP Y read failed");
+
+    unlink(rawPath.c_str()); unlink(rzfpPath.c_str());
+    PASS();
+}
+
+// --- Real hard limit test (data >= 10MB raw to enforce checks) ---
+
+void testRealHardLimit() {
+    TEST("Real hard limit (>1.45x, data >= 10MB)");
+    // 256x256x64 = 4,194,304 floats * 4 = 16,777,216 bytes = 16MB
+    const auto td = generateData(256, 256, 64);
+    std::string rawPath = "/tmp/test_raw_x_aux_hardlimit.raw";
+    std::string path = "/tmp/test_raw_x_aux_hardlimit.erwt3d";
+    writeRaw(td, rawPath);
+
+    // Write uncompressed main file (uncompressed = storage ratio ~1.0 main + 1.0 aux = ~2.0 > 1.45)
+    erwt3d::RawXAuxStats stats;
+    bool ok = erwt3d::writeERWT3DFromFile(path, rawPath, td.nx, td.ny, td.nz,
+                                           64, 64, 64, 4, 4, 4,
+                                           1, 2048, 0, 0, false,
+                                           erwt3d::RawXAuxMode::On, true, &stats);
+    if (ok) FAIL("Should reject >1.45x even with force-storage-edge on uncompressed");
+    if (stats.status != erwt3d::RawXAuxStatus::SkippedStorageBudget)
+        FAIL("Status should be SkippedStorageBudget, got " + std::to_string(static_cast<int>(stats.status)));
+    if (stats.stored()) FAIL("Should not store");
+
+    unlink(rawPath.c_str()); unlink(path.c_str());
+    PASS();
+}
+
 } // namespace
 
 int main() {
@@ -309,6 +373,8 @@ int main() {
     testStorageHardLimit();
     testCorruptMetadataFallback();
     testReaderWithoutRawXAux();
+    testRzfpRawXAux();
+    testRealHardLimit();
 
     std::cout << "\n" << (failures == 0 ? "ALL TESTS PASSED" : "FAILURES: ") 
               << (failures > 0 ? std::to_string(failures) : "") << std::endl;
