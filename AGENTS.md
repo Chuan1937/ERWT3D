@@ -111,13 +111,12 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 Validated on branch `perf/p2-axis-aware-hybrid`.
 
 - **硬上限 1.45x 永久不可绕过**：`--force-storage-edge` 仅在 1.445-1.450 之间生效
-- **事务式追加 + 自动回滚**：写入失败自动 `ftruncate` 恢复原始文件
+- **事务式追加 + 自动回滚**：写入失败自动 `ftruncate` 恢复原始文件 + Header
 - **`readFullyAt/writeFullyAt`**：处理短读写和 EINTR，所有路径统一
 - **checkedMulU64/checkedAddU64**：所有尺寸计算防溢出
 - **Raw X 元数据校验**：版本、维度、对齐、边界，损坏时自动回退到主文件读取
 - **RawXAuxMode Auto/On/Off**：三态语义，Auto 超预算静默跳过
-- **删除伪 O_DIRECT**：保留已验证的普通 pread + DONTNEED
-- **11/11 CTest 通过**：新增 `test_raw_x_aux` 覆盖 bit-exact、批量、损坏回退、模式测试
+- **11/11 CTest 通过**：新增 `test_raw_x_aux` 覆盖 bit-exact、批量、RZFP、损坏回退、硬限制、事务回滚、模式测试
 
 ### P2: Axis-Aware Hybrid Storage (branch: `perf/p2-axis-aware-hybrid`)
 
@@ -147,6 +146,7 @@ G 盘 HDD，`--hdd` 模式，4GB 内存限制：
 - **FLAG_HAS_RAW_X_AUX** (bit 7)：完整 raw X-plane 数据追加到主文件末尾
 - **Raw X 读取**：独立 fd + POSIX_FADV_DONTNEED，零解压、零转置、零散射
 - **LZ4 合并窗口并行读取**：256MB 窗口合并 + 8 线程并行解压 + readahead 预读
+- **RZFP 双缓冲 I/O–decode pipeline**：后台 I/O 线程读取下一窗口 + 解码线程池并行解码当前窗口
 - **RZFP prefix checkpoint**：每 16 leaves 存稀疏 checkpoint（~257 uint32/SB vs 4097），单 leaf 查询最多扫描 15 项
 - **存储预算**：1.445x 软限制，1.45x 绝对硬限制（永不绕过）；`--force-storage-edge` 仅在 1.445-1.450 间生效
 - **命令**：`--raw-x-aux auto|on|off` + `--force-storage-edge`
