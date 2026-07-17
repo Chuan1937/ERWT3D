@@ -178,7 +178,8 @@ static void printUsage(const char* prog) {
         << "  --max-gap-bytes N      HDD max gap (default: 65536)\n"
         << "  --read-strategy STR    auto|selective|whole|fullscan (default: auto)\n"
         << "  --seed N               Random seed (default: 20260511)\n"
-        << "  --hdd                  Enable HDD mode defaults\n";
+        << "  --hdd                  Enable HDD mode defaults\n"
+         << "  --cache-policy STR     stable-auto|cold|warm (default: stable-auto)\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -193,6 +194,8 @@ int main(int argc, char* argv[]) {
     uint32_t seed = 20260511;
     std::string strategyStr = "auto";
     bool hddMode = false;
+    std::string cachePolicyStr = "stable-auto";
+    erwt3d::CachePolicy cachePolicy = erwt3d::CachePolicy::StableAuto;
 
     for (int i = 1; i < argc; ++i) {
         auto next = [&]() -> const char* {
@@ -219,6 +222,13 @@ int main(int argc, char* argv[]) {
             memoryLimitMB = 4096;
             readWindowBytes = 512ULL * 1024 * 1024;
             maxGapBytes = 8ULL * 1024 * 1024;
+        }
+        else if (std::strcmp(argv[i], "--cache-policy") == 0) {
+            cachePolicyStr = next();
+            if (cachePolicyStr == "stable-auto") cachePolicy = erwt3d::CachePolicy::StableAuto;
+            else if (cachePolicyStr == "cold") cachePolicy = erwt3d::CachePolicy::DeterministicCold;
+            else if (cachePolicyStr == "warm") cachePolicy = erwt3d::CachePolicy::WarmAllowed;
+            else { std::cerr << "Error: unknown --cache-policy: " << cachePolicyStr << "\n"; return 1; }
         }
         else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             printUsage(argv[0]); return 0;
@@ -306,6 +316,9 @@ int main(int argc, char* argv[]) {
     rzcfg.hdd = erwt3d::HDDReadWindowConfig{readWindowBytes, maxGapBytes};
     rzcfg.strategy = strategy;
     rzcfg.decode_threads = decodeThreads;
+
+    rzcfg.adaptive.cache_policy = cachePolicy;
+    rzcfg.adaptive.auto_calibrate_device = true;
 
     std::vector<GroupResult> results(6);
     double groupTimes[6];

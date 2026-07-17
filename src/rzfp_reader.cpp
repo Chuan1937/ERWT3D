@@ -1408,6 +1408,20 @@ bool RzfpReader::readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
     }
     profile->selected_strategy = strategy;
 
+    if (config.adaptive.cache_policy == CachePolicy::DeterministicCold) {
+        uint64_t payloadStart = header_.payload_offset;
+        uint64_t payloadEnd = payloadStart;
+        for (const auto& sb : sb_index_) {
+            uint64_t end = 0;
+            if (checkedAddU64(sb.payload_offset, sb.payload_bytes, end) && end > payloadEnd)
+                payloadEnd = end;
+        }
+        if (payloadEnd > payloadStart) {
+            posix_fadvise(fd_, static_cast<off_t>(payloadStart),
+                          static_cast<off_t>(payloadEnd - payloadStart), POSIX_FADV_DONTNEED);
+        }
+    }
+
     bool ok = false;
     switch (strategy) {
         case RzfpReadStrategy::SelectiveLeaf:
