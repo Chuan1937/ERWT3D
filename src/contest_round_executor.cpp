@@ -122,46 +122,55 @@ bool executeContestRound(
     for (const auto& phase : phasePlan.phases) {
         if (phase.group_ids.empty()) continue;
 
-        std::vector<size_t> groupSizes(phase.group_ids.size(), 0);
-        std::vector<uint64_t> groupIndices(phase.group_ids.size(), 0);
+        std::vector<size_t> positions(phase.group_ids.size(), 0);
+        const size_t pgCount = phase.group_ids.size();
 
         while (true) {
-            bool anyRemaining = false;
-            for (size_t pi = 0; pi < phase.group_ids.size(); ++pi) {
+            struct BatchMember {
+                size_t pgIndex = 0;
+                size_t groupId = 0;
+                size_t take = 0;
+                size_t startIdx = 0;
+                uint64_t elements = 0;
+                std::vector<float> buffer;
+            };
+            std::vector<BatchMember> members;
+
+            for (size_t pi = 0; pi < pgCount; ++pi) {
                 size_t g = phase.group_ids[pi];
-                if (groupIndices[pi] < groups[g].indices->size()) {
-                    anyRemaining = true;
-                    break;
-                }
+                const size_t remaining = groups[g].indices->size() - positions[pi];
+                if (remaining == 0) continue;
+
+                BatchMember m;
+                m.pgIndex = pi;
+                m.groupId = g;
+                m.take = std::min(remaining, static_cast<size_t>(batchSize));
+                m.startIdx = positions[pi];
+                m.elements = elementsForAxis(header, groups[g].axis);
+                members.push_back(std::move(m));
             }
-            if (!anyRemaining) break;
+
+            if (members.empty()) break;
 
             std::vector<RzfpReader::ContestRoundGroup> cgroups;
-            std::vector<std::vector<float>> batchBuffers(phase.group_ids.size());
-
+            cgroups.resize(members.size());
             uint64_t batchOutputBytes = 0;
-            for (size_t pi = 0; pi < phase.group_ids.size(); ++pi) {
-                size_t g = phase.group_ids[pi];
-                uint64_t elements = elementsForAxis(header, groups[g].axis);
-                const uint64_t outPerSlice = elements * sizeof(float);
-                const size_t remaining = groups[g].indices->size() - groupIndices[pi];
-                const size_t take = std::min(remaining, static_cast<size_t>(batchSize));
 
-                RzfpReader::ContestRoundGroup cg;
-                cg.axis = groups[g].axis;
-                cg.name = groups[g].name;
+            for (size_t mi = 0; mi < members.size(); ++mi) {
+                auto& m = members[mi];
+                m.buffer.resize(m.take * static_cast<size_t>(m.elements));
 
-                if (take > 0) {
-                    auto& bufs = batchBuffers[pi];
-                    bufs.resize(take * static_cast<size_t>(elements));
-                    for (size_t i = 0; i < take; ++i) {
-                        cg.indices.push_back((*groups[g].indices)[groupIndices[pi] + i]);
-                        cg.outputs.push_back(bufs.data() + i * static_cast<size_t>(elements));
-                    }
-                    batchOutputBytes += take * outPerSlice;
+                auto& cg = cgroups[mi];
+                cg.axis = groups[m.groupId].axis;
+                cg.name = groups[m.groupId].name;
+                cg.indices.reserve(m.take);
+                cg.outputs.reserve(m.take);
+                for (size_t i = 0; i < m.take; ++i) {
+                    uint64_t idx = (*groups[m.groupId].indices)[m.startIdx + i];
+                    cg.indices.push_back(idx);
+                    cg.outputs.push_back(m.buffer.data() + i * static_cast<size_t>(m.elements));
                 }
-
-                cgroups.push_back(std::move(cg));
+                batchOutputBytes += m.take * m.elements * sizeof(float);
             }
 
             peakOutputBytes = std::max(peakOutputBytes, batchOutputBytes);
@@ -172,11 +181,9 @@ bool executeContestRound(
                 for (auto& afds : allFds) for (int f : afds) if (f >= 0) close(f);
                 return false;
             }
-            const double readMs = msSince(readStart);
-            totalReadMs += readMs;
+            totalReadMs += msSince(readStart);
 
             if (profile) {
-                aggregateProfile.selected_strategy = RzfpReadStrategy::Auto;
                 for (const auto& rr : batchResults) {
                     RzfpReadProfile bp;
                     bp.logical_leaf_requests = rr.logical_leaf_requests;
@@ -198,35 +205,24 @@ bool executeContestRound(
             }
 
             const auto writeStart = Clock::now();
-            for (size_t pi = 0; pi < phase.group_ids.size(); ++pi) {
-                size_t g = phase.group_ids[pi];
-                uint64_t elements = elementsForAxis(header, groups[g].axis);
-                const uint64_t outBytes = elements * sizeof(float);
-                const size_t remaining = groups[g].indices->size() - groupIndices[pi];
-                const size_t take = std::min(remaining, static_cast<size_t>(batchSize));
-                if (take == 0) continue;
-
-                const size_t nOut = cgroups[pi].outputs.size();
-                const size_t writeTake = (nOut >= take) ? take : nOut;
-                if (nOut < take) {
-                    for (auto& afds : allFds) for (int f : afds) if (f >= 0) close(f);
-                    return false;
-                }
-
-                for (size_t i = 0; i < writeTake; ++i) {
-                    if (writeTake > 0 && i >= cgroups[pi].outputs.size()) {
-                        for (auto& afds : allFds) for (int f : afds) if (f >= 0) close(f);
-                        return false;
-                    }
-                    if (!writeFullyAt(allFds[g][groupIndices[pi] + i],
-                                      cgroups[pi].outputs[i], outBytes, 0)) {
+            for (size_t mi = 0; mi < members.size(); ++mi) {
+                const auto& m = members[mi];
+                const uint64_t outBytes = m.elements * sizeof(float);
+                for (size_t i = 0; i < m.take; ++i) {
+                    if (!writeFullyAt(allFds[m.groupId][m.startIdx + i],
+                                      cgroups[mi].outputs[i], outBytes, 0)) {
                         for (auto& afds : allFds) for (int f : afds) if (f >= 0) close(f);
                         return false;
                     }
                 }
-                groupIndices[pi] += writeTake;
+                positions[m.pgIndex] += m.take;
             }
             totalWriteMs += msSince(writeStart);
+
+            if (profile)
+                profile->peak_accounted_bytes = std::max(
+                    profile->peak_accounted_bytes,
+                    budget.accountedBytes() + batchOutputBytes);
         }
     }
 

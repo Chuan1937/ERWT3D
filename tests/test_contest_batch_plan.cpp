@@ -184,12 +184,73 @@ void testLowMemoryVsHighMemory() {
     PASS();
 }
 
+void testForcedMultiBatch() {
+    TEST("forced multi-batch with contest-like group structure");
+
+    const uint64_t nx = 32, ny = 64, nz = 64;
+    const char* raw = "/tmp/test_batch_multi.raw";
+    const char* rzfp = "/tmp/test_batch_multi.rzfp";
+
+    std::vector<float> d;
+    writeRawZ(raw, nx, ny, nz, d);
+    CHECK(createRzfp(raw, rzfp, nx, ny, nz), "create rzfp");
+
+    erwt3d::RzfpReader reader(rzfp);
+    CHECK(reader.ok(), "open");
+    const auto& hdr = reader.header();
+
+    auto makeIndices = [](int count) -> std::vector<uint64_t> {
+        std::vector<uint64_t> v(static_cast<size_t>(count));
+        for (int i = 0; i < count; ++i) v[i] = static_cast<uint64_t>(i * 2);
+        return v;
+    };
+
+    auto xr = makeIndices(6);
+    auto yr = makeIndices(5);
+    auto zr = makeIndices(4);
+    auto xc = makeIndices(3);
+    auto yc = makeIndices(2);
+    auto zc = makeIndices(1);
+
+    std::vector<erwt3d::ContestExecutionGroup> grps = {
+        {erwt3d::SliceAxis::X, "x_random", &xr},
+        {erwt3d::SliceAxis::Y, "y_random", &yr},
+        {erwt3d::SliceAxis::Z, "z_random", &zr},
+        {erwt3d::SliceAxis::X, "x_continuous", &xc},
+        {erwt3d::SliceAxis::Y, "y_continuous", &yc},
+        {erwt3d::SliceAxis::Z, "z_continuous", &zc},
+    };
+
+    const uint64_t elemY = nx * nz * sizeof(float);
+    const uint64_t maxOutBytes = std::max<uint64_t>(elemY * 6, 1024);
+    erwt3d::MemoryBudget budget = erwt3d::makeMemoryBudget(
+        "1", reader.payloadBytes(), maxOutBytes, 7);
+
+    erwt3d::RzfpReaderConfig cfg;
+    cfg.strategy = erwt3d::RzfpReadStrategy::Auto;
+    cfg.decode_threads = 1;
+    cfg.hdd.read_window_bytes = 8ULL*1024*1024;
+
+    erwt3d::ContestExecutionProfile prof;
+    std::string outDir = "/tmp/test_batch_multi_out";
+    mkdir(outDir.c_str(), 0755);
+    bool ok = erwt3d::executeContestRound(
+        reader, hdr, grps, outDir, "multi", cfg, budget, &prof);
+
+    CHECK(ok, "execution failed");
+    CHECK(prof.phase_count > 0, "zero phases");
+    CHECK(prof.read_time_ms >= 0, "negative time");
+    CHECK(prof.peak_accounted_bytes > 0, "peak_accounted_bytes not set");
+    PASS();
+}
+
 } // namespace
 
 int main() {
     std::cout << "=== Contest Batch Plan Tests ===\n";
     testUnequalGroupLengths();
     testLowMemoryVsHighMemory();
+    testForcedMultiBatch();
     std::cout << "\nResult: " << passed << " passed, " << failures << " failed\n";
     return failures > 0 ? 1 : 0;
 }
