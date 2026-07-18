@@ -192,7 +192,8 @@ bool executeContestRound(
             totalReadMs += msSince(readStart);
 
             if (profile) {
-                for (const auto& rr : batchResults) {
+                if (!batchResults.empty()) {
+                    const auto& rr = batchResults[0];
                     RzfpReadProfile bp;
                     bp.logical_leaf_requests = rr.logical_leaf_requests;
                     bp.unique_leaf_requests = rr.unique_leaves;
@@ -227,10 +228,13 @@ bool executeContestRound(
             }
             totalWriteMs += msSince(writeStart);
 
-            if (profile)
+            if (profile) {
+                const uint64_t fixedBytes = budget.accountedBytes() > budget.output_buffer_bytes
+                    ? budget.accountedBytes() - budget.output_buffer_bytes : 0;
                 profile->peak_accounted_bytes = std::max(
                     profile->peak_accounted_bytes,
-                    budget.accountedBytes() + batchOutputBytes);
+                    fixedBytes + batchOutputBytes);
+            }
         }
     }
 
