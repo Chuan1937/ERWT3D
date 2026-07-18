@@ -72,7 +72,10 @@ ContestPhasePlan buildContestPhasePlan(
             std::vector<size_t> batch;
             for (size_t g : xGroups) {
                 uint64_t b = groupOutBytes(g);
-                if (b > output_budget_bytes) return result;
+                if (b > output_budget_bytes) {
+                    appendPhase({g});
+                    continue;
+                }
                 if (!batch.empty() && acc + b > output_budget_bytes) {
                     appendPhase(batch);
                     batch.clear();
@@ -106,7 +109,10 @@ ContestPhasePlan buildContestPhasePlan(
             std::vector<size_t> batch;
             for (size_t g : yzRandom) {
                 uint64_t b = groupOutBytes(g);
-                if (b > output_budget_bytes) return result;
+                if (b > output_budget_bytes) {
+                    appendPhase({g});
+                    continue;
+                }
                 if (!batch.empty() && acc + b > output_budget_bytes) {
                     appendPhase(batch);
                     batch.clear();
@@ -128,7 +134,10 @@ ContestPhasePlan buildContestPhasePlan(
             std::vector<size_t> batch;
             for (size_t g : yzCont) {
                 uint64_t b = groupOutBytes(g);
-                if (b > output_budget_bytes) return result;
+                if (b > output_budget_bytes) {
+                    appendPhase({g});
+                    continue;
+                }
                 if (!batch.empty() && acc + b > output_budget_bytes) {
                     appendPhase(batch);
                     batch.clear();
@@ -156,7 +165,8 @@ bool validateContestPhasePlan(
     size_t total = 0;
 
     for (const auto& phase : plan.phases) {
-        if (phase.output_bytes > output_budget_bytes) {
+        const bool isSingleGroup = phase.group_ids.size() == 1;
+        if (!isSingleGroup && phase.output_bytes > output_budget_bytes) {
             if (error) {
                 std::ostringstream oss;
                 oss << "phase exceeds budget: " << phase.output_bytes

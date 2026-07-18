@@ -2,6 +2,7 @@
 #include "erwt3d/memory_budget.hpp"
 #include "erwt3d/window_cache.hpp"
 #include "erwt3d/rzfp_format.hpp"
+#include "erwt3d/contest_round_executor.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -279,36 +280,13 @@ int main(int argc, char* argv[]) {
         << "  Storage ratio: " << std::setprecision(3) << storageRatio << "x\n"
         << "============================================================\n\n";
 
-    std::vector<erwt3d::RzfpReader::ContestRoundGroup> contestGroups;
-    contestGroups.reserve(groups.size());
-
-    std::vector<std::vector<int>> allFds(groups.size());
-    std::vector<std::vector<float>> allBuffers(groups.size());
-
+    std::vector<erwt3d::ContestExecutionGroup> execGroups;
     for (size_t g = 0; g < groups.size(); ++g) {
-        const auto& gd = groups[g];
-        const uint64_t elements = sliceElements(header, gd.axis);
-        const uint64_t outputBytes = elements * sizeof(float);
-
-        std::ostringstream prefix;
-        prefix << "g" << g << "_" << gd.name;
-        if (!precreateOutputs(outputDir, prefix.str(), gd.indices->size(), outputBytes, allFds[g])) {
-            for (auto& fds : allFds) closeOutputs(fds);
-            return 1;
-        }
-
-        auto& bufs = allBuffers[g];
-        bufs.resize(gd.indices->size() * static_cast<size_t>(elements));
-
-        erwt3d::RzfpReader::ContestRoundGroup cg;
-        cg.axis = gd.axis;
-        cg.name = gd.name;
-        cg.indices = *gd.indices;
-        cg.outputs.resize(gd.indices->size());
-        for (size_t i = 0; i < gd.indices->size(); ++i) {
-            cg.outputs[i] = bufs.data() + i * static_cast<size_t>(elements);
-        }
-        contestGroups.push_back(std::move(cg));
+        erwt3d::ContestExecutionGroup eg;
+        eg.axis = groups[g].axis;
+        eg.name = groups[g].name;
+        eg.indices = groups[g].indices;
+        execGroups.push_back(eg);
     }
 
     erwt3d::RzfpReaderConfig config;
@@ -322,35 +300,17 @@ int main(int argc, char* argv[]) {
     config.hdd.read_window_bytes = 512ULL * MiB;
     config.hdd.max_gap_bytes = 8ULL * MiB;
 
-    const auto roundStart = Clock::now();
-    std::vector<erwt3d::RzfpReader::RzfpRoundReadResult> roundResults;
-    if (!reader.readContestRound(contestGroups, config, &roundResults)) {
-        std::cerr << "Error: contest round read failed\n";
-        for (auto& fds : allFds) closeOutputs(fds);
+    erwt3d::ContestExecutionProfile execProfile;
+    if (!erwt3d::executeContestRound(
+            reader, header, execGroups, outputDir, "contest",
+            config, budget, &execProfile)) {
+        std::cerr << "Error: contest round execution failed\n";
         return 1;
     }
-    const double readMs = std::chrono::duration<double, std::milli>(
-        Clock::now() - roundStart
-    ).count();
 
-    const auto writeStart = Clock::now();
-    for (size_t g = 0; g < groups.size(); ++g) {
-        const uint64_t elements = sliceElements(header, groups[g].axis);
-        const uint64_t outputBytes = elements * sizeof(float);
-        for (size_t i = 0; i < groups[g].indices->size(); ++i) {
-            if (!writeFullyAt(allFds[g][i], contestGroups[g].outputs[i], outputBytes, 0)) {
-                std::cerr << "Error: write failed\n";
-                for (auto& fds : allFds) closeOutputs(fds);
-                return 1;
-            }
-        }
-        closeOutputs(allFds[g]);
-    }
-    const double writeMs = std::chrono::duration<double, std::milli>(
-        Clock::now() - writeStart
-    ).count();
-
-    const double totalMs = readMs + writeMs;
+    const double readMs = execProfile.read_time_ms;
+    const double writeMs = execProfile.write_time_ms;
+    const double totalMs = execProfile.total_time_ms;
     const double compositeMs = totalMs / static_cast<double>(groups.size());
 
     std::cout << std::fixed << std::setprecision(3);

@@ -99,6 +99,7 @@ if(ERWT3D_ENABLE_RZFP)
         src/rzfp_strategy.cpp
         src/rzfp_round_plan.cpp
         src/contest_phase_plan.cpp
+        src/contest_round_executor.cpp
         src/rzfp_xplane_codec.cpp
         src/rzfp_xplane_writer.cpp
         src/rzfp_raw_sampler.cpp
