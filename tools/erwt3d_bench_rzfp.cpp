@@ -448,6 +448,7 @@ static bool runP5Round(
     const std::string& output_dir,
     const erwt3d::MemoryBudget& budget,
     const erwt3d::RzfpReaderConfig& base_config,
+    BenchmarkCacheMode benchmark_mode,
     std::vector<GroupResult>& results
 ) {
     results.clear();
@@ -455,15 +456,12 @@ static bool runP5Round(
 
     constexpr uint64_t kPhaseOverheadEstimate = 64ULL * MiB;
 
-    std::vector<int> group_output_bytes(groups.size(), 0);
+    std::vector<uint64_t> group_output_bytes(groups.size(), 0);
     for (size_t g = 0; g < groups.size(); ++g) {
         const auto& spec = groups[g];
         if (!spec.indices || spec.indices->empty()) continue;
-        group_output_bytes[g] = static_cast<int>(
-            static_cast<size_t>(sliceElements(header, spec.axis)) *
-            sizeof(float) *
-            spec.indices->size()
-        );
+        const uint64_t elemBytes = sliceElements(header, spec.axis) * sizeof(float);
+        group_output_bytes[g] = elemBytes * spec.indices->size();
     }
 
     auto totalFor = [&](const std::vector<size_t>& gids) -> uint64_t {
@@ -489,9 +487,9 @@ static bool runP5Round(
         ? budget.output_buffer_bytes - kPhaseOverheadEstimate
         : budget.output_buffer_bytes / 2;
 
-    bool needBatching = false;
     uint64_t allOutput = 0;
-    for (int b : group_output_bytes) allOutput += static_cast<uint64_t>(b);
+    for (uint64_t b : group_output_bytes) allOutput += b;
+    bool needBatching = false;
     if (allOutput > outputBudget) needBatching = true;
 
     if (!needBatching) {
@@ -508,7 +506,7 @@ static bool runP5Round(
                 uint64_t acc = 0;
                 std::vector<size_t> batch;
                 for (size_t g : gyzRnd) {
-                    uint64_t b = static_cast<uint64_t>(group_output_bytes[g]);
+                    uint64_t b = group_output_bytes[g];
                     if (!batch.empty() && acc + b > outputBudget / 2) {
                         phases.push_back(batch);
                         batch.clear();
@@ -529,7 +527,7 @@ static bool runP5Round(
                 uint64_t acc = 0;
                 std::vector<size_t> batch;
                 for (size_t g : gyzCont) {
-                    uint64_t b = static_cast<uint64_t>(group_output_bytes[g]);
+                    uint64_t b = group_output_bytes[g];
                     if (!batch.empty() && acc + b > outputBudget / 2) {
                         phases.push_back(batch);
                         batch.clear();
@@ -588,7 +586,7 @@ static bool runP5Round(
         result.group_index = static_cast<int>(g);
         result.axis = spec.axis_name;
         result.mode = spec.mode;
-        result.benchmark_cache_mode = "stable-auto";
+        result.benchmark_cache_mode = benchmarkModeName(benchmark_mode);
         result.slice_count = static_cast<int>(spec.indices->size());
         result.output_bytes_per_slice = outputBytes;
         result.output_batch_size = static_cast<uint64_t>(spec.indices->size());
@@ -1037,7 +1035,8 @@ int main(int argc, char* argv[]) {
             std::vector<GroupResult> ignored;
             if (!runP5Round(
                     reader, header, groups, 0,
-                    outputDir + "/warmup", budget, baseConfig, ignored)) {
+                    outputDir + "/warmup", budget, baseConfig,
+                    benchmarkMode, ignored)) {
                 return 1;
             }
         } else {
@@ -1071,7 +1070,7 @@ int main(int argc, char* argv[]) {
             std::vector<GroupResult> groupResults;
             if (!runP5Round(
                     reader, header, groups, round, outputDir,
-                    budget, baseConfig, groupResults)) {
+                    budget, baseConfig, benchmarkMode, groupResults)) {
                 return 1;
             }
 
@@ -1158,13 +1157,15 @@ int main(int argc, char* argv[]) {
             << "group_time_ms,read_time_ms,write_time_ms,output_bytes_per_slice,"
             << "output_batch_size,memory_limit_bytes,window_cache_capacity_bytes,"
             << "unique_sbs,unique_leaves,requested_bytes,actual_bytes,read_amp,"
-            << "preads,cache_hits,cache_misses,cache_resident_bytes,cache_saved_bytes,"
+            << "preads,cache_hits,cache_contained_hits,cache_misses,"
+            << "cache_resident_bytes,cache_saved_bytes,"
             << "io_ms,decode_ms,scatter_ms,selected_strategy,strategy_reason,"
             << "pred_selective_s,pred_whole_s,pred_fullscan_s,effective_device_mb_s,"
             << "pilot_mb_s,device_seq_mb_s,device_seek_ms,seed,"
-            << "logical_leaf_requests,duplicate_leaf_requests,eliminated_read_bytes,"
-            << "read_reduction_ratio,round_plan_built,round_unique_sbs,"
-            << "round_planned_preads\n";
+            << "logical_leaf_requests,duplicate_leaf_requests,"
+            << "logical_record_bytes,eliminated_record_bytes,dedup_ratio,"
+            << "eliminated_read_bytes,read_reduction_ratio,"
+            << "round_plan_built,round_unique_sbs,round_planned_preads\n";
 
         for (const auto& round : roundResults) {
             for (const auto& result : round.groups) {
@@ -1191,6 +1192,7 @@ int main(int argc, char* argv[]) {
                     << profile.readAmplification() << ','
                     << profile.pread_calls << ','
                     << profile.window_cache_hits << ','
+                    << profile.window_cache_contained_hits << ','
                     << profile.window_cache_misses << ','
                     << profile.window_cache_resident_bytes << ','
                     << profile.window_cache_saved_read_bytes << ','
@@ -1207,8 +1209,11 @@ int main(int argc, char* argv[]) {
                     << result.device_seq_mb_s << ','
                     << result.device_seek_ms << ','
                     << seed << ','
-                    << result.logical_leaf_requests << ','
-                    << result.duplicate_leaf_requests << ','
+                    << profile.logical_leaf_requests << ','
+                    << profile.duplicate_leaf_requests << ','
+                    << profile.logical_record_bytes << ','
+                    << profile.eliminated_record_bytes << ','
+                    << profile.dedupReductionRatio() << ','
                     << result.eliminated_read_bytes << ','
                     << result.read_reduction_ratio << ','
                     << (result.round_plan_built ? 1 : 0) << ','

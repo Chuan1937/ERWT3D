@@ -132,6 +132,8 @@ int main(int argc, char* argv[]) {
     int threads = 8;
     uint32_t seed = 20260511;
 
+    std::string memoryLimit = "auto";
+
     for (int i = 1; i < argc; ++i) {
         const auto next = [&]() -> const char* {
             if (i + 1 >= argc) {
@@ -153,7 +155,7 @@ int main(int argc, char* argv[]) {
         } else if (std::strcmp(argv[i], "--seed") == 0) {
             seed = static_cast<uint32_t>(std::stoul(next()));
         } else if (std::strcmp(argv[i], "--memory-limit-mb") == 0) {
-            (void)next();
+            memoryLimit = next();
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             std::cerr
                 << "Usage: erwt3d_contest --input DATA.rzfp --output-dir DIR [options]\n\n"
@@ -163,12 +165,13 @@ int main(int argc, char* argv[]) {
                 << "  --random-count N       Random slices per axis (default: 100)\n"
                 << "  --continuous-count N   Continuous slices per axis (default: 10)\n"
                 << "  --threads N            Thread count (default: 8)\n"
-                << "  --memory-limit-mb N    Memory limit MB (always auto; explicit is ignored)\n"
+                << "  --memory-limit-mb auto|N    Memory limit MB (default: auto)\n"
                 << "  --seed N               Random seed (default: 20260511)\n\n"
                 << "Internal policy (fixed):\n"
                 << "  strategy = auto, cache = stable-auto, window cache = auto\n"
                 << "  execution mode = p5-round (cross-group dedup)\n"
-                << "  no active cache drop, no hidden warm-up\n";
+                << "  no active cache drop, no hidden warm-up\n"
+                << "  explicit memory limits are enforced\n";
             return 0;
         } else {
             std::cerr << "Unknown option: " << argv[i] << "\n";
@@ -201,10 +204,8 @@ int main(int argc, char* argv[]) {
     largestOutputBytes = std::max(largestOutputBytes, header.nx * header.nz * sizeof(float));
     largestOutputBytes = std::max(largestOutputBytes, header.nx * header.ny * sizeof(float));
 
-    std::ostringstream limitStr;
-    limitStr << "auto";
     erwt3d::MemoryBudget budget = erwt3d::makeMemoryBudget(
-        limitStr.str(),
+        memoryLimit,
         reader.payloadBytes(),
         largestOutputBytes,
         static_cast<uint64_t>(std::max(randomCount, continuousCount))

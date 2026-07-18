@@ -111,7 +111,8 @@ static std::vector<RzfpLeafTask> buildLeafTasks(
     const ERWT3DHeader& plan_hdr,
     const std::vector<RzfpReader::SliceBatchRequest>& requests,
     const RzfpFileHeader& header,
-    double& plan_time_ms
+    double& plan_time_ms,
+    RzfpReadProfile* profile = nullptr
 ) {
     const auto t0 = Clock::now();
 
@@ -149,6 +150,10 @@ static std::vector<RzfpLeafTask> buildLeafTasks(
             const LeafOp* ops = plan.leaf_ops.data() + task.first_leaf;
             for (uint32_t li = 0; li < task.leaf_count; ++li) {
                 const LeafOp& op = ops[li];
+                if (profile) {
+                    ++profile->logical_leaf_requests;
+                    profile->unique_leaf_requests = taskMap.size();
+                }
                 const uint64_t key = (physicalSb << 16) | op.morton;
                 const auto it = taskMap.find(key);
                 if (it == taskMap.end()) {
@@ -164,6 +169,13 @@ static std::vector<RzfpLeafTask> buildLeafTasks(
                 }
             }
         }
+    }
+    if (profile) {
+        profile->unique_leaf_requests = tasks.size();
+        profile->duplicate_leaf_requests =
+            profile->logical_leaf_requests > profile->unique_leaf_requests
+                ? profile->logical_leaf_requests - profile->unique_leaf_requests
+                : 0;
     }
 
     plan_time_ms = msSince(t0);
@@ -582,6 +594,30 @@ static bool executeWindowedRead(
                     static_cast<size_t>(windowSize)
                 );
                 ++profile.window_cache_hits;
+                profile.window_cache_saved_read_bytes += windowSize;
+                profile.window_cache_resident_bytes =
+                    config.window_cache->residentBytes();
+                return true;
+            }
+        }
+
+        if (config.use_window_cache && config.window_cache) {
+            std::shared_ptr<const std::vector<uint8_t>> cached;
+            uint64_t cachedOffset = 0;
+            if (config.window_cache->getContaining(
+                    config.window_cache_file_identity,
+                    windowStart, windowSize,
+                    cached, &cachedOffset)) {
+                if (!cached) return false;
+                const uint64_t relative = windowStart - cachedOffset;
+                if (relative + windowSize > cached->size()) return false;
+                destination.resize(static_cast<size_t>(windowSize));
+                std::memcpy(
+                    destination.data(),
+                    cached->data() + relative,
+                    static_cast<size_t>(windowSize)
+                );
+                ++profile.window_cache_contained_hits;
                 profile.window_cache_saved_read_bytes += windowSize;
                 profile.window_cache_resident_bytes =
                     config.window_cache->residentBytes();
@@ -1691,7 +1727,8 @@ bool RzfpReader::readSlicesBatch(
         planHeader,
         fallback,
         header_,
-        planTime
+        planTime,
+        profile
     );
     if (tasks.empty()) {
         profile->plan_time_ms += planTime;
