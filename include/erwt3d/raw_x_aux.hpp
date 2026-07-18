@@ -13,9 +13,9 @@
 
 namespace erwt3d {
 
-constexpr double RAW_X_AUX_HARD_LIMIT = 1.450;
-constexpr double RAW_X_AUX_MAX_RATIO = 1.445;
-constexpr double RAW_X_AUX_AUTO_LIMIT = 1.440;
+constexpr double RAW_X_AUX_HARD_LIMIT = 1.500;
+constexpr double RAW_X_AUX_MAX_RATIO = 1.495;
+constexpr double RAW_X_AUX_AUTO_LIMIT = 1.490;
 constexpr uint64_t RAW_X_AUX_MIN_RAW_BYTES_FOR_RATIO_CHECK = 10ULL * 1024 * 1024;
 constexpr uint32_t RAW_X_AUX_ALIGN = 4096;
 constexpr uint64_t RAW_X_AUX_COPY_CHUNK = 256ULL * 1024 * 1024;

@@ -340,7 +340,7 @@ void testRzfpRawXAux() {
 // --- Real hard limit test (data >= 10MB raw to enforce checks) ---
 
 void testRealHardLimit() {
-    TEST("Real hard limit (>1.45x, data >= 10MB)");
+    TEST("Real hard limit (>1.50x, data >= 10MB)");
     // 256x256x64 = 4,194,304 floats * 4 = 16,777,216 bytes = 16MB
     const auto td = generateData(256, 256, 64);
     std::string rawPath = "/tmp/test_raw_x_aux_hardlimit.raw";
@@ -353,7 +353,7 @@ void testRealHardLimit() {
                                            64, 64, 64, 4, 4, 4,
                                            1, 2048, 0, 0, false,
                                            erwt3d::RawXAuxMode::On, true, &stats);
-    if (ok) FAIL("Should reject >1.45x even with force-storage-edge on uncompressed");
+    if (ok) FAIL("Should reject >1.50x even with force-storage-edge on uncompressed");
     if (stats.status != erwt3d::RawXAuxStatus::SkippedStorageBudget)
         FAIL("Status should be SkippedStorageBudget, got " + std::to_string(static_cast<int>(stats.status)));
     if (stats.stored()) FAIL("Should not store");

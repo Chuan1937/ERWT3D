@@ -56,7 +56,7 @@ PlannerResult planFormat(
     const std::string& raw_path,
     uint64_t nx, uint64_t ny, uint64_t nz,
     int threads = 8,
-    double storage_budget = 1.45,
+    double storage_budget = 1.50,
     const PlannerWorkload& workload = {}
 );
 
