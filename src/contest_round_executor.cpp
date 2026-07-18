@@ -62,6 +62,9 @@ bool executeContestRound(
     if (profile) *profile = ContestExecutionProfile{};
     if (groups.empty()) return true;
 
+    const auto wallStart = Clock::now();
+    double setupMs = 0, prepareMs = 0, readMs = 0, writeMs = 0, closeMs = 0;
+
     std::vector<uint64_t> outputBytes(groups.size(), 0);
     std::vector<SliceAxis> axes(groups.size());
     std::vector<std::string> modes(groups.size());
@@ -82,6 +85,9 @@ bool executeContestRound(
         ? budget.output_buffer_bytes - kOverhead : budget.output_buffer_bytes / 2;
 
     auto phasePlan = buildContestPhasePlan(outputBytes, axes, modes, outputBudget);
+    setupMs = msSince(wallStart);
+
+    const auto prepareStart = Clock::now();
 
     uint64_t batchSize = budget.output_batch_size > 0
         ? budget.output_batch_size
@@ -113,6 +119,8 @@ bool executeContestRound(
             fds[i] = fd;
         }
     }
+
+    prepareMs = msSince(prepareStart);
 
     double totalReadMs = 0.0;
     double totalWriteMs = 0.0;
@@ -226,14 +234,22 @@ bool executeContestRound(
         }
     }
 
+    const auto closeStart = Clock::now();
     for (auto& afds : allFds) for (int f : afds) if (f >= 0) close(f);
+    closeMs = msSince(closeStart);
+
+    const double wallMs = msSince(wallStart);
 
     if (profile) {
         profile->phase_count = phasePlan.phases.size();
         profile->output_buffer_bytes = peakOutputBytes;
+        profile->setup_time_ms = setupMs;
+        profile->output_prepare_ms = prepareMs;
         profile->read_time_ms = totalReadMs;
         profile->write_time_ms = totalWriteMs;
+        profile->close_time_ms = closeMs;
         profile->total_time_ms = totalReadMs + totalWriteMs;
+        profile->wall_time_ms = wallMs;
         profile->all_outputs_deferred = phasePlan.all_outputs_deferred;
         profile->logical_leaf_requests = aggregateProfile.logical_leaf_requests;
         profile->duplicate_leaf_requests = aggregateProfile.duplicate_leaf_requests;

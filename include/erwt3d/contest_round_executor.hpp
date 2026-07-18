@@ -22,9 +22,13 @@ struct ContestExecutionProfile {
     uint64_t output_buffer_bytes = 0;
     uint64_t peak_accounted_bytes = 0;
 
+    double setup_time_ms = 0.0;
+    double output_prepare_ms = 0.0;
     double read_time_ms = 0.0;
     double write_time_ms = 0.0;
+    double close_time_ms = 0.0;
     double total_time_ms = 0.0;
+    double wall_time_ms = 0.0;
 
     uint64_t logical_leaf_requests = 0;
     uint64_t duplicate_leaf_requests = 0;
