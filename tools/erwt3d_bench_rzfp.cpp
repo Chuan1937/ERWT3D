@@ -2,6 +2,7 @@
 #include "erwt3d/rzfp_format.hpp"
 #include "erwt3d/rzfp_reader.hpp"
 #include "erwt3d/window_cache.hpp"
+#include "erwt3d/contest_round_executor.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -454,262 +455,59 @@ static bool runP5Round(
     results.clear();
     results.resize(groups.size());
 
-    constexpr uint64_t kPhaseOverheadEstimate = 64ULL * MiB;
-
-    std::vector<uint64_t> group_output_bytes(groups.size(), 0);
+    std::vector<erwt3d::ContestExecutionGroup> execGroups;
     for (size_t g = 0; g < groups.size(); ++g) {
         const auto& spec = groups[g];
         if (!spec.indices || spec.indices->empty()) continue;
-        const uint64_t elemBytes = sliceElements(header, spec.axis) * sizeof(float);
-        group_output_bytes[g] = elemBytes * spec.indices->size();
+        erwt3d::ContestExecutionGroup eg;
+        eg.axis = spec.axis;
+        eg.name = spec.axis_name + "_" + spec.mode;
+        eg.indices = spec.indices;
+        execGroups.push_back(eg);
     }
 
-    auto totalFor = [&](const std::vector<size_t>& gids) -> uint64_t {
-        uint64_t t = 0;
-        for (size_t g : gids) t += static_cast<uint64_t>(group_output_bytes[g]);
-        return t;
-    };
+    std::ostringstream prefix;
+    prefix << "r" << round;
 
-    std::vector<std::vector<size_t>> phases;
+    erwt3d::ContestExecutionProfile execProf;
+    if (!erwt3d::executeContestRound(
+            reader, header, execGroups, output_dir, prefix.str(),
+            base_config, budget, &execProf)) {
+        return false;
+    }
 
-    std::vector<size_t> gx, gyzRnd, gyzCont;
     for (size_t g = 0; g < groups.size(); ++g) {
-        if (groups[g].axis == erwt3d::SliceAxis::X) {
-            gx.push_back(g);
-        } else if (groups[g].mode == "random") {
-            gyzRnd.push_back(g);
-        } else {
-            gyzCont.push_back(g);
-        }
-    }
-
-    const uint64_t outputBudget = budget.output_buffer_bytes > kPhaseOverheadEstimate
-        ? budget.output_buffer_bytes - kPhaseOverheadEstimate
-        : budget.output_buffer_bytes / 2;
-
-    uint64_t allOutput = 0;
-    for (uint64_t b : group_output_bytes) allOutput += b;
-    bool needBatching = false;
-    if (allOutput > outputBudget) needBatching = true;
-
-    if (!needBatching) {
-        phases.push_back({});
-        for (size_t g = 0; g < groups.size(); ++g) phases[0].push_back(g);
-    } else {
-        if (!gx.empty()) phases.push_back(gx);
-
-        if (!gyzRnd.empty()) {
-            uint64_t rndBytes = totalFor(gyzRnd);
-            if (rndBytes <= outputBudget) {
-                phases.push_back(gyzRnd);
-            } else {
-                uint64_t acc = 0;
-                std::vector<size_t> batch;
-                for (size_t g : gyzRnd) {
-                    uint64_t b = group_output_bytes[g];
-                    if (!batch.empty() && acc + b > outputBudget / 2) {
-                        phases.push_back(batch);
-                        batch.clear();
-                        acc = 0;
-                    }
-                    batch.push_back(g);
-                    acc += b;
-                }
-                if (!batch.empty()) phases.push_back(batch);
-            }
-        }
-
-        if (!gyzCont.empty()) {
-            uint64_t contBytes = totalFor(gyzCont);
-            if (contBytes <= outputBudget) {
-                phases.push_back(gyzCont);
-            } else {
-                uint64_t acc = 0;
-                std::vector<size_t> batch;
-                for (size_t g : gyzCont) {
-                    uint64_t b = group_output_bytes[g];
-                    if (!batch.empty() && acc + b > outputBudget / 2) {
-                        phases.push_back(batch);
-                        batch.clear();
-                        acc = 0;
-                    }
-                    batch.push_back(g);
-                    acc += b;
-                }
-                if (!batch.empty()) phases.push_back(batch);
-            }
-        }
-
-        for (auto& p : phases) {
-            bool hasYzRnd = false;
-            for (size_t g : p) {
-                if (groups[g].axis != erwt3d::SliceAxis::X &&
-                    groups[g].mode == "random") {
-                    hasYzRnd = true;
-                    break;
-                }
-            }
-            if (hasYzRnd && !gyzCont.empty()) {
-                uint64_t cur = totalFor(p);
-                if (cur + totalFor(gyzCont) <= outputBudget) {
-                    for (size_t g : gyzCont) p.push_back(g);
-                    gyzCont.clear();
-                }
-                break;
-            }
-        }
-    }
-
-    std::vector<std::vector<int>> outputFds(groups.size());
-    for (size_t g = 0; g < groups.size(); ++g) {
-        const auto& spec = groups[g];
-        if (!spec.indices || spec.indices->empty()) continue;
-
-        const uint64_t elements = sliceElements(header, spec.axis);
-        const uint64_t outputBytes = elements * sizeof(float);
-
-        const std::string prefix =
-            "r" + std::to_string(round) + "_g" +
-            std::to_string(g) + "_" +
-            spec.axis_name + "_" + spec.mode;
-
-        auto& fds = outputFds[g];
-        if (!precreateOutputs(
-                output_dir, prefix,
-                spec.indices->size(), outputBytes, fds)) {
-            for (auto& allFds : outputFds) closeOutputs(allFds);
-            return false;
-        }
-
         GroupResult& result = results[g];
         result.round = round;
         result.group_index = static_cast<int>(g);
-        result.axis = spec.axis_name;
-        result.mode = spec.mode;
+        result.axis = groups[g].axis_name;
+        result.mode = groups[g].mode;
         result.benchmark_cache_mode = benchmarkModeName(benchmark_mode);
-        result.slice_count = static_cast<int>(spec.indices->size());
-        result.output_bytes_per_slice = outputBytes;
-        result.output_batch_size = static_cast<uint64_t>(spec.indices->size());
+        result.slice_count = static_cast<int>(groups[g].indices->size());
         result.memory_limit_bytes = budget.total_bytes;
         result.window_cache_capacity_bytes = budget.window_cache_bytes;
-    }
 
-    double totalReadMs = 0.0;
-    double xReadMs = 0.0;
-    double yzReadMs = 0.0;
-    double totalWriteMs = 0.0;
-    std::vector<erwt3d::RzfpReader::RzfpRoundReadResult> allRoundResults(groups.size());
+        uint64_t elements = sliceElements(header, groups[g].axis);
+        result.output_bytes_per_slice = elements * sizeof(float);
+        result.output_batch_size = static_cast<uint64_t>(groups[g].indices->size());
 
-    erwt3d::RzfpReaderConfig config = base_config;
-
-    for (size_t phaseIdx = 0; phaseIdx < phases.size(); ++phaseIdx) {
-        const auto& pids = phases[phaseIdx];
-        if (pids.empty()) continue;
-
-        std::vector<erwt3d::RzfpReader::ContestRoundGroup> contestGroups;
-        contestGroups.reserve(pids.size());
-
-        std::vector<std::vector<float>> phaseBuffers(pids.size());
-
-        for (size_t pi = 0; pi < pids.size(); ++pi) {
-            size_t g = pids[pi];
-            const auto& spec = groups[g];
-            const uint64_t elements = sliceElements(header, spec.axis);
-
-            auto& bufs = phaseBuffers[pi];
-            bufs.resize(spec.indices->size() *
-                        static_cast<size_t>(elements));
-
-            erwt3d::RzfpReader::ContestRoundGroup cg;
-            cg.axis = spec.axis;
-            cg.name = spec.axis_name + "_" + spec.mode;
-            cg.indices = *spec.indices;
-            cg.outputs.resize(spec.indices->size());
-            for (size_t i = 0; i < spec.indices->size(); ++i) {
-                cg.outputs[i] = bufs.data() + i * static_cast<size_t>(elements);
-            }
-            contestGroups.push_back(std::move(cg));
-        }
-
-        const auto phaseReadStart = Clock::now();
-        std::vector<erwt3d::RzfpReader::RzfpRoundReadResult> phaseReadResults;
-        if (!reader.readContestRound(contestGroups, config, &phaseReadResults)) {
-            for (auto& allFds : outputFds) closeOutputs(allFds);
-            return false;
-        }
-        const double phaseReadMs = std::chrono::duration<double, std::milli>(
-            Clock::now() - phaseReadStart
-        ).count();
-        totalReadMs += phaseReadMs;
-
-        for (size_t pi = 0; pi < pids.size(); ++pi) {
-            size_t g = pids[pi];
-            bool isX = (groups[g].axis == erwt3d::SliceAxis::X);
-            if (isX && xReadMs == 0.0 && pi < phaseReadResults.size())
-                xReadMs += phaseReadResults[pi].read_time_ms;
-            else if (!isX && pi < phaseReadResults.size())
-                yzReadMs += phaseReadResults[pi].read_time_ms;
-            if (pi < phaseReadResults.size() && g < allRoundResults.size())
-                allRoundResults[g] = phaseReadResults[pi];
-        }
-
-        const auto phaseWriteStart = Clock::now();
-        for (size_t pi = 0; pi < pids.size(); ++pi) {
-            size_t g = pids[pi];
-            const uint64_t elements = sliceElements(header, groups[g].axis);
-            const uint64_t outputBytes = elements * sizeof(float);
-            const auto& fds = outputFds[g];
-
-            for (size_t i = 0; i < groups[g].indices->size(); ++i) {
-                if (!writeFullyAtLocal(
-                        fds[i],
-                        contestGroups[pi].outputs[i],
-                        outputBytes,
-                        0)) {
-                    for (auto& allFds : outputFds) closeOutputs(allFds);
-                    return false;
-                }
-            }
-        }
-        totalWriteMs += std::chrono::duration<double, std::milli>(
-            Clock::now() - phaseWriteStart
-        ).count();
-    }
-
-    for (auto& fds : outputFds) closeOutputs(fds);
-
-    for (size_t g = 0; g < groups.size(); ++g) {
-        if (g >= results.size()) continue;
-        GroupResult& result = results[g];
-        bool is_x = (groups[g].axis == erwt3d::SliceAxis::X);
-        result.read_time_ms = is_x ? xReadMs : yzReadMs;
-        result.write_time_ms = totalWriteMs;
-        result.group_time_ms = (totalReadMs + totalWriteMs) /
-            static_cast<double>(groups.size());
-        result.selected_strategy = strategyName(base_config.strategy);
+        result.read_time_ms = execProf.read_time_ms;
+        result.write_time_ms = execProf.write_time_ms;
+        result.group_time_ms = execProf.total_time_ms / static_cast<double>(groups.size());
+        result.selected_strategy = strategyName(execProf.selected_strategy);
+        result.strategy_reason = execProf.strategy_reason;
         result.device_seq_mb_s = reader.deviceProfile().sequential_mb_s;
         result.device_seek_ms = reader.deviceProfile().random_seek_ms;
 
-        const auto& rr = allRoundResults[g];
-        result.profile.unique_leaves = rr.unique_leaves;
-        result.profile.actual_read_bytes = rr.actual_read_bytes;
-        result.profile.io_time_ms = rr.io_time_ms;
-        result.profile.decode_time_ms = rr.decode_time_ms;
-        result.profile.scatter_time_ms = rr.scatter_time_ms;
-        result.selected_strategy = strategyName(rr.selected_strategy);
-        result.strategy_reason = rr.strategy_reason;
-        result.logical_leaf_requests = rr.logical_leaf_requests;
-        result.duplicate_leaf_requests = rr.duplicate_leaf_requests;
-        result.eliminated_read_bytes = rr.eliminated_read_bytes;
-        result.read_reduction_ratio = rr.read_reduction_ratio;
-        result.round_plan_built = rr.round_plan_built;
-        result.round_unique_superblocks = rr.round_unique_superblocks;
-        result.round_planned_preads = rr.round_planned_preads;
+        result.profile.actual_read_bytes = execProf.actual_read_bytes;
+        result.logical_leaf_requests = execProf.logical_leaf_requests;
+        result.duplicate_leaf_requests = execProf.duplicate_leaf_requests;
+        result.eliminated_read_bytes = execProf.eliminated_record_bytes;
+        result.round_plan_built = false;
     }
 
     return true;
 }
-
 } // namespace
 
 int main(int argc, char* argv[]) {
