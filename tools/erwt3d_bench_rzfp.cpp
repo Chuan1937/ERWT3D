@@ -52,6 +52,13 @@ struct GroupResult {
     double device_seek_ms = 0.0;
     std::string selected_strategy;
     std::string strategy_reason;
+    uint64_t logical_leaf_requests = 0;
+    uint64_t duplicate_leaf_requests = 0;
+    uint64_t eliminated_read_bytes = 0;
+    double read_reduction_ratio = 0.0;
+    uint64_t round_unique_superblocks = 0;
+    uint64_t round_planned_preads = 0;
+    bool round_plan_built = false;
     erwt3d::RzfpReadProfile profile;
 };
 
@@ -593,6 +600,7 @@ static bool runP5Round(
     double xReadMs = 0.0;
     double yzReadMs = 0.0;
     double totalWriteMs = 0.0;
+    std::vector<erwt3d::RzfpReader::RzfpRoundReadResult> allRoundResults(groups.size());
 
     erwt3d::RzfpReaderConfig config = base_config;
 
@@ -643,6 +651,8 @@ static bool runP5Round(
                 xReadMs += phaseReadResults[pi].read_time_ms;
             else if (!isX && pi < phaseReadResults.size())
                 yzReadMs += phaseReadResults[pi].read_time_ms;
+            if (pi < phaseReadResults.size() && g < allRoundResults.size())
+                allRoundResults[g] = phaseReadResults[pi];
         }
 
         const auto phaseWriteStart = Clock::now();
@@ -680,6 +690,22 @@ static bool runP5Round(
         result.selected_strategy = strategyName(base_config.strategy);
         result.device_seq_mb_s = reader.deviceProfile().sequential_mb_s;
         result.device_seek_ms = reader.deviceProfile().random_seek_ms;
+
+        const auto& rr = allRoundResults[g];
+        result.profile.unique_leaves = rr.unique_leaves;
+        result.profile.actual_read_bytes = rr.actual_read_bytes;
+        result.profile.io_time_ms = rr.io_time_ms;
+        result.profile.decode_time_ms = rr.decode_time_ms;
+        result.profile.scatter_time_ms = rr.scatter_time_ms;
+        result.selected_strategy = strategyName(rr.selected_strategy);
+        result.strategy_reason = rr.strategy_reason;
+        result.logical_leaf_requests = rr.logical_leaf_requests;
+        result.duplicate_leaf_requests = rr.duplicate_leaf_requests;
+        result.eliminated_read_bytes = rr.eliminated_read_bytes;
+        result.read_reduction_ratio = rr.read_reduction_ratio;
+        result.round_plan_built = rr.round_plan_built;
+        result.round_unique_superblocks = rr.round_unique_superblocks;
+        result.round_planned_preads = rr.round_planned_preads;
     }
 
     return true;
@@ -1134,7 +1160,10 @@ int main(int argc, char* argv[]) {
             << "preads,cache_hits,cache_misses,cache_resident_bytes,cache_saved_bytes,"
             << "io_ms,decode_ms,scatter_ms,selected_strategy,strategy_reason,"
             << "pred_selective_s,pred_whole_s,pred_fullscan_s,effective_device_mb_s,"
-            << "pilot_mb_s,device_seq_mb_s,device_seek_ms,seed\n";
+            << "pilot_mb_s,device_seq_mb_s,device_seek_ms,seed,"
+            << "logical_leaf_requests,duplicate_leaf_requests,eliminated_read_bytes,"
+            << "read_reduction_ratio,round_plan_built,round_unique_sbs,"
+            << "round_planned_preads\n";
 
         for (const auto& round : roundResults) {
             for (const auto& result : round.groups) {
@@ -1176,7 +1205,14 @@ int main(int argc, char* argv[]) {
                     << profile.pilot_observed_mb_s << ','
                     << result.device_seq_mb_s << ','
                     << result.device_seek_ms << ','
-                    << seed << '\n';
+                    << seed << ','
+                    << result.logical_leaf_requests << ','
+                    << result.duplicate_leaf_requests << ','
+                    << result.eliminated_read_bytes << ','
+                    << result.read_reduction_ratio << ','
+                    << (result.round_plan_built ? 1 : 0) << ','
+                    << result.round_unique_superblocks << ','
+                    << result.round_planned_preads << '\n';
             }
         }
     }
@@ -1205,6 +1241,8 @@ int main(int argc, char* argv[]) {
                << header.ny << 'x' << header.nz << '\n'
                << "benchmark_cache_mode," << benchmarkModeText << '\n'
                << "group_order," << groupOrder << '\n'
+               << "execution_mode," << effectiveExecutionModeText << '\n'
+               << "requested_execution_mode," << executionModeText << '\n'
                << "rounds," << rounds << '\n'
                << "random_count," << randomCount << '\n'
                << "continuous_count," << continuousCount << '\n'

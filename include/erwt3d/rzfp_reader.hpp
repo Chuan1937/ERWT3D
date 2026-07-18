@@ -193,9 +193,14 @@ public:
         uint64_t planned_read_bytes = 0;
         uint64_t actual_read_bytes = 0;
         uint64_t eliminated_read_bytes = 0;
+        double read_reduction_ratio = 0.0;
 
         RzfpReadStrategy selected_strategy = RzfpReadStrategy::Auto;
         std::string strategy_reason;
+
+        bool round_plan_built = false;
+        uint64_t round_unique_superblocks = 0;
+        uint64_t round_planned_preads = 0;
     };
 
     bool readContestRound(
