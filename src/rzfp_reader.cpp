@@ -1790,4 +1790,93 @@ bool RzfpReader::readSlicesBatch(
     }
 }
 
+bool RzfpReader::readContestRound(
+    const std::vector<ContestRoundGroup>& groups,
+    const RzfpReaderConfig& config,
+    std::vector<RzfpRoundReadResult>* results
+) {
+    if (results) {
+        results->clear();
+        results->resize(groups.size());
+    }
+
+    std::vector<SliceBatchRequest> yz_requests;
+
+    for (size_t g = 0; g < groups.size(); ++g) {
+        const auto& group = groups[g];
+        if (group.axis == SliceAxis::X) {
+            RzfpReaderConfig xConfig = config;
+            RzfpReadProfile xProfile;
+            xConfig.profile = &xProfile;
+
+            std::vector<SliceBatchRequest> xRequests;
+            xRequests.reserve(group.indices.size());
+            for (size_t i = 0; i < group.indices.size(); ++i) {
+                xRequests.push_back({group.axis, group.indices[i], group.outputs[i]});
+            }
+
+            const auto t0 = Clock::now();
+            if (!readSlicesBatch(xRequests, xConfig)) {
+                return false;
+            }
+            const double readMs = msSince(t0);
+
+            if (results) {
+                RzfpRoundReadResult& r = (*results)[g];
+                r.read_time_ms = readMs;
+                r.io_time_ms = xProfile.io_time_ms;
+                r.decode_time_ms = xProfile.decode_time_ms;
+                r.scatter_time_ms = xProfile.scatter_time_ms;
+                r.unique_leaves = xProfile.unique_leaves;
+                r.duplicate_leaf_requests = 0;
+                r.logical_leaf_requests = xRequests.size();
+                r.planned_read_bytes = xProfile.actual_read_bytes;
+                r.actual_read_bytes = xProfile.actual_read_bytes;
+                r.eliminated_read_bytes = 0;
+                r.selected_strategy = xProfile.selected_strategy;
+                r.strategy_reason = xProfile.strategy_reason;
+            }
+        } else {
+            for (size_t i = 0; i < group.indices.size(); ++i) {
+                yz_requests.push_back({group.axis, group.indices[i], group.outputs[i]});
+            }
+        }
+    }
+
+    if (yz_requests.empty()) return true;
+
+    RzfpReaderConfig yzConfig = config;
+    RzfpReadProfile yzProfile;
+    yzConfig.profile = &yzProfile;
+
+    const auto t0 = Clock::now();
+    if (!readSlicesBatch(yz_requests, yzConfig)) {
+        return false;
+    }
+    const double totalReadMs = msSince(t0);
+
+    if (results) {
+        for (size_t g = 0; g < groups.size(); ++g) {
+            const auto& group = groups[g];
+            if (group.axis == SliceAxis::X) continue;
+
+            RzfpRoundReadResult& r = (*results)[g];
+            r.read_time_ms = totalReadMs;
+            r.io_time_ms = yzProfile.io_time_ms;
+            r.decode_time_ms = yzProfile.decode_time_ms;
+            r.scatter_time_ms = yzProfile.scatter_time_ms;
+            r.unique_leaves = yzProfile.unique_leaves;
+            r.duplicate_leaf_requests = 0;
+            r.logical_leaf_requests = yz_requests.size();
+            r.planned_read_bytes = yzProfile.requested_record_bytes;
+            r.actual_read_bytes = yzProfile.actual_read_bytes;
+            r.eliminated_read_bytes = 0;
+            r.selected_strategy = yzProfile.selected_strategy;
+            r.strategy_reason = yzProfile.strategy_reason;
+        }
+    }
+
+    return true;
+}
+
 } // namespace erwt3d

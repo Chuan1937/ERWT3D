@@ -173,6 +173,37 @@ public:
     bool readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
                          const RzfpReaderConfig& config);
 
+    struct ContestRoundGroup {
+        SliceAxis axis;
+        std::string name;
+        std::vector<uint64_t> indices;
+        std::vector<float*> outputs;
+    };
+
+    struct RzfpRoundReadResult {
+        double read_time_ms = 0.0;
+        double io_time_ms = 0.0;
+        double decode_time_ms = 0.0;
+        double scatter_time_ms = 0.0;
+
+        uint64_t unique_leaves = 0;
+        uint64_t duplicate_leaf_requests = 0;
+        uint64_t logical_leaf_requests = 0;
+
+        uint64_t planned_read_bytes = 0;
+        uint64_t actual_read_bytes = 0;
+        uint64_t eliminated_read_bytes = 0;
+
+        RzfpReadStrategy selected_strategy = RzfpReadStrategy::Auto;
+        std::string strategy_reason;
+    };
+
+    bool readContestRound(
+        const std::vector<ContestRoundGroup>& groups,
+        const RzfpReaderConfig& config,
+        std::vector<RzfpRoundReadResult>* results = nullptr
+    );
+
 private:
     std::string path_;
     int fd_ = -1;
