@@ -583,24 +583,7 @@ static bool executeWindowedRead(
             windowSize
         };
 
-        if (config.use_window_cache && config.window_cache) {
-            std::shared_ptr<const std::vector<uint8_t>> cached;
-            if (config.window_cache->get(key, cached)) {
-                if (!cached || cached->size() != windowSize) return false;
-                destination.resize(static_cast<size_t>(windowSize));
-                std::memcpy(
-                    destination.data(),
-                    cached->data(),
-                    static_cast<size_t>(windowSize)
-                );
-                ++profile.window_cache_hits;
-                profile.window_cache_saved_read_bytes += windowSize;
-                profile.window_cache_resident_bytes =
-                    config.window_cache->residentBytes();
-                return true;
-            }
-        }
-
+        bool cacheHit = false;
         if (config.use_window_cache && config.window_cache) {
             std::shared_ptr<const std::vector<uint8_t>> cached;
             uint64_t cachedOffset = 0;
@@ -609,24 +592,31 @@ static bool executeWindowedRead(
                     windowStart, windowSize,
                     cached, &cachedOffset)) {
                 if (!cached) return false;
+                if (cachedOffset > windowStart) return false;
                 const uint64_t relative = windowStart - cachedOffset;
-                if (relative + windowSize > cached->size()) return false;
+                if (windowSize > cached->size() - relative) return false;
                 destination.resize(static_cast<size_t>(windowSize));
                 std::memcpy(
                     destination.data(),
                     cached->data() + relative,
                     static_cast<size_t>(windowSize)
                 );
-                ++profile.window_cache_contained_hits;
+                if (cachedOffset == windowStart && cached->size() == windowSize) {
+                    ++profile.window_cache_hits;
+                } else {
+                    ++profile.window_cache_contained_hits;
+                }
                 profile.window_cache_saved_read_bytes += windowSize;
                 profile.window_cache_resident_bytes =
                     config.window_cache->residentBytes();
-                return true;
+                cacheHit = true;
+            } else {
+                ++profile.window_cache_misses;
             }
-            ++profile.window_cache_misses;
         }
 
-        destination.resize(static_cast<size_t>(windowSize));
+        if (!cacheHit) {
+            destination.resize(static_cast<size_t>(windowSize));
         const auto t0 = Clock::now();
         const bool ok = readFullyAt(
             fd,
@@ -649,6 +639,7 @@ static bool executeWindowedRead(
             (void)config.window_cache->putShared(key, std::move(shared));
             profile.window_cache_resident_bytes =
                 config.window_cache->residentBytes();
+        }
         }
 
         return true;
