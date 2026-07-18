@@ -686,7 +686,8 @@ static bool runP5Round(
         bool is_x = (groups[g].axis == erwt3d::SliceAxis::X);
         result.read_time_ms = is_x ? xReadMs : yzReadMs;
         result.write_time_ms = totalWriteMs;
-        result.group_time_ms = result.read_time_ms + totalWriteMs;
+        result.group_time_ms = (totalReadMs + totalWriteMs) /
+            static_cast<double>(groups.size());
         result.selected_strategy = strategyName(base_config.strategy);
         result.device_seq_mb_s = reader.deviceProfile().sequential_mb_s;
         result.device_seek_ms = reader.deviceProfile().random_seek_ms;

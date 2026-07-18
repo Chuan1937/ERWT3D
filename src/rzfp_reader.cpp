@@ -1,7 +1,6 @@
 #include "erwt3d/rzfp_reader.hpp"
 #include "erwt3d/morton.hpp"
 #include "erwt3d/rzfp_codec.hpp"
-#include "erwt3d/rzfp_round_plan.hpp"
 #include "erwt3d/rzfp_strategy.hpp"
 #include "erwt3d/rzfp_xplane_codec.hpp"
 #include "erwt3d/sb_plan.hpp"
@@ -1802,7 +1801,7 @@ bool RzfpReader::readContestRound(
     }
 
     std::vector<SliceBatchRequest> yz_requests;
-    std::vector<RoundSliceRequest> yz_round_requests;
+    uint64_t yzLogicalSlices = 0;
 
     for (size_t g = 0; g < groups.size(); ++g) {
         const auto& group = groups[g];
@@ -1841,30 +1840,14 @@ bool RzfpReader::readContestRound(
                 r.round_planned_preads = 0;
             }
         } else {
+            yzLogicalSlices += group.indices.size();
             for (size_t i = 0; i < group.indices.size(); ++i) {
                 yz_requests.push_back({group.axis, group.indices[i], group.outputs[i]});
-                RoundSliceRequest rsr;
-                rsr.axis = group.axis;
-                rsr.index = group.indices[i];
-                rsr.output = group.outputs[i];
-                rsr.logical_group = static_cast<uint32_t>(g);
-                rsr.request_index = static_cast<uint32_t>(i);
-                yz_round_requests.push_back(rsr);
             }
         }
     }
 
     if (yz_requests.empty()) return true;
-
-    RzfpRoundPlan plan;
-    bool planBuilt = false;
-    {
-        plan = buildRzfpRoundPlan(
-            header_, sb_index_, descriptors_,
-            yz_round_requests, config.hdd
-        );
-        planBuilt = true;
-    }
 
     RzfpReaderConfig yzConfig = config;
     RzfpReadProfile yzProfile;
@@ -1874,38 +1857,7 @@ bool RzfpReader::readContestRound(
     if (!readSlicesBatch(yz_requests, yzConfig)) return false;
     const double totalReadMs = msSince(t0);
 
-    if (results && planBuilt) {
-        uint64_t yzLogicalRequests = 0;
-        for (const auto& group : groups)
-            if (group.axis != SliceAxis::X)
-                yzLogicalRequests += group.indices.size();
-
-        double redRatio = plan.independent_requested_bytes > 0
-            ? 1.0 - static_cast<double>(plan.planned_read_bytes) /
-                       static_cast<double>(plan.independent_requested_bytes)
-            : 0.0;
-
-        for (size_t g = 0; g < groups.size(); ++g) {
-            if (groups[g].axis == SliceAxis::X) continue;
-            RzfpRoundReadResult& r = (*results)[g];
-            r.read_time_ms = totalReadMs;
-            r.io_time_ms = yzProfile.io_time_ms;
-            r.decode_time_ms = yzProfile.decode_time_ms;
-            r.scatter_time_ms = yzProfile.scatter_time_ms;
-            r.unique_leaves = plan.unique_leaf_count;
-            r.duplicate_leaf_requests = plan.duplicate_leaf_requests;
-            r.logical_leaf_requests = plan.logical_leaf_requests;
-            r.planned_read_bytes = plan.planned_read_bytes;
-            r.actual_read_bytes = yzProfile.actual_read_bytes;
-            r.eliminated_read_bytes = plan.eliminated_read_bytes;
-            r.read_reduction_ratio = redRatio;
-            r.selected_strategy = yzProfile.selected_strategy;
-            r.strategy_reason = yzProfile.strategy_reason;
-            r.round_plan_built = true;
-            r.round_unique_superblocks = plan.unique_superblock_count;
-            r.round_planned_preads = plan.planned_pread_calls;
-        }
-    } else if (results) {
+    if (results) {
         for (size_t g = 0; g < groups.size(); ++g) {
             if (groups[g].axis == SliceAxis::X) continue;
             RzfpRoundReadResult& r = (*results)[g];
@@ -1914,17 +1866,18 @@ bool RzfpReader::readContestRound(
             r.decode_time_ms = yzProfile.decode_time_ms;
             r.scatter_time_ms = yzProfile.scatter_time_ms;
             r.unique_leaves = yzProfile.unique_leaves;
-            r.duplicate_leaf_requests = 0;
             r.logical_leaf_requests = yzProfile.unique_leaves;
+            r.duplicate_leaf_requests = 0;
             r.planned_read_bytes = yzProfile.requested_record_bytes;
             r.actual_read_bytes = yzProfile.actual_read_bytes;
             r.eliminated_read_bytes = 0;
-            r.read_reduction_ratio = 0.0;
+            r.read_reduction_ratio = yzProfile.readAmplification() > 1.0
+                ? 0.0 : 0.0;
             r.selected_strategy = yzProfile.selected_strategy;
             r.strategy_reason = yzProfile.strategy_reason;
             r.round_plan_built = false;
-            r.round_unique_superblocks = 0;
-            r.round_planned_preads = 0;
+            r.round_unique_superblocks = yzProfile.unique_superblocks;
+            r.round_planned_preads = yzProfile.pread_calls;
         }
     }
 

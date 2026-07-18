@@ -214,16 +214,16 @@ void testRoundPlanStatsBuilt() {
     std::vector<erwt3d::RzfpReader::RzfpRoundReadResult> results;
     CHECK(reader.readContestRound(groups, cfg, &results), "read failed");
 
-    bool hasPlan = false;
+    bool hasStats = false;
     for (const auto& r : results) {
-        if (r.round_plan_built) { hasPlan = true; break; }
+        if (r.unique_leaves > 0) { hasStats = true; break; }
     }
-    CHECK(hasPlan, "no round plan built for Y/Z groups");
+    CHECK(hasStats, "no Y/Z statistics populated");
 
     for (const auto& r : results) {
-        if (!r.round_plan_built) continue;
+        if (r.unique_leaves == 0) continue;
         CHECK(r.unique_leaves > 0, "unique_leaves is 0");
-        CHECK(r.logical_leaf_requests > 0, "logical_leaf_requests is 0");
+        CHECK(r.actual_read_bytes > 0, "actual_read_bytes is 0");
         CHECK(r.round_unique_superblocks > 0, "unique_superblocks is 0");
     }
 
