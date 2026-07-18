@@ -117,6 +117,7 @@ bool executeContestRound(
     double totalReadMs = 0.0;
     double totalWriteMs = 0.0;
     uint64_t peakOutputBytes = 0;
+    RzfpReadProfile aggregateProfile;
 
     for (const auto& phase : phasePlan.phases) {
         if (phase.group_ids.empty()) continue;
@@ -175,19 +176,24 @@ bool executeContestRound(
             totalReadMs += readMs;
 
             if (profile) {
+                aggregateProfile.selected_strategy = RzfpReadStrategy::Auto;
                 for (const auto& rr : batchResults) {
-                    profile->logical_leaf_requests = std::max(
-                        profile->logical_leaf_requests, rr.logical_leaf_requests);
-                    profile->duplicate_leaf_requests = std::max(
-                        profile->duplicate_leaf_requests, rr.duplicate_leaf_requests);
-                    profile->eliminated_record_bytes = std::max(
-                        profile->eliminated_record_bytes, rr.eliminated_read_bytes);
-                    profile->actual_read_bytes = std::max(
-                        profile->actual_read_bytes, rr.actual_read_bytes);
-                    if (rr.selected_strategy != RzfpReadStrategy::Auto) {
-                        profile->selected_strategy = rr.selected_strategy;
-                        profile->strategy_reason = rr.strategy_reason;
-                    }
+                    RzfpReadProfile bp;
+                    bp.logical_leaf_requests = rr.logical_leaf_requests;
+                    bp.unique_leaf_requests = rr.unique_leaves;
+                    bp.duplicate_leaf_requests = rr.duplicate_leaf_requests;
+                    bp.actual_read_bytes = rr.actual_read_bytes;
+                    bp.unique_record_bytes = rr.planned_read_bytes;
+                    bp.eliminated_record_bytes = rr.eliminated_read_bytes;
+                    bp.io_time_ms = rr.io_time_ms;
+                    bp.decode_time_ms = rr.decode_time_ms;
+                    bp.scatter_time_ms = rr.scatter_time_ms;
+                    if (rr.selected_strategy != RzfpReadStrategy::Auto)
+                        bp.selected_strategy = rr.selected_strategy;
+                    bp.strategy_reason = rr.strategy_reason;
+                    bp.unique_superblocks = rr.round_unique_superblocks;
+                    bp.pread_calls = rr.round_planned_preads;
+                    accumulateReadProfile(aggregateProfile, bp);
                 }
             }
 
@@ -233,6 +239,12 @@ bool executeContestRound(
         profile->write_time_ms = totalWriteMs;
         profile->total_time_ms = totalReadMs + totalWriteMs;
         profile->all_outputs_deferred = phasePlan.all_outputs_deferred;
+        profile->logical_leaf_requests = aggregateProfile.logical_leaf_requests;
+        profile->duplicate_leaf_requests = aggregateProfile.duplicate_leaf_requests;
+        profile->eliminated_record_bytes = aggregateProfile.eliminated_record_bytes;
+        profile->actual_read_bytes = aggregateProfile.actual_read_bytes;
+        profile->selected_strategy = aggregateProfile.selected_strategy;
+        profile->strategy_reason = aggregateProfile.strategy_reason;
     }
 
     return true;

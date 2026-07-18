@@ -1864,17 +1864,17 @@ bool RzfpReader::readContestRound(
                 r.decode_time_ms = xProfile.decode_time_ms;
                 r.scatter_time_ms = xProfile.scatter_time_ms;
                 r.unique_leaves = xProfile.unique_leaves;
-                r.duplicate_leaf_requests = 0;
-                r.logical_leaf_requests = xProfile.unique_leaves;
+                r.duplicate_leaf_requests = xProfile.duplicate_leaf_requests;
+                r.logical_leaf_requests = xProfile.logical_leaf_requests;
                 r.planned_read_bytes = xProfile.actual_read_bytes;
                 r.actual_read_bytes = xProfile.actual_read_bytes;
-                r.eliminated_read_bytes = 0;
-                r.read_reduction_ratio = 0.0;
+                r.eliminated_read_bytes = xProfile.eliminated_record_bytes;
+                r.read_reduction_ratio = xProfile.dedupReductionRatio();
                 r.selected_strategy = xProfile.selected_strategy;
                 r.strategy_reason = xProfile.strategy_reason;
                 r.round_plan_built = false;
-                r.round_unique_superblocks = 0;
-                r.round_planned_preads = 0;
+                r.round_unique_superblocks = xProfile.unique_superblocks;
+                r.round_planned_preads = xProfile.pread_calls;
             }
         } else {
             yzLogicalSlices += group.indices.size();
@@ -1902,14 +1902,13 @@ bool RzfpReader::readContestRound(
             r.io_time_ms = yzProfile.io_time_ms;
             r.decode_time_ms = yzProfile.decode_time_ms;
             r.scatter_time_ms = yzProfile.scatter_time_ms;
-            r.unique_leaves = yzProfile.unique_leaves;
-            r.logical_leaf_requests = yzProfile.unique_leaves;
-            r.duplicate_leaf_requests = 0;
-            r.planned_read_bytes = yzProfile.requested_record_bytes;
+            r.unique_leaves = yzProfile.unique_leaf_requests;
+            r.logical_leaf_requests = yzProfile.logical_leaf_requests;
+            r.duplicate_leaf_requests = yzProfile.duplicate_leaf_requests;
+            r.planned_read_bytes = yzProfile.unique_record_bytes;
             r.actual_read_bytes = yzProfile.actual_read_bytes;
-            r.eliminated_read_bytes = 0;
-            r.read_reduction_ratio = yzProfile.readAmplification() > 1.0
-                ? 0.0 : 0.0;
+            r.eliminated_read_bytes = yzProfile.eliminated_record_bytes;
+            r.read_reduction_ratio = yzProfile.dedupReductionRatio();
             r.selected_strategy = yzProfile.selected_strategy;
             r.strategy_reason = yzProfile.strategy_reason;
             r.round_plan_built = false;
@@ -1919,6 +1918,39 @@ bool RzfpReader::readContestRound(
     }
 
     return true;
+}
+
+void accumulateReadProfile(RzfpReadProfile& total,
+                           const RzfpReadProfile& batch) {
+    total.unique_superblocks += batch.unique_superblocks;
+    total.unique_leaves += batch.unique_leaves;
+    total.requested_record_bytes += batch.requested_record_bytes;
+    total.actual_read_bytes += batch.actual_read_bytes;
+    total.pread_calls += batch.pread_calls;
+    total.window_cache_hits += batch.window_cache_hits;
+    total.window_cache_misses += batch.window_cache_misses;
+    total.window_cache_contained_hits += batch.window_cache_contained_hits;
+    total.window_cache_saved_read_bytes += batch.window_cache_saved_read_bytes;
+    total.window_cache_resident_bytes = std::max(
+        total.window_cache_resident_bytes, batch.window_cache_resident_bytes);
+    total.logical_leaf_requests += batch.logical_leaf_requests;
+    total.unique_leaf_requests += batch.unique_leaf_requests;
+    total.duplicate_leaf_requests += batch.duplicate_leaf_requests;
+    total.logical_record_bytes += batch.logical_record_bytes;
+    total.unique_record_bytes += batch.unique_record_bytes;
+    total.eliminated_record_bytes += batch.eliminated_record_bytes;
+    total.plan_time_ms += batch.plan_time_ms;
+    total.prefix_time_ms += batch.prefix_time_ms;
+    total.io_time_ms += batch.io_time_ms;
+    total.decode_time_ms += batch.decode_time_ms;
+    total.scatter_time_ms += batch.scatter_time_ms;
+    total.sidecar_io_ms += batch.sidecar_io_ms;
+    total.sidecar_decode_ms += batch.sidecar_decode_ms;
+    if (total.selected_strategy == RzfpReadStrategy::Auto)
+        total.selected_strategy = batch.selected_strategy;
+    total.strategy_reason = batch.strategy_reason;
+    total.effective_device_mb_s = batch.effective_device_mb_s;
+    total.pilot_observed_mb_s = batch.pilot_observed_mb_s;
 }
 
 } // namespace erwt3d

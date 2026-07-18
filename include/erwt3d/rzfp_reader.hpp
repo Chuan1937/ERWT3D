@@ -141,6 +141,9 @@ struct RzfpReadProfile {
     }
 };
 
+void accumulateReadProfile(RzfpReadProfile& total,
+                           const RzfpReadProfile& batch);
+
 struct RzfpAdaptiveConfig {
     bool auto_calibrate_device = true;
 
