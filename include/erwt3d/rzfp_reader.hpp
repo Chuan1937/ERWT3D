@@ -5,9 +5,11 @@
 #include "device_profile.hpp"
 #include "slice.hpp"
 #include "sb_hdd.hpp"
+#include "window_cache.hpp"
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -18,6 +20,8 @@ enum class RzfpReadStrategy {
     SelectiveLeaf,
     WholeSuperblock,
     FullPayloadScan,
+    RawXAux,
+    XPlaneSidecar,
 };
 
 struct RzfpReadProfile {
@@ -26,6 +30,11 @@ struct RzfpReadProfile {
     uint64_t requested_record_bytes = 0;
     uint64_t actual_read_bytes = 0;
     uint64_t pread_calls = 0;
+    uint64_t window_cache_hits = 0;
+    uint64_t window_cache_misses = 0;
+    uint64_t window_cache_resident_bytes = 0;
+    uint64_t window_cache_saved_read_bytes = 0;
+
     double plan_time_ms = 0.0;
     double prefix_time_ms = 0.0;
     double io_time_ms = 0.0;
@@ -33,7 +42,16 @@ struct RzfpReadProfile {
     double scatter_time_ms = 0.0;
     double sidecar_io_ms = 0.0;
     double sidecar_decode_ms = 0.0;
+
+    double predicted_selective_seconds = 0.0;
+    double predicted_whole_seconds = 0.0;
+    double predicted_fullscan_seconds = 0.0;
+    double effective_device_mb_s = 0.0;
+    double pilot_observed_mb_s = 0.0;
+
     RzfpReadStrategy selected_strategy = RzfpReadStrategy::Auto;
+    CachePolicy cache_policy = CachePolicy::StableAuto;
+    std::string strategy_reason;
 
     std::atomic<uint64_t> scatter_ns{0};
 
@@ -41,25 +59,56 @@ struct RzfpReadProfile {
     RzfpReadProfile(const RzfpReadProfile& o)
         : unique_superblocks(o.unique_superblocks), unique_leaves(o.unique_leaves),
           requested_record_bytes(o.requested_record_bytes), actual_read_bytes(o.actual_read_bytes),
-          pread_calls(o.pread_calls), plan_time_ms(o.plan_time_ms), prefix_time_ms(o.prefix_time_ms),
+          pread_calls(o.pread_calls), window_cache_hits(o.window_cache_hits),
+          window_cache_misses(o.window_cache_misses),
+          window_cache_resident_bytes(o.window_cache_resident_bytes),
+          window_cache_saved_read_bytes(o.window_cache_saved_read_bytes),
+          plan_time_ms(o.plan_time_ms), prefix_time_ms(o.prefix_time_ms),
           io_time_ms(o.io_time_ms), decode_time_ms(o.decode_time_ms),
           scatter_time_ms(o.scatter_time_ms), sidecar_io_ms(o.sidecar_io_ms),
-          sidecar_decode_ms(o.sidecar_decode_ms), selected_strategy(o.selected_strategy),
-          scatter_ns(o.scatter_ns.load()) {}
+          sidecar_decode_ms(o.sidecar_decode_ms),
+          predicted_selective_seconds(o.predicted_selective_seconds),
+          predicted_whole_seconds(o.predicted_whole_seconds),
+          predicted_fullscan_seconds(o.predicted_fullscan_seconds),
+          effective_device_mb_s(o.effective_device_mb_s),
+          pilot_observed_mb_s(o.pilot_observed_mb_s),
+          selected_strategy(o.selected_strategy), cache_policy(o.cache_policy),
+          strategy_reason(o.strategy_reason), scatter_ns(o.scatter_ns.load()) {}
+
     RzfpReadProfile& operator=(const RzfpReadProfile& o) {
-        unique_superblocks = o.unique_superblocks; unique_leaves = o.unique_leaves;
-        requested_record_bytes = o.requested_record_bytes; actual_read_bytes = o.actual_read_bytes;
-        pread_calls = o.pread_calls; plan_time_ms = o.plan_time_ms; prefix_time_ms = o.prefix_time_ms;
-        io_time_ms = o.io_time_ms; decode_time_ms = o.decode_time_ms;
-        scatter_time_ms = o.scatter_time_ms; sidecar_io_ms = o.sidecar_io_ms;
-        sidecar_decode_ms = o.sidecar_decode_ms; selected_strategy = o.selected_strategy;
+        if (this == &o) return *this;
+        unique_superblocks = o.unique_superblocks;
+        unique_leaves = o.unique_leaves;
+        requested_record_bytes = o.requested_record_bytes;
+        actual_read_bytes = o.actual_read_bytes;
+        pread_calls = o.pread_calls;
+        window_cache_hits = o.window_cache_hits;
+        window_cache_misses = o.window_cache_misses;
+        window_cache_resident_bytes = o.window_cache_resident_bytes;
+        window_cache_saved_read_bytes = o.window_cache_saved_read_bytes;
+        plan_time_ms = o.plan_time_ms;
+        prefix_time_ms = o.prefix_time_ms;
+        io_time_ms = o.io_time_ms;
+        decode_time_ms = o.decode_time_ms;
+        scatter_time_ms = o.scatter_time_ms;
+        sidecar_io_ms = o.sidecar_io_ms;
+        sidecar_decode_ms = o.sidecar_decode_ms;
+        predicted_selective_seconds = o.predicted_selective_seconds;
+        predicted_whole_seconds = o.predicted_whole_seconds;
+        predicted_fullscan_seconds = o.predicted_fullscan_seconds;
+        effective_device_mb_s = o.effective_device_mb_s;
+        pilot_observed_mb_s = o.pilot_observed_mb_s;
+        selected_strategy = o.selected_strategy;
+        cache_policy = o.cache_policy;
+        strategy_reason = o.strategy_reason;
         scatter_ns.store(o.scatter_ns.load());
         return *this;
     }
 
     double readAmplification() const {
         return requested_record_bytes > 0
-                   ? static_cast<double>(actual_read_bytes) / static_cast<double>(requested_record_bytes)
+                   ? static_cast<double>(actual_read_bytes) /
+                         static_cast<double>(requested_record_bytes)
                    : 1.0;
     }
 };
@@ -75,6 +124,7 @@ struct RzfpAdaptiveConfig {
 
     bool enable_strategy_probe = true;
     uint64_t strategy_probe_bytes = 256ULL * 1024 * 1024;
+    double strategy_probe_max_seconds = 3.0;
 };
 
 struct RzfpReaderConfig {
@@ -83,6 +133,10 @@ struct RzfpReaderConfig {
     int decode_threads = 1;
     RzfpReadProfile* profile = nullptr;
     RzfpAdaptiveConfig adaptive;
+
+    std::shared_ptr<BoundedWindowCache> window_cache;
+    uint64_t window_cache_file_identity = 0;
+    bool use_window_cache = true;
 };
 
 class RzfpReader {
@@ -93,6 +147,14 @@ public:
     bool ok() const { return fd_ >= 0; }
     const RzfpFileHeader& header() const { return header_; }
     const DeviceProfile& deviceProfile() const { return device_profile_; }
+    uint64_t fileIdentity() const { return file_identity_; }
+    uint64_t payloadBytes() const { return payload_bytes_; }
+
+    const DeviceProfile& ensureDeviceProfile(
+        const DeviceCalibrationConfig& config = {}
+    );
+
+    bool dropPayloadCache();
 
     bool readSlice(SliceAxis axis, uint64_t index, float* output,
                    int numThreads = 1, size_t memoryLimitMB = 4096,
@@ -120,6 +182,8 @@ private:
     std::vector<RzfpLeafDescriptor> descriptors_;
 
     uint64_t file_size_ = 0;
+    uint64_t file_identity_ = 0;
+    uint64_t payload_bytes_ = 0;
     DeviceProfile device_profile_;
     bool device_profile_ready_ = false;
 

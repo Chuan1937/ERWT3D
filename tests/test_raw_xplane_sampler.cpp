@@ -2,7 +2,6 @@
 
 #include <cmath>
 #include <cstdint>
-#include <cstdlib>
 #include <fcntl.h>
 #include <iostream>
 #include <unistd.h>
@@ -48,8 +47,7 @@ bool writeZFastestRaw(const std::string& path, uint64_t nx, uint64_t ny, uint64_
 } // namespace
 
 int main() {
-    std::system("mkdir -p /mnt/d/opencode_tests");
-    const std::string path = "/mnt/d/opencode_tests/test_sampler.raw";
+    const std::string path = "/tmp/erwt3d_test_sampler.raw";
     const uint64_t nx = 25;
     const uint64_t ny = 31;
     const uint64_t nz = 17;

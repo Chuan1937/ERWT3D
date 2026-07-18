@@ -27,7 +27,6 @@ bool writeRawFile(const std::string& path, uint64_t nx, uint64_t ny, uint64_t nz
         for (uint64_t y = 0; y < ny; ++y) {
             for (uint64_t z = 0; z < nz; ++z) {
                 float v = static_cast<float>(x * 100 + y * 10 + z) / 1000.0f;
-                // Add a bit of high-frequency variation so compression isn't trivial.
                 v += static_cast<float>((x + y + z) % 7) * 0.01f;
                 data[(x * ny + y) * nz + z] = v;
             }
@@ -89,6 +88,8 @@ const char* strategyName(erwt3d::RzfpReadStrategy s) {
         case erwt3d::RzfpReadStrategy::SelectiveLeaf: return "selective";
         case erwt3d::RzfpReadStrategy::WholeSuperblock: return "whole";
         case erwt3d::RzfpReadStrategy::FullPayloadScan: return "fullscan";
+        case erwt3d::RzfpReadStrategy::RawXAux: return "raw-x-aux";
+        case erwt3d::RzfpReadStrategy::XPlaneSidecar: return "xplane-sidecar";
         default: return "auto";
     }
 }
@@ -136,9 +137,8 @@ void testStrategyConsistency(const std::string& path,
 } // namespace
 
 int main() {
-    std::system("mkdir -p /mnt/d/opencode_tests");
-    const std::string raw_path = "/mnt/d/opencode_tests/test_reader_strategies.raw";
-    const std::string rzfp_path = "/mnt/d/opencode_tests/test_reader_strategies.rzfp";
+    const std::string raw_path = "/tmp/erwt3d_test_reader_strategies.raw";
+    const std::string rzfp_path = "/tmp/erwt3d_test_reader_strategies.rzfp";
 
     const uint64_t nx = 48;
     const uint64_t ny = 56;

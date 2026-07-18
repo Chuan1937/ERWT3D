@@ -11,12 +11,15 @@ struct DeviceProfile {
     double sequential_mb_s = 0.0;
     double random_seek_ms = 0.0;
     double cached_mb_s = 0.0;
+    double minimum_sequential_mb_s = 0.0;
+    double maximum_sequential_mb_s = 0.0;
 
     uint64_t device_id = 0;
     uint64_t filesystem_id = 0;
 
     bool direct_io_supported = false;
     bool calibrated = false;
+    bool cache_contamination_suspected = false;
 };
 
 struct DeviceCalibrationConfig {
@@ -25,6 +28,7 @@ struct DeviceCalibrationConfig {
     uint32_t random_probe_count = 64;
 
     uint64_t random_probe_bytes = 64ULL * 1024;
+    bool evict_before_probe = true;
     bool evict_after_probe = true;
 };
 

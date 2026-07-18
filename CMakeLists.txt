@@ -5,8 +5,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Options
-option(ERWT3D_NATIVE_OPT "Use -march=native -mtune=native (Release only)" ON)
+# Options. Portable x86-64 is the default for competition binaries because
+# the CentOS 7 evaluation CPU model is not fixed. Developers may explicitly
+# enable native tuning for machine-local benchmarks.
+option(ERWT3D_NATIVE_OPT "Use -march=native -mtune=native (Release only)" OFF)
 option(ERWT3D_ENABLE_RZFP "Enable experimental ZFP pointwise-relative codec" OFF)
 
 # Thread support
@@ -64,6 +66,8 @@ if(ERWT3D_NATIVE_OPT)
         endif()
     endif()
     message(STATUS "Native optimization enabled (Release only): -O3 -march=native -mtune=native")
+else()
+    message(STATUS "Portable x86-64 build enabled; ERWT3D_NATIVE_OPT=OFF")
 endif()
 
 # Library sources
@@ -78,6 +82,8 @@ set(LIB_SOURCES
     src/sb_common.cpp
     src/sb_hdd.cpp
     src/device_profile.cpp
+    src/memory_budget.cpp
+    src/window_cache.cpp
     src/sb_panel.cpp
     src/api.cpp
     src/lz4_probe.cpp
@@ -90,6 +96,7 @@ if(ERWT3D_ENABLE_RZFP)
         src/rzfp_codec.cpp
         src/rzfp_writer.cpp
         src/rzfp_reader.cpp
+        src/rzfp_strategy.cpp
         src/rzfp_xplane_codec.cpp
         src/rzfp_xplane_writer.cpp
         src/rzfp_raw_sampler.cpp
