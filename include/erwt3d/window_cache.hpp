@@ -40,6 +40,14 @@ public:
         std::shared_ptr<const std::vector<uint8_t>>& data
     );
 
+    bool getContaining(
+        uint64_t file_identity,
+        uint64_t offset,
+        uint64_t size,
+        std::shared_ptr<const std::vector<uint8_t>>& data,
+        uint64_t* cached_offset = nullptr
+    );
+
     bool put(
         const WindowCacheKey& key,
         std::vector<uint8_t>&& data
@@ -57,7 +65,9 @@ public:
     uint64_t residentBytes() const;
     uint64_t hitCount() const;
     uint64_t missCount() const;
+    uint64_t containedHitCount() const;
     uint64_t evictionCount() const;
+    uint64_t savedReadBytes() const;
 
 private:
     struct Entry {
@@ -80,7 +90,9 @@ private:
     uint64_t resident_bytes_ = 0;
     uint64_t hit_count_ = 0;
     uint64_t miss_count_ = 0;
+    uint64_t contained_hit_count_ = 0;
     uint64_t eviction_count_ = 0;
+    uint64_t saved_read_bytes_ = 0;
     LruList lru_;
     Index index_;
 };
