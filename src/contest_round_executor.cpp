@@ -198,15 +198,27 @@ bool executeContestRound(
                 const uint64_t outBytes = elements * sizeof(float);
                 const size_t remaining = groups[g].indices->size() - groupIndices[pi];
                 const size_t take = std::min(remaining, static_cast<size_t>(batchSize));
+                if (take == 0) continue;
 
-                for (size_t i = 0; i < take; ++i) {
+                const size_t nOut = cgroups[pi].outputs.size();
+                const size_t writeTake = (nOut >= take) ? take : nOut;
+                if (nOut < take) {
+                    for (auto& afds : allFds) for (int f : afds) if (f >= 0) close(f);
+                    return false;
+                }
+
+                for (size_t i = 0; i < writeTake; ++i) {
+                    if (writeTake > 0 && i >= cgroups[pi].outputs.size()) {
+                        for (auto& afds : allFds) for (int f : afds) if (f >= 0) close(f);
+                        return false;
+                    }
                     if (!writeFullyAt(allFds[g][groupIndices[pi] + i],
                                       cgroups[pi].outputs[i], outBytes, 0)) {
                         for (auto& afds : allFds) for (int f : afds) if (f >= 0) close(f);
                         return false;
                     }
                 }
-                groupIndices[pi] += take;
+                groupIndices[pi] += writeTake;
             }
             totalWriteMs += msSince(writeStart);
         }
