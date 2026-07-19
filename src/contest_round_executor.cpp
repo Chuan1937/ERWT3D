@@ -153,12 +153,19 @@ bool executeContestRound(
                 const size_t remaining = groups[g].indices->size() - positions[pi];
                 if (remaining == 0) continue;
 
+                const uint64_t elem = elementsForAxis(header, groups[g].axis);
+                const uint64_t bytesPerSlice = elem * sizeof(float);
+                const uint64_t maxByBudget = bytesPerSlice > 0
+                    ? outputBudget / bytesPerSlice : remaining;
+                const size_t budgetTake = static_cast<size_t>(
+                    std::max<uint64_t>(1, std::min<uint64_t>(remaining, maxByBudget)));
+
                 BatchMember m;
                 m.pgIndex = pi;
                 m.groupId = g;
-                m.take = std::min(remaining, static_cast<size_t>(batchSize));
+                m.take = std::min(remaining, budgetTake);
                 m.startIdx = positions[pi];
-                m.elements = elementsForAxis(header, groups[g].axis);
+                m.elements = elem;
                 members.push_back(std::move(m));
             }
 
