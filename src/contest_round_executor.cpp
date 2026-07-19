@@ -148,25 +148,42 @@ bool executeContestRound(
             };
             std::vector<BatchMember> members;
 
+            // Pass 1: allocate at least 1 slice per active group
+            uint64_t remainingBudget = outputBudget;
             for (size_t pi = 0; pi < pgCount; ++pi) {
                 size_t g = phase.group_ids[pi];
                 const size_t remaining = groups[g].indices->size() - positions[pi];
                 if (remaining == 0) continue;
 
                 const uint64_t elem = elementsForAxis(header, groups[g].axis);
-                const uint64_t bytesPerSlice = elem * sizeof(float);
-                const uint64_t maxByBudget = bytesPerSlice > 0
-                    ? outputBudget / bytesPerSlice : remaining;
-                const size_t budgetTake = static_cast<size_t>(
-                    std::max<uint64_t>(1, std::min<uint64_t>(remaining, maxByBudget)));
+                const uint64_t bps = elem * sizeof(float);
+                if (bps == 0 || bps > remainingBudget) continue;
 
                 BatchMember m;
                 m.pgIndex = pi;
                 m.groupId = g;
-                m.take = std::min(remaining, budgetTake);
+                m.take = 1;
                 m.startIdx = positions[pi];
                 m.elements = elem;
+                m.buffer = {};
                 members.push_back(std::move(m));
+                remainingBudget -= bps;
+            }
+
+            // Pass 2: expand groups proportionally within remaining budget
+            for (auto& m : members) {
+                size_t g = m.groupId;
+                const size_t remaining = groups[g].indices->size() - positions[m.pgIndex];
+                const uint64_t bps = m.elements * sizeof(float);
+                const uint64_t extraAvail = bps > 0 ? remainingBudget / bps : 0;
+                const size_t extra = std::min(
+                    static_cast<size_t>(extraAvail),
+                    remaining - m.take
+                );
+                if (extra > 0 && bps > 0) {
+                    m.take += extra;
+                    remainingBudget -= extra * bps;
+                }
             }
 
             if (members.empty()) break;

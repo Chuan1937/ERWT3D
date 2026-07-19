@@ -294,7 +294,7 @@ static uint64_t estimateSelectiveBytes(
             const uint64_t end = offset + tasks[j].record_size;
             if (offset > windowEnd + maxGap) break;
             if (end - windowStart > readWindow) break;
-            windowEnd = end;
+            windowEnd = std::max(windowEnd, end);
             ++j;
         }
 
@@ -341,7 +341,8 @@ static uint64_t estimateWholeWindowBytes(
         intervals.begin(),
         intervals.end(),
         [](const ReadInterval& a, const ReadInterval& b) {
-            return a.offset < b.offset;
+            if (a.offset != b.offset) return a.offset < b.offset;
+            return a.size > b.size;
         }
     );
 
@@ -356,7 +357,7 @@ static uint64_t estimateWholeWindowBytes(
             const uint64_t end = offset + intervals[j].size;
             if (offset > windowEnd + maxGap) break;
             if (end - windowStart > readWindow) break;
-            windowEnd = end;
+            windowEnd = std::max(windowEnd, end);
             ++j;
         }
         bytes += windowEnd - windowStart;
@@ -532,7 +533,8 @@ static bool executeWindowedRead(
         sorted.begin(),
         sorted.end(),
         [](const ReadInterval& a, const ReadInterval& b) {
-            return a.offset < b.offset;
+            if (a.offset != b.offset) return a.offset < b.offset;
+            return a.size > b.size;
         }
     );
 
@@ -553,7 +555,7 @@ static bool executeWindowedRead(
             const uint64_t end = offset + sorted[next].size;
             if (offset > windowEnd + maxGap) break;
             if (end - windowStart > readWindow) break;
-            windowEnd = end;
+            windowEnd = std::max(windowEnd, end);
             ++next;
         }
         return std::make_tuple(
@@ -1494,7 +1496,8 @@ bool RzfpReader::readXPlanesBatchFromSidecar(
         tasks.begin(),
         tasks.end(),
         [](const XTask& a, const XTask& b) {
-            return a.offset < b.offset;
+            if (a.offset != b.offset) return a.offset < b.offset;
+            return a.size > b.size;
         }
     );
 
@@ -1519,7 +1522,7 @@ bool RzfpReader::readXPlanesBatchFromSidecar(
             const uint64_t end = offset + tasks[j].size;
             if (offset > windowEnd + maxGap) break;
             if (end - windowStart > readWindow) break;
-            windowEnd = end;
+            windowEnd = std::max(windowEnd, end);
             ++j;
         }
 
