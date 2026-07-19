@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fcntl.h>
+#include <iostream>
 #include <memory>
 #include <sstream>
 #include <sys/stat.h>
@@ -127,13 +128,16 @@ bool executeContestRound(
     uint64_t peakOutputBytes = 0;
     RzfpReadProfile aggregateProfile;
 
-    for (const auto& phase : phasePlan.phases) {
+    for (size_t phaseIdx = 0; phaseIdx < phasePlan.phases.size(); ++phaseIdx) {
+        const auto& phase = phasePlan.phases[phaseIdx];
         if (phase.group_ids.empty()) continue;
 
         std::vector<size_t> positions(phase.group_ids.size(), 0);
         const size_t pgCount = phase.group_ids.size();
+        uint64_t batchNum = 0;
 
         while (true) {
+            ++batchNum;
             struct BatchMember {
                 size_t pgIndex = 0;
                 size_t groupId = 0;
@@ -234,6 +238,16 @@ bool executeContestRound(
                 profile->peak_accounted_bytes = std::max(
                     profile->peak_accounted_bytes,
                     fixedBytes + batchOutputBytes);
+            }
+            if (batchNum % 2 == 0 || members.size() <= 2) {
+                uint64_t rem = 0;
+                for (size_t pi = 0; pi < pgCount; ++pi)
+                    rem += groups[phase.group_ids[pi]].indices->size() - positions[pi];
+                std::cerr << "  [phase " << (phaseIdx+1) << "/" << phasePlan.phases.size()
+                          << " batch " << batchNum
+                          << " groups=" << members.size()
+                          << " remaining=" << rem
+                          << "]" << std::endl;
             }
         }
     }

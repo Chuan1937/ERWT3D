@@ -1861,27 +1861,37 @@ bool RzfpReader::readContestRound(
 
     std::vector<SliceBatchRequest> yz_requests;
     uint64_t yzLogicalSlices = 0;
+    std::vector<SliceBatchRequest> x_requests;
 
     for (size_t g = 0; g < groups.size(); ++g) {
         const auto& group = groups[g];
         if (group.axis == SliceAxis::X) {
-            RzfpReaderConfig xConfig = config;
-            RzfpReadProfile xProfile;
-            xConfig.profile = &xProfile;
-
-            std::vector<SliceBatchRequest> xRequests;
-            xRequests.reserve(group.indices.size());
             for (size_t i = 0; i < group.indices.size(); ++i) {
-                xRequests.push_back({group.axis, group.indices[i], group.outputs[i]});
+                x_requests.push_back({group.axis, group.indices[i], group.outputs[i]});
             }
+        } else {
+            yzLogicalSlices += group.indices.size();
+            for (size_t i = 0; i < group.indices.size(); ++i) {
+                yz_requests.push_back({group.axis, group.indices[i], group.outputs[i]});
+            }
+        }
+    }
 
-            const auto t0 = Clock::now();
-            if (!readSlicesBatch(xRequests, xConfig)) return false;
-            const double readMs = msSince(t0);
+    double xReadMs = 0.0;
+    if (!x_requests.empty()) {
+        RzfpReaderConfig xConfig = config;
+        RzfpReadProfile xProfile;
+        xConfig.profile = &xProfile;
 
-            if (results) {
+        const auto tx0 = Clock::now();
+        if (!readSlicesBatch(x_requests, xConfig)) return false;
+        xReadMs = msSince(tx0);
+
+        if (results) {
+            for (size_t g = 0; g < groups.size(); ++g) {
+                if (groups[g].axis != SliceAxis::X) continue;
                 RzfpRoundReadResult& r = (*results)[g];
-                r.read_time_ms = readMs;
+                r.read_time_ms = xReadMs;
                 r.io_time_ms = xProfile.io_time_ms;
                 r.decode_time_ms = xProfile.decode_time_ms;
                 r.scatter_time_ms = xProfile.scatter_time_ms;
@@ -1897,11 +1907,6 @@ bool RzfpReader::readContestRound(
                 r.round_plan_built = false;
                 r.round_unique_superblocks = xProfile.unique_superblocks;
                 r.round_planned_preads = xProfile.pread_calls;
-            }
-        } else {
-            yzLogicalSlices += group.indices.size();
-            for (size_t i = 0; i < group.indices.size(); ++i) {
-                yz_requests.push_back({group.axis, group.indices[i], group.outputs[i]});
             }
         }
     }
