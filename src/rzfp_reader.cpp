@@ -784,13 +784,23 @@ static bool executeSelectiveLeaf(
                               << task.physical_sb_id
                               << " morton=" << task.morton
                               << " record_size=" << task.record_size
+                              << " codec=" << static_cast<int>(task.codec)
+                              << " file_offset=" << task.file_offset
                               << " (identical bytes, codec issue)" << std::endl;
                 } else {
                     std::cerr << "Error: RZFP decode failed for sb="
                               << task.physical_sb_id
                               << " morton=" << task.morton
                               << " record_size=" << task.record_size
-                              << " (window vs direct mismatch)" << std::endl;
+                              << " codec=" << static_cast<int>(task.codec)
+                              << " file_offset=" << task.file_offset
+                              << " (window vs direct mismatch, first_bytes: win["
+                              << static_cast<int>(data[0]) << " " << static_cast<int>(data[1])
+                              << " " << static_cast<int>(data[2]) << " " << static_cast<int>(data[3])
+                              << "] dir["
+                              << static_cast<int>(direct[0]) << " " << static_cast<int>(direct[1])
+                              << " " << static_cast<int>(direct[2]) << " " << static_cast<int>(direct[3])
+                              << "])" << std::endl;
                 }
                 if (codec.decodeRecord(task.codec, direct.data(),
                                        task.record_size, leaf)) {
