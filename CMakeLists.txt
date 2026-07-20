@@ -104,6 +104,8 @@ if(ERWT3D_ENABLE_RZFP)
         src/rzfp_xplane_writer.cpp
         src/rzfp_raw_sampler.cpp
         src/rzfp_auto_plan.cpp
+        src/taps_writer.cpp
+        src/taps_reader.cpp
     )
 endif()
 
@@ -192,6 +194,21 @@ if(ERWT3D_ENABLE_RZFP)
 
     add_executable(erwt3d_lz4_probe tools/erwt3d_lz4_probe.cpp)
     target_link_libraries(erwt3d_lz4_probe PRIVATE erwt3d)
+
+    add_executable(erwt3d_plane_probe tools/erwt3d_plane_probe.cpp)
+    target_link_libraries(erwt3d_plane_probe PRIVATE erwt3d)
+
+    add_executable(erwt3d_taps_convert tools/erwt3d_taps_convert.cpp)
+    target_link_libraries(erwt3d_taps_convert PRIVATE erwt3d)
+
+    add_executable(erwt3d_taps_slice tools/erwt3d_taps_slice.cpp)
+    target_link_libraries(erwt3d_taps_slice PRIVATE erwt3d)
+
+    add_executable(erwt3d_taps_verify tools/erwt3d_taps_verify.cpp)
+    target_link_libraries(erwt3d_taps_verify PRIVATE erwt3d)
+
+    add_executable(erwt3d_taps_bench tools/erwt3d_taps_bench.cpp)
+    target_link_libraries(erwt3d_taps_bench PRIVATE erwt3d)
 
     add_executable(erwt3d_auto_plan tools/erwt3d_auto_plan.cpp)
     target_link_libraries(erwt3d_auto_plan PRIVATE erwt3d)

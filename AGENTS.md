@@ -53,6 +53,11 @@ ctest --test-dir build --output-on-failure
 | `erwt3d_verify_rzfp` | RZFP 正确性验证 |
 | `erwt3d_bench_rzfp` | RZFP 基准测试 |
 | `erwt3d_rzfp_xplane_gen` | 生成 RZFP 2D X-plane sidecar |
+| `erwt3d_taps_convert` | Raw → TAPS 格式转换 |
+| `erwt3d_taps_slice` | TAPS 单切片读取 |
+| `erwt3d_taps_verify` | TAPS 批量随机点验证 |
+| `erwt3d_taps_bench` | TAPS Contest 风格基准测试 |
+| `erwt3d_plane_probe` | 三轴压缩率探测 |
 
 ## 比赛评分（赛题2）
 
@@ -207,6 +212,78 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 - **RZFP 2D X-plane sidecar 对 20GB 收益显著**：X random 从 ~170s 降至 ~17s，sidecar 比率 0.530x，综合存储 1.369x（仍 ≤1.5x）
 - **50GB 无需 sidecar**：RZFP 本身已达 0.804x，叠加 sidecar 会使综合存储逼近 1.5x 且生成成本过高；512MB 窗口已足够突破 104.74s 目标
 - **Page cache 对重复运行有帮助**：第二轮比第一轮快 ~3-5s
+
+## SSD 优化路径（TAPS 格式）
+
+分支 `feature/ssd-adaptive-plane-stream`，独立于 HDD 代码。
+
+### TAPS 格式概述
+
+Three-Axis Plane Stream（TAPS）：三轴独立流式存储，每轴一个 `.stream` + `.index` 文件，LZ4 chunk 压缩。每平面按 chunk 切分压缩，索引记录偏移/大小/平面号。读取时按需 pread 对应 chunk，多线程并行解码。
+
+- 存储比 = 三轴流总大小 / 原始大小
+- 无损（LZ4），单点误差 = 0
+- 读取路径：索引定位 → pread chunks → LZ4 解码 → unshuffle → 输出
+
+### 核心文件
+
+| 文件 | 用途 |
+|------|------|
+| `include/erwt3d/taps_format.hpp` | TAPS 格式定义（TapsChunkIndex, TapsReader, TapsWriter API） |
+| `src/taps_writer.cpp` | TAPS 写入（Z 轴 X-slab 策略） |
+| `src/taps_reader.cpp` | TAPS 读取（多线程 batch，ThreadPool submit） |
+| `tools/erwt3d_taps_convert.cpp` | Raw → TAPS 转换 |
+| `tools/erwt3d_taps_slice.cpp` | 单切片读取 |
+| `tools/erwt3d_taps_verify.cpp` | 批量随机点验证 |
+| `tools/erwt3d_taps_bench.cpp` | Contest 风格基准测试 |
+| `tools/erwt3d_plane_probe.cpp` | 三轴压缩率探测 |
+
+### SSD 测试环境
+
+i9-10850K（8C/16T）、62 GiB RAM、WSL2 ext4（C-drive SSD, /dev/sde, ~1.6 GB/s）、GCC 15.2.1。构建：`build-ssd`，`-DERWT3D_NATIVE_OPT=ON -DERWT3D_ENABLE_RZFP=ON`。
+
+### 20GB TAPS（0.4146x 存储）
+
+维度 801×2405×2501，TAPS 总大小 7.44 GiB（X.stream 1.7G, Y.stream 2.9G, Z.stream 2.9G + index + metadata）。
+
+#### 单线程基线
+
+| 组 | 时间 |
+|----|------|
+| X_random (92 slices) | 9.60s |
+| X_continuous (10) | 1.03s |
+| Y_random (99) | 2.75s |
+| Y_continuous (10) | 0.28s |
+| Z_random (99) | 2.61s |
+| Z_continuous (10) | 0.26s |
+| **T_composite** | **2.76s** |
+
+#### 8 线程（3 轮稳定性）
+
+| 轮次 | X_random | X_cont | Y_random | Y_cont | Z_random | Z_cont | T_composite |
+|------|----------|--------|----------|--------|----------|--------|-------------|
+| R1 | 2.26s | 0.21s | 0.56s | 0.10s | 0.76s | 0.07s | 0.66s |
+| R2 | 2.99s | 0.63s | 1.19s | 0.13s | 0.72s | 0.08s | 0.96s |
+| R3 | 2.22s | 0.27s | 0.71s | 0.08s | 0.63s | 0.07s | 0.66s |
+| **mean** | **2.49s** | **0.37s** | **0.82s** | **0.10s** | **0.70s** | **0.07s** | **0.76s** |
+
+- 加速比：单线程 2.76s → 8 线程 0.76s = **3.6x**
+- X_random 仍是瓶颈（占 T_composite 的 ~55%）
+- R2 偏高（可能 SSD 后台活动），R1/R3 一致 0.66s
+
+### 50GB TAPS — 不可行
+
+50GB 数据集 LZ4 单轴压缩率 ~0.94x（与 HDD 路径发现一致：50GB lz4 仅 1.004x）。三轴总存储比 ~2.8x，远超 1.5x 限制。Z-stream 写入还需 ~52.8GB 内存（`z_buf` 全量缓存），62GB 机器无法容纳。
+
+**结论**：TAPS 格式仅适用于高压缩率数据集（如 20GB 的 0.4146x）。50GB 数据集应继续使用 HDD 路径（RZFP 1.421x）。
+
+### TAPS 关键发现
+
+- **三轴独立流是 SSD 场景的最优解**：SSD 随机读性能好，无需 HDD 的窗口/排序策略
+- **多线程 pread + LZ4 解码并行**：8 线程 3.6x 加速，I/O 和 CPU 重叠良好
+- **X_random 瓶颈**：X 平面最大（ny×nz = 6M floats = 24MB/plane），chunk 数量多
+- **存储比是 TAPS 的硬约束**：三轴冗余存储，仅高压缩率数据集可行
+- **Z-stream 写入内存问题**：当前实现需全量缓存所有 Z 平面，大数据集需流式重写
 
 ## 常用命令
 
