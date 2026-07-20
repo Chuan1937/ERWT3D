@@ -111,7 +111,8 @@ static std::vector<RzfpLeafTask> buildLeafTasks(
     const ERWT3DHeader& plan_hdr,
     const std::vector<RzfpReader::SliceBatchRequest>& requests,
     const RzfpFileHeader& header,
-    double& plan_time_ms
+    double& plan_time_ms,
+    RzfpReadProfile* profile = nullptr
 ) {
     const auto t0 = Clock::now();
 
@@ -149,6 +150,10 @@ static std::vector<RzfpLeafTask> buildLeafTasks(
             const LeafOp* ops = plan.leaf_ops.data() + task.first_leaf;
             for (uint32_t li = 0; li < task.leaf_count; ++li) {
                 const LeafOp& op = ops[li];
+                if (profile) {
+                    ++profile->logical_leaf_requests;
+                    profile->unique_leaf_requests = taskMap.size();
+                }
                 const uint64_t key = (physicalSb << 16) | op.morton;
                 const auto it = taskMap.find(key);
                 if (it == taskMap.end()) {
@@ -164,6 +169,13 @@ static std::vector<RzfpLeafTask> buildLeafTasks(
                 }
             }
         }
+    }
+    if (profile) {
+        profile->unique_leaf_requests = tasks.size();
+        profile->duplicate_leaf_requests =
+            profile->logical_leaf_requests > profile->unique_leaf_requests
+                ? profile->logical_leaf_requests - profile->unique_leaf_requests
+                : 0;
     }
 
     plan_time_ms = msSince(t0);
@@ -282,7 +294,7 @@ static uint64_t estimateSelectiveBytes(
             const uint64_t end = offset + tasks[j].record_size;
             if (offset > windowEnd + maxGap) break;
             if (end - windowStart > readWindow) break;
-            windowEnd = end;
+            windowEnd = std::max(windowEnd, end);
             ++j;
         }
 
@@ -329,7 +341,8 @@ static uint64_t estimateWholeWindowBytes(
         intervals.begin(),
         intervals.end(),
         [](const ReadInterval& a, const ReadInterval& b) {
-            return a.offset < b.offset;
+            if (a.offset != b.offset) return a.offset < b.offset;
+            return a.size > b.size;
         }
     );
 
@@ -344,7 +357,7 @@ static uint64_t estimateWholeWindowBytes(
             const uint64_t end = offset + intervals[j].size;
             if (offset > windowEnd + maxGap) break;
             if (end - windowStart > readWindow) break;
-            windowEnd = end;
+            windowEnd = std::max(windowEnd, end);
             ++j;
         }
         bytes += windowEnd - windowStart;
@@ -520,7 +533,8 @@ static bool executeWindowedRead(
         sorted.begin(),
         sorted.end(),
         [](const ReadInterval& a, const ReadInterval& b) {
-            return a.offset < b.offset;
+            if (a.offset != b.offset) return a.offset < b.offset;
+            return a.size > b.size;
         }
     );
 
@@ -541,7 +555,7 @@ static bool executeWindowedRead(
             const uint64_t end = offset + sorted[next].size;
             if (offset > windowEnd + maxGap) break;
             if (end - windowStart > readWindow) break;
-            windowEnd = end;
+            windowEnd = std::max(windowEnd, end);
             ++next;
         }
         return std::make_tuple(
@@ -571,26 +585,40 @@ static bool executeWindowedRead(
             windowSize
         };
 
+        bool cacheHit = false;
         if (config.use_window_cache && config.window_cache) {
             std::shared_ptr<const std::vector<uint8_t>> cached;
-            if (config.window_cache->get(key, cached)) {
-                if (!cached || cached->size() != windowSize) return false;
+            uint64_t cachedOffset = 0;
+            if (config.window_cache->getContaining(
+                    config.window_cache_file_identity,
+                    windowStart, windowSize,
+                    cached, &cachedOffset)) {
+                if (!cached) return false;
+                if (cachedOffset > windowStart) return false;
+                const uint64_t relative = windowStart - cachedOffset;
+                if (windowSize > cached->size() - relative) return false;
                 destination.resize(static_cast<size_t>(windowSize));
                 std::memcpy(
                     destination.data(),
-                    cached->data(),
+                    cached->data() + relative,
                     static_cast<size_t>(windowSize)
                 );
-                ++profile.window_cache_hits;
+                if (cachedOffset == windowStart && cached->size() == windowSize) {
+                    ++profile.window_cache_hits;
+                } else {
+                    ++profile.window_cache_contained_hits;
+                }
                 profile.window_cache_saved_read_bytes += windowSize;
                 profile.window_cache_resident_bytes =
                     config.window_cache->residentBytes();
-                return true;
+                cacheHit = true;
+            } else {
+                ++profile.window_cache_misses;
             }
-            ++profile.window_cache_misses;
         }
 
-        destination.resize(static_cast<size_t>(windowSize));
+        if (!cacheHit) {
+            destination.resize(static_cast<size_t>(windowSize));
         const auto t0 = Clock::now();
         const bool ok = readFullyAt(
             fd,
@@ -613,6 +641,7 @@ static bool executeWindowedRead(
             (void)config.window_cache->putShared(key, std::move(shared));
             profile.window_cache_resident_bytes =
                 config.window_cache->residentBytes();
+        }
         }
 
         return true;
@@ -750,11 +779,42 @@ static bool executeSelectiveLeaf(
                 data,
                 task.record_size,
                 leaf)) {
+            std::vector<uint8_t> direct(task.record_size);
+            if (readFullyAt(fd, direct.data(), task.record_size, task.file_offset)) {
+                if (std::memcmp(data, direct.data(), task.record_size) == 0) {
+                    std::cerr << "Error: RZFP decode failed for sb="
+                              << task.physical_sb_id
+                              << " morton=" << task.morton
+                              << " record_size=" << task.record_size
+                              << " codec=" << static_cast<int>(task.codec)
+                              << " file_offset=" << task.file_offset
+                              << " (identical bytes, codec issue)" << std::endl;
+                } else {
+                    std::cerr << "Error: RZFP decode failed for sb="
+                              << task.physical_sb_id
+                              << " morton=" << task.morton
+                              << " record_size=" << task.record_size
+                              << " codec=" << static_cast<int>(task.codec)
+                              << " file_offset=" << task.file_offset
+                              << " (window vs direct mismatch, first_bytes: win["
+                              << static_cast<int>(data[0]) << " " << static_cast<int>(data[1])
+                              << " " << static_cast<int>(data[2]) << " " << static_cast<int>(data[3])
+                              << "] dir["
+                              << static_cast<int>(direct[0]) << " " << static_cast<int>(direct[1])
+                              << " " << static_cast<int>(direct[2]) << " " << static_cast<int>(direct[3])
+                              << "])" << std::endl;
+                }
+                if (codec.decodeRecord(task.codec, direct.data(),
+                                       task.record_size, leaf)) {
+                    goto scatter;
+                }
+            }
             std::cerr << "Error: RZFP decode failed for sb="
                       << task.physical_sb_id
                       << " morton=" << task.morton << std::endl;
             return false;
         }
+scatter:
 
         const auto scatterStart = Clock::now();
         for (const auto& scatter : task.scatters) {
@@ -1436,7 +1496,8 @@ bool RzfpReader::readXPlanesBatchFromSidecar(
         tasks.begin(),
         tasks.end(),
         [](const XTask& a, const XTask& b) {
-            return a.offset < b.offset;
+            if (a.offset != b.offset) return a.offset < b.offset;
+            return a.size > b.size;
         }
     );
 
@@ -1461,7 +1522,7 @@ bool RzfpReader::readXPlanesBatchFromSidecar(
             const uint64_t end = offset + tasks[j].size;
             if (offset > windowEnd + maxGap) break;
             if (end - windowStart > readWindow) break;
-            windowEnd = end;
+            windowEnd = std::max(windowEnd, end);
             ++j;
         }
 
@@ -1691,7 +1752,8 @@ bool RzfpReader::readSlicesBatch(
         planHeader,
         fallback,
         header_,
-        planTime
+        planTime,
+        profile
     );
     if (tasks.empty()) {
         profile->plan_time_ms += planTime;
@@ -1788,6 +1850,137 @@ bool RzfpReader::readSlicesBatch(
                 *profile
             );
     }
+}
+
+bool RzfpReader::readContestRound(
+    const std::vector<ContestRoundGroup>& groups,
+    const RzfpReaderConfig& config,
+    std::vector<RzfpRoundReadResult>* results
+) {
+    if (results) {
+        results->clear();
+        results->resize(groups.size());
+    }
+
+    std::vector<SliceBatchRequest> yz_requests;
+    uint64_t yzLogicalSlices = 0;
+    std::vector<SliceBatchRequest> x_requests;
+
+    for (size_t g = 0; g < groups.size(); ++g) {
+        const auto& group = groups[g];
+        if (group.axis == SliceAxis::X) {
+            for (size_t i = 0; i < group.indices.size(); ++i) {
+                x_requests.push_back({group.axis, group.indices[i], group.outputs[i]});
+            }
+        } else {
+            yzLogicalSlices += group.indices.size();
+            for (size_t i = 0; i < group.indices.size(); ++i) {
+                yz_requests.push_back({group.axis, group.indices[i], group.outputs[i]});
+            }
+        }
+    }
+
+    double xReadMs = 0.0;
+    if (!x_requests.empty()) {
+        RzfpReaderConfig xConfig = config;
+        RzfpReadProfile xProfile;
+        xConfig.profile = &xProfile;
+
+        const auto tx0 = Clock::now();
+        if (!readSlicesBatch(x_requests, xConfig)) return false;
+        xReadMs = msSince(tx0);
+
+        if (results) {
+            for (size_t g = 0; g < groups.size(); ++g) {
+                if (groups[g].axis != SliceAxis::X) continue;
+                RzfpRoundReadResult& r = (*results)[g];
+                r.read_time_ms = xReadMs;
+                r.io_time_ms = xProfile.io_time_ms;
+                r.decode_time_ms = xProfile.decode_time_ms;
+                r.scatter_time_ms = xProfile.scatter_time_ms;
+                r.unique_leaves = xProfile.unique_leaves;
+                r.duplicate_leaf_requests = xProfile.duplicate_leaf_requests;
+                r.logical_leaf_requests = xProfile.logical_leaf_requests;
+                r.planned_read_bytes = xProfile.actual_read_bytes;
+                r.actual_read_bytes = xProfile.actual_read_bytes;
+                r.eliminated_read_bytes = xProfile.eliminated_record_bytes;
+                r.read_reduction_ratio = xProfile.dedupReductionRatio();
+                r.selected_strategy = xProfile.selected_strategy;
+                r.strategy_reason = xProfile.strategy_reason;
+                r.round_plan_built = false;
+                r.round_unique_superblocks = xProfile.unique_superblocks;
+                r.round_planned_preads = xProfile.pread_calls;
+            }
+        }
+    }
+
+    if (yz_requests.empty()) return true;
+
+    RzfpReaderConfig yzConfig = config;
+    RzfpReadProfile yzProfile;
+    yzConfig.profile = &yzProfile;
+
+    const auto t0 = Clock::now();
+    if (!readSlicesBatch(yz_requests, yzConfig)) return false;
+    const double totalReadMs = msSince(t0);
+
+    if (results) {
+        for (size_t g = 0; g < groups.size(); ++g) {
+            if (groups[g].axis == SliceAxis::X) continue;
+            RzfpRoundReadResult& r = (*results)[g];
+            r.read_time_ms = totalReadMs;
+            r.io_time_ms = yzProfile.io_time_ms;
+            r.decode_time_ms = yzProfile.decode_time_ms;
+            r.scatter_time_ms = yzProfile.scatter_time_ms;
+            r.unique_leaves = yzProfile.unique_leaf_requests;
+            r.logical_leaf_requests = yzProfile.logical_leaf_requests;
+            r.duplicate_leaf_requests = yzProfile.duplicate_leaf_requests;
+            r.planned_read_bytes = yzProfile.unique_record_bytes;
+            r.actual_read_bytes = yzProfile.actual_read_bytes;
+            r.eliminated_read_bytes = yzProfile.eliminated_record_bytes;
+            r.read_reduction_ratio = yzProfile.dedupReductionRatio();
+            r.selected_strategy = yzProfile.selected_strategy;
+            r.strategy_reason = yzProfile.strategy_reason;
+            r.round_plan_built = false;
+            r.round_unique_superblocks = yzProfile.unique_superblocks;
+            r.round_planned_preads = yzProfile.pread_calls;
+        }
+    }
+
+    return true;
+}
+
+void accumulateReadProfile(RzfpReadProfile& total,
+                           const RzfpReadProfile& batch) {
+    total.unique_superblocks += batch.unique_superblocks;
+    total.unique_leaves += batch.unique_leaves;
+    total.requested_record_bytes += batch.requested_record_bytes;
+    total.actual_read_bytes += batch.actual_read_bytes;
+    total.pread_calls += batch.pread_calls;
+    total.window_cache_hits += batch.window_cache_hits;
+    total.window_cache_misses += batch.window_cache_misses;
+    total.window_cache_contained_hits += batch.window_cache_contained_hits;
+    total.window_cache_saved_read_bytes += batch.window_cache_saved_read_bytes;
+    total.window_cache_resident_bytes = std::max(
+        total.window_cache_resident_bytes, batch.window_cache_resident_bytes);
+    total.logical_leaf_requests += batch.logical_leaf_requests;
+    total.unique_leaf_requests += batch.unique_leaf_requests;
+    total.duplicate_leaf_requests += batch.duplicate_leaf_requests;
+    total.logical_record_bytes += batch.logical_record_bytes;
+    total.unique_record_bytes += batch.unique_record_bytes;
+    total.eliminated_record_bytes += batch.eliminated_record_bytes;
+    total.plan_time_ms += batch.plan_time_ms;
+    total.prefix_time_ms += batch.prefix_time_ms;
+    total.io_time_ms += batch.io_time_ms;
+    total.decode_time_ms += batch.decode_time_ms;
+    total.scatter_time_ms += batch.scatter_time_ms;
+    total.sidecar_io_ms += batch.sidecar_io_ms;
+    total.sidecar_decode_ms += batch.sidecar_decode_ms;
+    if (total.selected_strategy == RzfpReadStrategy::Auto)
+        total.selected_strategy = batch.selected_strategy;
+    total.strategy_reason = batch.strategy_reason;
+    total.effective_device_mb_s = batch.effective_device_mb_s;
+    total.pilot_observed_mb_s = batch.pilot_observed_mb_s;
 }
 
 } // namespace erwt3d

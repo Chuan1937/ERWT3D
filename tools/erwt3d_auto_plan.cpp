@@ -9,7 +9,7 @@ int main(int argc, char** argv) {
     std::string raw_path, output_json;
     uint64_t nx = 0, ny = 0, nz = 0;
     int threads = 8;
-    double storage_budget = 1.45;
+    double storage_budget = 1.50;
     erwt3d::PlannerWorkload workload;
 
     for (int i = 1; i < argc; ++i) {
@@ -40,7 +40,7 @@ int main(int argc, char** argv) {
     if (raw_path.empty() || nx == 0 || ny == 0 || nz == 0) {
         std::cerr << "Usage: erwt3d_auto_plan --raw PATH --nx N --ny N --nz N [options]\n"
                   << "  --threads N           (default: 8)\n"
-                  << "  --storage-budget X    (default: 1.45)\n"
+                  << "  --storage-budget X    (default: 1.50)\n"
                   << "  --random-slices N     (default: 100)\n"
                   << "  --continuous-slices N (default: 10)\n"
                   << "  --output FILE.json    (optional)\n";

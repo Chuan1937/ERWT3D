@@ -40,6 +40,24 @@ target_link_libraries(test_strategy_cost PRIVATE erwt3d)
 add_executable(test_window_cache_reader test_window_cache_reader.cpp)
 target_link_libraries(test_window_cache_reader PRIVATE erwt3d)
 
+add_executable(test_rzfp_round_plan test_rzfp_round_plan.cpp)
+target_link_libraries(test_rzfp_round_plan PRIVATE erwt3d)
+
+add_executable(test_extent_cache test_extent_cache.cpp)
+target_link_libraries(test_extent_cache PRIVATE erwt3d)
+
+add_executable(test_storage_limit_150 test_storage_limit_150.cpp)
+target_link_libraries(test_storage_limit_150 PRIVATE erwt3d)
+
+add_executable(test_rzfp_round_reader test_rzfp_round_reader.cpp)
+target_link_libraries(test_rzfp_round_reader PRIVATE erwt3d)
+
+add_executable(test_contest_phase_plan test_contest_phase_plan.cpp)
+target_link_libraries(test_contest_phase_plan PRIVATE erwt3d)
+
+add_executable(test_contest_batch_plan test_contest_batch_plan.cpp)
+target_link_libraries(test_contest_batch_plan PRIVATE erwt3d)
+
 add_test(NAME relative_error_strict COMMAND test_relative_error strict)
 add_test(NAME relative_error_legacy COMMAND test_relative_error legacy)
 add_test(NAME rzfp_codec COMMAND test_rzfp_codec)
@@ -55,3 +73,9 @@ add_test(NAME adaptive_strategy COMMAND test_adaptive_strategy)
 add_test(NAME memory_cache COMMAND test_memory_cache)
 add_test(NAME strategy_cost COMMAND test_strategy_cost)
 add_test(NAME window_cache_reader COMMAND test_window_cache_reader)
+add_test(NAME rzfp_round_plan COMMAND test_rzfp_round_plan)
+add_test(NAME extent_cache COMMAND test_extent_cache)
+add_test(NAME storage_limit_150 COMMAND test_storage_limit_150)
+add_test(NAME rzfp_round_reader COMMAND test_rzfp_round_reader)
+add_test(NAME contest_phase_plan COMMAND test_contest_phase_plan)
+add_test(NAME contest_batch_plan COMMAND test_contest_batch_plan)

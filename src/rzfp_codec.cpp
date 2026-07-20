@@ -55,20 +55,24 @@ static float computeFillValue(
     return count == 0 ? 0.0f : static_cast<float>(sum / count);
 }
 
-static void patchExceptions(
+static bool patchExceptions(
     float decoded[64],
     uint64_t exception_mask,
     const std::vector<float>& values
 ) {
+    const size_t mask_popcount = static_cast<size_t>(__builtin_popcountll(exception_mask));
+    if (mask_popcount > values.size()) {
+        return false;
+    }
     size_t pos = 0;
     for (uint32_t i = 0; i < 64; ++i) {
         if (exception_mask & (uint64_t{1} << i)) {
-            decoded[i] = values.at(pos++);
+            if (pos >= values.size()) return false;
+            decoded[i] = values[pos++];
         }
     }
-    if (pos != values.size()) {
-        throw std::runtime_error("RZFP exception count mismatch");
-    }
+    if (pos != values.size()) return false;
+    return true;
 }
 
 static int16_t safeToleranceExponent(double target_tolerance) {
@@ -393,7 +397,7 @@ RzfpCandidate RzfpCodec::encodeBest(
                         c.exception_count = exc_count;
                         c.serialized_size = 2 + static_cast<uint32_t>(c.payload.size());
 
-                        patchExceptions(impl_->decoded, exception_mask, c.exception_values);
+                        if (!patchExceptions(impl_->decoded, exception_mask, c.exception_values)) continue;
                         c.error_stats = checkBlockError(
                             input, impl_->decoded, 64, valid_mask, config.error
                         );
@@ -559,7 +563,9 @@ bool RzfpCodec::decodeRecord(
                 return false;
             }
 
-            patchExceptions(impl_->decoded, exception_mask, exception_values);
+            if (!patchExceptions(impl_->decoded, exception_mask, exception_values)) {
+                return false;
+            }
             std::memcpy(output, impl_->decoded, 256);
             return true;
         }

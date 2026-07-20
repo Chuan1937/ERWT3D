@@ -32,7 +32,7 @@ static void printUsage(const char* prog) {
          << "  --auto-time-limit N     Hard time limit for auto plan (default: 600)\n"
          << "  --auto-soft-time-limit N Soft time limit for auto plan (default: 300)\n"
          << "  --raw-x-aux MODE        Append raw X auxiliary region (auto|on|off, default: off)\n"
-         << "  --force-storage-edge    Allow up to 1.45x (1.445-1.45 only; >1.45 always rejected)\n";
+         << "  --force-storage-edge    Allow up to 1.50x (1.495-1.50 only; >1.50 always rejected)\n";
 }
 
 static std::vector<uint8_t> parseExceptionCounts(const std::string& s) {

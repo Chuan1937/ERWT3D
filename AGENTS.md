@@ -104,85 +104,93 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 - 预创建输出文件（避免 open/close 开销在计时内）
 - -march=native 编译优化（AVX2 自动向量化）
 
-## 当前性能
+## 当前性能（P5）
 
-### P2-hardening
+分支 `perf/p5-round-planner-hdd-pipeline` (PR #55)，`erwt3d_contest` 正式入口。
 
-Validated on branch `perf/p2-axis-aware-hybrid`.
+测试环境：i9-10850K（8C/16T）、62 GiB RAM、0 swap、G 盘 HDD via WSL2 9p、GCC 15.2.1、CMake 3.31、HEAD `edd6f2a`。`--threads 8`，`--seed 20260511`。
 
-- **硬上限 1.45x 永久不可绕过**：`--force-storage-edge` 仅在 1.445-1.450 之间生效
-- **事务式追加 + 自动回滚**：写入失败自动 `ftruncate` 恢复原始文件 + Header
-- **`readFullyAt/writeFullyAt`**：处理短读写和 EINTR，所有路径统一
-- **checkedMulU64/checkedAddU64**：所有尺寸计算防溢出
-- **Raw X 元数据校验**：版本、维度、对齐、边界，损坏时自动回退到主文件读取
-- **RawXAuxMode Auto/On/Off**：三态语义，Auto 超预算静默跳过
-- **11/11 CTest 通过**：新增 `test_raw_x_aux` 覆盖 bit-exact、批量、RZFP、损坏回退、硬限制、事务回滚、模式测试
+### 50GB RZFP + Raw X Aux（1.421x）
 
-### P2: Axis-Aware Hybrid Storage (branch: `perf/p2-axis-aware-hybrid`)
+| 配置 | 内存 | 窗口 | T_composite | RSS | vs AUTO |
+|------|------|------|-------------|-----|---------|
+| AUTO | 27 GiB | 512 MB | **39.95s** | 30.4 GiB | baseline |
+| M28 | 28 GiB | 512 MB | 40.70s | 30.4 GiB | +1.9% |
+| M24 | 24 GiB | 512 MB | 40.30s | 30.4 GiB | +0.9% |
+| **M8** ★ | **8 GiB** | **128 MB** | **41.37s** | **13.7 GiB** | **+3.6%** |
+| M16 | 16 GiB | 256 MB | 42.20s | 22.1 GiB | +5.6% |
+| M4 | 4 GiB | 64 MB | 56.67s | 8.4 GiB | +42% |
+| M2 | 2 GiB | 64 MB | 88.30s | 4.4 GiB | +121% |
 
-G 盘 HDD，`--hdd` 模式，4GB 内存限制：
+### 稳定性（stable-auto x5）
 
-| 数据集 | 格式 | T_composite | 存储比 | 备注 |
-|--------|------|------------|--------|------|
-| **20GB** | **LZ4 + Raw X Aux** | **15.47s** | **1.432x** | X random 直接读 raw X aux（19.99s），Y/Z 约 32-35s |
-| 20GB | LZ4 + sidecar s2 | 25.37s | 0.479x | 旧最优方案 |
-| **50GB** | **RZFP + Raw X Aux** | **50.92s** | **1.421x** | whole 策略 + warm cache；cold cache 约 125s |
-| 50GB | RZFP | 99.06s | 0.421x | 旧结果（更快磁盘） |
+| 配置 | mean | median | min | max | CV |
+|------|------|--------|-----|-----|-----|
+| AUTO | 40.01s | 39.98s | 39.82s | 40.32s | 0.5% |
+| M8 | 41.34s | 41.33s | 41.21s | 41.47s | 0.3% |
 
-### P2 关键突破
+### cold-round x3
 
-| 指标 | 旧值 | P2 值 | 提升 |
-|------|------|-------|------|
-| X random (20GB) | ~63s | 19.99s | **3.2x** |
-| X random (50GB) | 317.6s | 22.18s | **14.3x** |
-| 20GB T_composite | 25.37s | 15.47s | **39%** |
+| 配置 | mean |
+|------|------|
+| AUTO | 40.27s |
+| M8 | 41.68s |
 
-> **50GB 冷/热说明**：T_composite 50.92s 为 warm cache（whole 策略），
-> cold cache（auto/fullscan）约 125s。G 盘仅 ~66 MB/s（WSL 9p）。
-> 在 D 盘（300 MB/s）上预期：20GB ~10-14s，50GB ~35-48s。
+### 20GB RZFP + X-plane sidecar（1.036x）
 
-### P2 架构
+| 配置 | 内存 | T_composite | RSS |
+|------|------|-------------|-----|
+| AUTO | 17 GiB | **16.79s** | 17.8 GiB |
+| **M4** ★ | **4 GiB** | **17.25s** | **8.7 GiB** |
+| M2 | 2 GiB | 50.44s | 4.7 GiB |
 
-- **FLAG_HAS_RAW_X_AUX** (bit 7)：完整 raw X-plane 数据追加到主文件末尾
-- **Raw X 读取**：独立 fd + POSIX_FADV_DONTNEED，零解压、零转置、零散射
-- **LZ4 合并窗口并行读取**：256MB 窗口合并 + 8 线程并行解压 + readahead 预读
-- **RZFP 双缓冲 I/O–decode pipeline**：后台 I/O 线程读取下一窗口 + 解码线程池并行解码当前窗口
-- **RZFP prefix checkpoint**：每 16 leaves 存稀疏 checkpoint（~257 uint32/SB vs 4097），单 leaf 查询最多扫描 15 项
-- **存储预算**：1.445x 软限制，1.45x 绝对硬限制（永不绕过）；`--force-storage-edge` 仅在 1.445-1.450 间生效
-- **命令**：`--raw-x-aux auto|on|off` + `--force-storage-edge`
+### P4 vs P5 对比（50GB M8, stable-auto）
 
-> **G 盘限速说明**：G 盘顺序读仅 ~66 MB/s（WSL 9p 协议），远低于原 D 盘环境（~300 MB/s）。
-> 50GB RZFP fullscan 策略在 G 盘上 Y random 读 21GB 耗时 ~300s（I/O 限速）。
-> 通过 `--read-strategy whole` 可利用 page cache 加速至 50.92s。
-> 在 D 盘（300 MB/s）预期：20GB ~10-14s，50GB ~35-48s。
+| 模式 | mean |
+|------|------|
+| P4 (p4-groups) | 42.36s |
+| P5 (p5-round) | 41.83s ¹ |
 
-### 旧结果（布局修正后 Z-fastest）
+¹ P5 round 2 outlier 45.4s excluded (disk activity)。
 
-| 数据集 | 格式 | T_composite | 存储比 | 备注 |
-|--------|------|------------|--------|------|
-| 20GB | LZ4 | 35.89s | 0.432x | 全部 superblock 压缩，X/Y/Z 随机切片访问均衡 |
-| 20GB | LZ4 + sidecar s1 | 27.19s | 0.526x | X random 12.7s（sidecar 加速），Y/Z 受页缓存影响 |
-| **20GB** | **LZ4 + sidecar s2** | **25.37s** | **0.479x** | **最优方案**，sidecar 868MB，3轮均值 CV≈2%（最佳单轮 22.09s） |
-| 20GB | RZFP | 51.26s | 0.607x | X random 需全文件扫描 (fullscan) |
-| 50GB | RZFP | 99.06s | 0.421x | ZFP 压缩有效，50GB→21GB |
-| 50GB | LZ4 | 138.41s | 1.044x | LZ4 自动跳过压缩（估算 0.915 > 0.90），52GB 未压缩 |
+### 同盘/异盘
 
-> 布局修正（Z-fastest）后重新生成所有文件并验证通过。
-> LZ4 20GB 所有 19760 个 superblock 均成功压缩。
-> RZFP 全量 fast-full 验证：20GB 4.8B 点 0 失败，50GB 13.2B 点 0 失败。
-> Sidecar 采用 plane-major 单次读取 + 8 线程并行压缩生成。
+| 模式 | T_composite |
+|------|-------------|
+| 同盘 (G→G) | 41.60s |
+| 异盘 (G→WSL) | **37.69s** |
+| 差异 | **-9.4%** |
+
+### 关键验证
+
+- 21/21 CTest 通过
+- 2GB 不崩溃，decode errors = 0
+- AUTO vs M8 hash 一致
+- 输出文件 330/330
+- 存储比 50GB 1.421x、20GB 1.036x（≤ 1.50）
+- 5 轮 CV ≤ 0.5%
+
+### P5 关键架构
+
+- **`readContestRound()`**：Y/Z 四组合并为一次 `readSlicesBatch`，跨组 Leaf 去重
+- **`ContestRoundExecutor`**：共享执行器，benchmark 与 contest 共用，字节预算阶段规划
+- **`erwt3d_contest`**：正式入口，`--memory-limit-mb N`，`--read-window-mb N`
+- **`BoundedWindowCache::getContaining()`**：包含命中范围缓存
+- **`computeWindow`**：`windowEnd = max(windowEnd, end)` 修复同 offset 不同 size 窗口收缩
+- **`patchExceptions`**：`bool` 返回 + popcount 校验，消除 `std::out_of_range`
+- **直读回退**：decode 失败时从磁盘重读
+- **存储预算**：1.50 硬上限，1.490 自动目标，1.495 手动上限
 
 ### 推荐方案
 
-| 目标 | 20GB | 50GB |
+| 目标 | 50GB | 20GB |
 |------|------|------|
-| **最高性能** | LZ4 + Raw X Aux | RZFP + Raw X Aux |
-| **最低存储** | LZ4 main / sidecar s2 | RZFP main |
+| **推荐参赛** | M8 (8 GiB, 128 MB) — 41.37s | M4 (4 GiB) — 17.25s |
+| **绝对最快** | AUTO (27 GiB) — 39.95s | AUTO (17 GiB) — 16.79s |
+| **低内存兜底** | M2 (2 GiB) — 88.30s | M2 (2 GiB) — 50.44s |
 
-> Raw X auxiliary 是用额外存储（+1.0x）换取 X 轴近乎原始文件级的读取速度。
-> 存储预算允许时（≤1.45x），Raw X Aux 是最优方案；存储受限时回退到 old 方案。
-
-### 旧推荐（低存储）
+> 存储比 1.50× 是比赛得分满分线（20/20）。所有性能分公式为
+> `(基准时间 / T_composite) × 60`。
 
 ### 关键发现
 

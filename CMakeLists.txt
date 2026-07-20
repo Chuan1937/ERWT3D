@@ -97,6 +97,9 @@ if(ERWT3D_ENABLE_RZFP)
         src/rzfp_writer.cpp
         src/rzfp_reader.cpp
         src/rzfp_strategy.cpp
+        src/rzfp_round_plan.cpp
+        src/contest_phase_plan.cpp
+        src/contest_round_executor.cpp
         src/rzfp_xplane_codec.cpp
         src/rzfp_xplane_writer.cpp
         src/rzfp_raw_sampler.cpp
@@ -180,6 +183,9 @@ if(ERWT3D_ENABLE_RZFP)
 
     add_executable(erwt3d_bench_rzfp tools/erwt3d_bench_rzfp.cpp)
     target_link_libraries(erwt3d_bench_rzfp PRIVATE erwt3d)
+
+    add_executable(erwt3d_contest tools/erwt3d_contest.cpp)
+    target_link_libraries(erwt3d_contest PRIVATE erwt3d)
 
     add_executable(erwt3d_rzfp_auto tools/erwt3d_rzfp_auto.cpp)
     target_link_libraries(erwt3d_rzfp_auto PRIVATE erwt3d)

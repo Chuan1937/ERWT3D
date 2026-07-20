@@ -32,8 +32,16 @@ struct RzfpReadProfile {
     uint64_t pread_calls = 0;
     uint64_t window_cache_hits = 0;
     uint64_t window_cache_misses = 0;
+    uint64_t window_cache_contained_hits = 0;
     uint64_t window_cache_resident_bytes = 0;
     uint64_t window_cache_saved_read_bytes = 0;
+
+    uint64_t logical_leaf_requests = 0;
+    uint64_t unique_leaf_requests = 0;
+    uint64_t duplicate_leaf_requests = 0;
+    uint64_t logical_record_bytes = 0;
+    uint64_t unique_record_bytes = 0;
+    uint64_t eliminated_record_bytes = 0;
 
     double plan_time_ms = 0.0;
     double prefix_time_ms = 0.0;
@@ -63,6 +71,13 @@ struct RzfpReadProfile {
           window_cache_misses(o.window_cache_misses),
           window_cache_resident_bytes(o.window_cache_resident_bytes),
           window_cache_saved_read_bytes(o.window_cache_saved_read_bytes),
+          window_cache_contained_hits(o.window_cache_contained_hits),
+          logical_leaf_requests(o.logical_leaf_requests),
+          unique_leaf_requests(o.unique_leaf_requests),
+          duplicate_leaf_requests(o.duplicate_leaf_requests),
+          logical_record_bytes(o.logical_record_bytes),
+          unique_record_bytes(o.unique_record_bytes),
+          eliminated_record_bytes(o.eliminated_record_bytes),
           plan_time_ms(o.plan_time_ms), prefix_time_ms(o.prefix_time_ms),
           io_time_ms(o.io_time_ms), decode_time_ms(o.decode_time_ms),
           scatter_time_ms(o.scatter_time_ms), sidecar_io_ms(o.sidecar_io_ms),
@@ -86,6 +101,13 @@ struct RzfpReadProfile {
         window_cache_misses = o.window_cache_misses;
         window_cache_resident_bytes = o.window_cache_resident_bytes;
         window_cache_saved_read_bytes = o.window_cache_saved_read_bytes;
+        window_cache_contained_hits = o.window_cache_contained_hits;
+        logical_leaf_requests = o.logical_leaf_requests;
+        unique_leaf_requests = o.unique_leaf_requests;
+        duplicate_leaf_requests = o.duplicate_leaf_requests;
+        logical_record_bytes = o.logical_record_bytes;
+        unique_record_bytes = o.unique_record_bytes;
+        eliminated_record_bytes = o.eliminated_record_bytes;
         plan_time_ms = o.plan_time_ms;
         prefix_time_ms = o.prefix_time_ms;
         io_time_ms = o.io_time_ms;
@@ -111,7 +133,16 @@ struct RzfpReadProfile {
                          static_cast<double>(requested_record_bytes)
                    : 1.0;
     }
+    double dedupReductionRatio() const {
+        return logical_record_bytes > 0
+                   ? static_cast<double>(eliminated_record_bytes) /
+                         static_cast<double>(logical_record_bytes)
+                   : 0.0;
+    }
 };
+
+void accumulateReadProfile(RzfpReadProfile& total,
+                           const RzfpReadProfile& batch);
 
 struct RzfpAdaptiveConfig {
     bool auto_calibrate_device = true;
@@ -172,6 +203,42 @@ public:
 
     bool readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
                          const RzfpReaderConfig& config);
+
+    struct ContestRoundGroup {
+        SliceAxis axis;
+        std::string name;
+        std::vector<uint64_t> indices;
+        std::vector<float*> outputs;
+    };
+
+    struct RzfpRoundReadResult {
+        double read_time_ms = 0.0;
+        double io_time_ms = 0.0;
+        double decode_time_ms = 0.0;
+        double scatter_time_ms = 0.0;
+
+        uint64_t unique_leaves = 0;
+        uint64_t duplicate_leaf_requests = 0;
+        uint64_t logical_leaf_requests = 0;
+
+        uint64_t planned_read_bytes = 0;
+        uint64_t actual_read_bytes = 0;
+        uint64_t eliminated_read_bytes = 0;
+        double read_reduction_ratio = 0.0;
+
+        RzfpReadStrategy selected_strategy = RzfpReadStrategy::Auto;
+        std::string strategy_reason;
+
+        bool round_plan_built = false;
+        uint64_t round_unique_superblocks = 0;
+        uint64_t round_planned_preads = 0;
+    };
+
+    bool readContestRound(
+        const std::vector<ContestRoundGroup>& groups,
+        const RzfpReaderConfig& config,
+        std::vector<RzfpRoundReadResult>* results = nullptr
+    );
 
 private:
     std::string path_;

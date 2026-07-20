@@ -529,9 +529,9 @@ bool writeERWT3D(const std::string& outputPath,
     uint64_t projectedSize=mainSize+(doPanels?panelDataSize+panelIndexBytes:0);
     double projectedRatio=static_cast<double>(projectedSize)/rawSize;
 
-    if (doPanels && projectedRatio > 1.45) {
+    if (doPanels && projectedRatio > 1.50) {
         std::cerr << "Error: projected storage ratio " << projectedRatio
-                  << "x exceeds 1.45x limit (main=" << mainSize << " panel=" << panelDataSize+panelIndexBytes << ")"
+                  << "x exceeds 1.50x limit (main=" << mainSize << " panel=" << panelDataSize+panelIndexBytes << ")"
                   << std::endl;
         return false;
     }

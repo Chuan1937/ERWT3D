@@ -1,5 +1,68 @@
 # RZFP 基准测试结果
 
+## v0.7.0（P5 Round-Level Joint Planning）
+
+`erwt3d_contest` 入口，stable-auto 协议。
+
+测试环境：i9-10850K（8C/16T）、62 GiB RAM、G 盘 HDD via WSL2 9p、HEAD `edd6f2a`、`--threads 8`、`--seed 20260511`。
+
+### 50GB RZFP + Raw X Aux（1.421x）
+
+| 配置 | 内存 | 窗口 | T_composite | RSS | vs AUTO |
+|------|------|------|-------------|-----|---------|
+| AUTO | 27 GiB | 512 MB | **39.95s** | 30.4 GiB | baseline |
+| M28 | 28 GiB | 512 MB | 40.70s | 30.4 GiB | +1.9% |
+| M24 | 24 GiB | 512 MB | 40.30s | 30.4 GiB | +0.9% |
+| **M8** ★ | **8 GiB** | **128 MB** | **41.37s** | **13.7 GiB** | **+3.6%** |
+| M16 | 16 GiB | 256 MB | 42.20s | 22.1 GiB | +5.6% |
+| M4 | 4 GiB | 64 MB | 56.67s | 8.4 GiB | +42% |
+| M2 | 2 GiB | 64 MB | 88.30s | 4.4 GiB | +121% |
+
+稳定性（stable-auto x5）：AUTO mean 40.01s / median 39.98s / min 39.82s / max 40.32s / CV 0.5%；M8 mean 41.34s / median 41.33s / min 41.21s / max 41.47s / CV 0.3%。cold-round x3：AUTO 40.27s、M8 41.68s。
+
+### 20GB RZFP + X-plane sidecar（1.036x）
+
+| 配置 | 内存 | T_composite | RSS |
+|------|------|-------------|-----|
+| AUTO | 17 GiB | **16.79s** | 17.8 GiB |
+| **M4** ★ | **4 GiB** | **17.25s** | **8.7 GiB** |
+| M2 | 2 GiB | 50.44s | 4.7 GiB |
+
+### P4 vs P5（50GB M8）
+
+| 模式 | mean |
+|------|------|
+| P4 (p4-groups) | 42.36s |
+| P5 (p5-round) | 41.83s ¹ |
+
+¹ P5 round 2 outlier 45.4s excluded (disk activity)。
+
+### 同盘/异盘（50GB M8）
+
+| 模式 | mean |
+|------|------|
+| 同盘 (G→G) | 41.60s |
+| 异盘 (G→WSL) | **37.69s** |
+
+### 关键验证
+
+- 21/21 CTest 通过
+- 2GB 不崩溃，decode errors = 0
+- AUTO vs M8 hash 一致
+- 输出文件 330/330
+- 存储比 ≤ 1.50（50GB 1.421x，20GB 1.036x）
+- 5 轮 CV ≤ 0.5%
+
+### 推荐参赛配置
+
+|  | 50GB | 20GB |
+|---|------|------|
+| 推荐 | M8 (8 GiB, 128 MB) — 41.37s | M4 (4 GiB) — 17.25s |
+| 绝对最快 | AUTO (27 GiB) — 39.95s | AUTO (17 GiB) — 16.79s |
+| 低内存 | M2 (2 GiB) — 88.30s | M2 (2 GiB) — 50.44s |
+
+## 历史结果（v0.6.0，Z-fastest 布局修正后）
+
 所有时间均为 G 盘 HDD 上的 wall-clock 读取+写入时间，Z-fastest 布局修正后重新生成并验证。
 
 ## 20GB 真实数据（801×2405×2501）

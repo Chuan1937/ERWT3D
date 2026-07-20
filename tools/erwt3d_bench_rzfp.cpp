@@ -2,6 +2,7 @@
 #include "erwt3d/rzfp_format.hpp"
 #include "erwt3d/rzfp_reader.hpp"
 #include "erwt3d/window_cache.hpp"
+#include "erwt3d/contest_round_executor.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -52,6 +53,13 @@ struct GroupResult {
     double device_seek_ms = 0.0;
     std::string selected_strategy;
     std::string strategy_reason;
+    uint64_t logical_leaf_requests = 0;
+    uint64_t duplicate_leaf_requests = 0;
+    uint64_t eliminated_read_bytes = 0;
+    double read_reduction_ratio = 0.0;
+    uint64_t round_unique_superblocks = 0;
+    uint64_t round_planned_preads = 0;
+    bool round_plan_built = false;
     erwt3d::RzfpReadProfile profile;
 };
 
@@ -68,6 +76,19 @@ enum class BenchmarkCacheMode {
     ColdGroup,
     Warm
 };
+
+enum class ExecutionMode {
+    P4Groups,
+    P5Round
+};
+
+static const char* executionModeName(ExecutionMode mode) {
+    switch (mode) {
+        case ExecutionMode::P4Groups: return "p4-groups";
+        case ExecutionMode::P5Round: return "p5-round";
+    }
+    return "unknown";
+}
 
 static const char* benchmarkModeName(BenchmarkCacheMode mode) {
     switch (mode) {
@@ -381,6 +402,7 @@ static void printUsage(const char* program) {
         << "  --benchmark-cache-mode STR    stable-auto|cold-round|cold-group|warm\n"
         << "  --cache-policy STR            Backward-compatible alias\n"
         << "  --group-order STR             official|hdd-optimized\n"
+        << "  --execution-mode STR          p4-groups|p5-round (default: p4-groups)\n"
         << "  --rounds N                    Measured rounds (default: 3)\n"
         << "  --seed N                      Request seed (default: 20260511)\n"
         << "  --hdd                         Apply HDD defaults\n";
@@ -419,6 +441,73 @@ static bool clearForRound(
     return dropped;
 }
 
+static bool runP5Round(
+    erwt3d::RzfpReader& reader,
+    const erwt3d::RzfpFileHeader& header,
+    const std::vector<GroupSpec>& groups,
+    int round,
+    const std::string& output_dir,
+    const erwt3d::MemoryBudget& budget,
+    const erwt3d::RzfpReaderConfig& base_config,
+    BenchmarkCacheMode benchmark_mode,
+    std::vector<GroupResult>& results
+) {
+    results.clear();
+    results.resize(groups.size());
+
+    std::vector<erwt3d::ContestExecutionGroup> execGroups;
+    for (size_t g = 0; g < groups.size(); ++g) {
+        const auto& spec = groups[g];
+        if (!spec.indices || spec.indices->empty()) continue;
+        erwt3d::ContestExecutionGroup eg;
+        eg.axis = spec.axis;
+        eg.name = spec.axis_name + "_" + spec.mode;
+        eg.indices = spec.indices;
+        execGroups.push_back(eg);
+    }
+
+    std::ostringstream prefix;
+    prefix << "r" << round;
+
+    erwt3d::ContestExecutionProfile execProf;
+    if (!erwt3d::executeContestRound(
+            reader, header, execGroups, output_dir, prefix.str(),
+            base_config, budget, &execProf)) {
+        return false;
+    }
+
+    for (size_t g = 0; g < groups.size(); ++g) {
+        GroupResult& result = results[g];
+        result.round = round;
+        result.group_index = static_cast<int>(g);
+        result.axis = groups[g].axis_name;
+        result.mode = groups[g].mode;
+        result.benchmark_cache_mode = benchmarkModeName(benchmark_mode);
+        result.slice_count = static_cast<int>(groups[g].indices->size());
+        result.memory_limit_bytes = budget.total_bytes;
+        result.window_cache_capacity_bytes = budget.window_cache_bytes;
+
+        uint64_t elements = sliceElements(header, groups[g].axis);
+        result.output_bytes_per_slice = elements * sizeof(float);
+        result.output_batch_size = static_cast<uint64_t>(groups[g].indices->size());
+
+        result.read_time_ms = execProf.read_time_ms;
+        result.write_time_ms = execProf.write_time_ms;
+        result.group_time_ms = execProf.total_time_ms / static_cast<double>(groups.size());
+        result.selected_strategy = strategyName(execProf.selected_strategy);
+        result.strategy_reason = execProf.strategy_reason;
+        result.device_seq_mb_s = reader.deviceProfile().sequential_mb_s;
+        result.device_seek_ms = reader.deviceProfile().random_seek_ms;
+
+        result.profile.actual_read_bytes = execProf.actual_read_bytes;
+        result.logical_leaf_requests = execProf.logical_leaf_requests;
+        result.duplicate_leaf_requests = execProf.duplicate_leaf_requests;
+        result.eliminated_read_bytes = execProf.eliminated_record_bytes;
+        result.round_plan_built = false;
+    }
+
+    return true;
+}
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -437,6 +526,7 @@ int main(int argc, char* argv[]) {
     std::string strategyText = "auto";
     std::string benchmarkModeText = "stable-auto";
     std::string groupOrder = "official";
+    std::string executionModeText = "p4-groups";
 
     for (int i = 1; i < argc; ++i) {
         const auto next = [&]() -> const char* {
@@ -480,6 +570,8 @@ int main(int argc, char* argv[]) {
             else benchmarkModeText = alias;
         } else if (std::strcmp(argv[i], "--group-order") == 0) {
             groupOrder = next();
+        } else if (std::strcmp(argv[i], "--execution-mode") == 0) {
+            executionModeText = next();
         } else if (std::strcmp(argv[i], "--rounds") == 0) {
             rounds = std::stoi(next());
         } else if (std::strcmp(argv[i], "--seed") == 0) {
@@ -536,6 +628,24 @@ int main(int argc, char* argv[]) {
     if (groupOrder != "official" && groupOrder != "hdd-optimized") {
         std::cerr << "Error: group order must be official or hdd-optimized\n";
         return 1;
+    }
+
+    ExecutionMode executionMode = ExecutionMode::P4Groups;
+    if (executionModeText == "p5-round") {
+        executionMode = ExecutionMode::P5Round;
+    } else if (executionModeText != "p4-groups") {
+        std::cerr << "Error: execution mode must be p4-groups or p5-round\n";
+        return 1;
+    }
+
+    std::string effectiveExecutionModeText = executionModeText;
+    if (executionMode == ExecutionMode::P5Round &&
+        benchmarkMode == BenchmarkCacheMode::ColdGroup) {
+        executionMode = ExecutionMode::P4Groups;
+        effectiveExecutionModeText = "p4-groups";
+        std::cout
+            << "Note: p5-round is incompatible with cold-group cache mode; "
+            << "falling back to p4-groups.\n";
     }
 
     if (!mkdirP(outputDir)) {
@@ -702,6 +812,7 @@ int main(int argc, char* argv[]) {
         << device.random_seek_ms << " ms\n"
         << "  Cache mode:    " << benchmarkModeText << "\n"
         << "  Group order:   " << groupOrder << "\n"
+        << "  Exec mode:     " << effectiveExecutionModeText << "\n"
         << "  Rounds:        " << rounds << "\n"
         << "  Memory limit:  " << budget.total_bytes / MiB << " MiB"
         << (budget.automatic ? " (auto)" : " (explicit)") << "\n"
@@ -718,20 +829,23 @@ int main(int argc, char* argv[]) {
     // access sequence matches a real round, but warm-up files use round 0.
     if (benchmarkMode == BenchmarkCacheMode::Warm) {
         std::cout << "Warm-up round...\n";
-        for (size_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
-            GroupResult ignored;
-            if (!runGroup(
-                    reader,
-                    header,
-                    groups[groupIndex],
-                    0,
-                    static_cast<int>(groupIndex),
-                    outputDir,
-                    budget,
-                    baseConfig,
-                    benchmarkMode,
-                    ignored)) {
+        if (executionMode == ExecutionMode::P5Round) {
+            std::vector<GroupResult> ignored;
+            if (!runP5Round(
+                    reader, header, groups, 0,
+                    outputDir + "/warmup", budget, baseConfig,
+                    benchmarkMode, ignored)) {
                 return 1;
+            }
+        } else {
+            for (size_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
+                GroupResult ignored;
+                if (!runGroup(
+                        reader, header, groups[groupIndex], 0,
+                        static_cast<int>(groupIndex), outputDir,
+                        budget, baseConfig, benchmarkMode, ignored)) {
+                    return 1;
+                }
             }
         }
     }
@@ -744,11 +858,48 @@ int main(int argc, char* argv[]) {
             (void)clearForRound(reader, windowCache);
         }
 
+        if (executionMode == ExecutionMode::P5Round) {
+            std::cout << "\nRound " << round << "/" << rounds << "\n";
+
+            if (benchmarkMode == BenchmarkCacheMode::ColdGroup) {
+                (void)clearForRound(reader, windowCache);
+            }
+
+            std::vector<GroupResult> groupResults;
+            if (!runP5Round(
+                    reader, header, groups, round, outputDir,
+                    budget, baseConfig, benchmarkMode, groupResults)) {
+                return 1;
+            }
+
+            RoundResult roundResult;
+            roundResult.round = round;
+            for (auto& gr : groupResults) {
+                std::cout << "  [" << (gr.group_index + 1) << "/"
+                          << groups.size() << "] "
+                          << gr.axis << " " << gr.mode << "... "
+                          << std::fixed << std::setprecision(3)
+                          << gr.group_time_ms / 1000.0 << " s"
+                          << " strategy=" << gr.selected_strategy
+                          << " read="
+                          << gr.profile.actual_read_bytes / MiB
+                          << " MiB cache="
+                          << gr.profile.window_cache_hits << "/"
+                          << gr.profile.window_cache_misses
+                          << "\n";
+                roundResult.total_ms += gr.group_time_ms;
+                roundResult.groups.push_back(std::move(gr));
+            }
+            roundResult.composite_ms =
+                roundResult.total_ms / static_cast<double>(groups.size());
+            roundResults.push_back(std::move(roundResult));
+        } else {
         RoundResult roundResult;
         roundResult.round = round;
         roundResult.groups.reserve(groups.size());
 
         std::cout << "\nRound " << round << "/" << rounds << "\n";
+
         for (size_t groupIndex = 0;
              groupIndex < groups.size();
              ++groupIndex) {
@@ -793,6 +944,7 @@ int main(int argc, char* argv[]) {
             roundResult.total_ms / static_cast<double>(groups.size());
         roundResults.push_back(std::move(roundResult));
     }
+    }
 
     const std::string summaryPath =
         outputDir + "/rzfp_hdd_summary.csv";
@@ -803,10 +955,15 @@ int main(int argc, char* argv[]) {
             << "group_time_ms,read_time_ms,write_time_ms,output_bytes_per_slice,"
             << "output_batch_size,memory_limit_bytes,window_cache_capacity_bytes,"
             << "unique_sbs,unique_leaves,requested_bytes,actual_bytes,read_amp,"
-            << "preads,cache_hits,cache_misses,cache_resident_bytes,cache_saved_bytes,"
+            << "preads,cache_hits,cache_contained_hits,cache_misses,"
+            << "cache_resident_bytes,cache_saved_bytes,"
             << "io_ms,decode_ms,scatter_ms,selected_strategy,strategy_reason,"
             << "pred_selective_s,pred_whole_s,pred_fullscan_s,effective_device_mb_s,"
-            << "pilot_mb_s,device_seq_mb_s,device_seek_ms,seed\n";
+            << "pilot_mb_s,device_seq_mb_s,device_seek_ms,seed,"
+            << "logical_leaf_requests,duplicate_leaf_requests,"
+            << "logical_record_bytes,eliminated_record_bytes,dedup_ratio,"
+            << "eliminated_read_bytes,read_reduction_ratio,"
+            << "round_plan_built,round_unique_sbs,round_planned_preads\n";
 
         for (const auto& round : roundResults) {
             for (const auto& result : round.groups) {
@@ -833,6 +990,7 @@ int main(int argc, char* argv[]) {
                     << profile.readAmplification() << ','
                     << profile.pread_calls << ','
                     << profile.window_cache_hits << ','
+                    << profile.window_cache_contained_hits << ','
                     << profile.window_cache_misses << ','
                     << profile.window_cache_resident_bytes << ','
                     << profile.window_cache_saved_read_bytes << ','
@@ -848,7 +1006,17 @@ int main(int argc, char* argv[]) {
                     << profile.pilot_observed_mb_s << ','
                     << result.device_seq_mb_s << ','
                     << result.device_seek_ms << ','
-                    << seed << '\n';
+                    << seed << ','
+                    << profile.logical_leaf_requests << ','
+                    << profile.duplicate_leaf_requests << ','
+                    << profile.logical_record_bytes << ','
+                    << profile.eliminated_record_bytes << ','
+                    << profile.dedupReductionRatio() << ','
+                    << result.eliminated_read_bytes << ','
+                    << result.read_reduction_ratio << ','
+                    << (result.round_plan_built ? 1 : 0) << ','
+                    << result.round_unique_superblocks << ','
+                    << result.round_planned_preads << '\n';
             }
         }
     }
@@ -877,6 +1045,8 @@ int main(int argc, char* argv[]) {
                << header.ny << 'x' << header.nz << '\n'
                << "benchmark_cache_mode," << benchmarkModeText << '\n'
                << "group_order," << groupOrder << '\n'
+               << "execution_mode," << effectiveExecutionModeText << '\n'
+               << "requested_execution_mode," << executionModeText << '\n'
                << "rounds," << rounds << '\n'
                << "random_count," << randomCount << '\n'
                << "continuous_count," << continuousCount << '\n'

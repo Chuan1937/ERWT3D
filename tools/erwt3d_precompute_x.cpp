@@ -419,7 +419,7 @@ int main(int argc, char* argv[]) {
     uint32_t stride = 0;
     std::string mode = "sidecar";
     uint32_t chunkZRows = 256;
-    double storageBudget = 1.45;
+    double storageBudget = 1.50;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -440,7 +440,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "  --mode sidecar|legacy (default: sidecar)" << std::endl;
         std::cerr << "  --stride N (sidecar: auto from 1, legacy: default 1)" << std::endl;
         std::cerr << "  --chunk-z-rows N (sidecar, default: 256)" << std::endl;
-        std::cerr << "  --storage-budget X (sidecar, default: 1.45)" << std::endl;
+        std::cerr << "  --storage-budget X (sidecar, default: 1.50)" << std::endl;
         return 1;
     }
 

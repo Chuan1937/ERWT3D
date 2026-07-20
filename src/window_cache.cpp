@@ -27,6 +27,38 @@ bool BoundedWindowCache::get(
     return true;
 }
 
+bool BoundedWindowCache::getContaining(
+    uint64_t file_identity,
+    uint64_t offset,
+    uint64_t size,
+    std::shared_ptr<const std::vector<uint8_t>>& data,
+    uint64_t* cached_offset
+) {
+    if (size == 0) {
+        data.reset();
+        return false;
+    }
+    const uint64_t request_end = offset + size;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    for (auto it = lru_.begin(); it != lru_.end(); ++it) {
+        if (it->key.file_identity != file_identity) continue;
+        const uint64_t cached_end = it->key.offset + it->key.size;
+        if (it->key.offset <= offset && cached_end >= request_end) {
+            lru_.splice(lru_.begin(), lru_, it);
+            data = it->data;
+            if (cached_offset) *cached_offset = it->key.offset;
+            ++contained_hit_count_;
+            saved_read_bytes_ += size;
+            return true;
+        }
+    }
+
+    data.reset();
+    return false;
+}
+
 bool BoundedWindowCache::put(
     const WindowCacheKey& key,
     std::vector<uint8_t>&& data
@@ -76,7 +108,9 @@ void BoundedWindowCache::clear() {
     resident_bytes_ = 0;
     hit_count_ = 0;
     miss_count_ = 0;
+    contained_hit_count_ = 0;
     eviction_count_ = 0;
+    saved_read_bytes_ = 0;
 }
 
 uint64_t BoundedWindowCache::capacityBytes() const {
@@ -97,6 +131,16 @@ uint64_t BoundedWindowCache::hitCount() const {
 uint64_t BoundedWindowCache::missCount() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return miss_count_;
+}
+
+uint64_t BoundedWindowCache::containedHitCount() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return contained_hit_count_;
+}
+
+uint64_t BoundedWindowCache::savedReadBytes() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return saved_read_bytes_;
 }
 
 uint64_t BoundedWindowCache::evictionCount() const {
