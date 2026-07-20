@@ -7,15 +7,15 @@
 #include <atomic>
 #include <random>
 #include <limits>
+#include <string>
 
-#include <fcntl.h>
-#include <unistd.h>
+#include "erwt3d/platform_io.hpp"
 
 static bool pwriteAll(int fd, const void* buf, size_t bytes, uint64_t offset) {
     const auto* src = static_cast<const uint8_t*>(buf);
     size_t done = 0;
     while (done < bytes) {
-        ssize_t n = pwrite(fd, src + done, bytes - done, static_cast<off_t>(offset + done));
+        ssize_t n = pwrite(fd, src + done, bytes - done, static_cast<int64_t>(offset + done));
         if (n == 0) {
             errno = EIO;
             return false;
@@ -33,7 +33,7 @@ static void generate_chunk(uint64_t nx, uint64_t ny, uint64_t nz,
                            uint64_t x_start, uint64_t x_end,
                            uint32_t seed, const char* path,
                            std::atomic<bool>& failed) {
-    int fd = open(path, O_WRONLY);
+    int fd = io_open(path, O_WRONLY);
     if (fd < 0) { failed.store(true, std::memory_order_relaxed); return; }
 
     std::mt19937 rng(seed);
@@ -50,13 +50,13 @@ static void generate_chunk(uint64_t nx, uint64_t ny, uint64_t nz,
             }
             if (!pwriteAll(fd, row.data(), nz * sizeof(float), x_offset + y_offset)) {
                 failed.store(true, std::memory_order_relaxed);
-                close(fd);
+                io_close(fd);
                 return;
             }
         }
     }
 
-    close(fd);
+    io_close(fd);
 }
 
 int main(int argc, char** argv) {
@@ -106,14 +106,14 @@ int main(int argc, char** argv) {
     printf("Generating: %lu x %lu x %lu = %lu floats (%.1f GB), %d threads\n",
            nx, ny, nz, total, gb, nthreads);
 
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int fd = io_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) { perror("open"); return 1; }
-    if (ftruncate(fd, static_cast<off_t>(file_bytes)) != 0) {
+    if (ftruncate(fd, static_cast<int64_t>(file_bytes)) != 0) {
         perror("ftruncate");
-        close(fd);
+        io_close(fd);
         return 1;
     }
-    close(fd);
+    io_close(fd);
 
     auto t0 = std::chrono::steady_clock::now();
 

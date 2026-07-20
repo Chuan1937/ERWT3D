@@ -17,7 +17,7 @@ using Clock = std::chrono::steady_clock;
 
 static DeviceKey makeDeviceKey(int fd) {
     DeviceKey key;
-    struct stat st{};
+    struct _stat64 st{};
     if (fstat(fd, &st) == 0) {
         key.device_id = static_cast<uint64_t>(st.st_dev);
         key.filesystem_id = 0;
@@ -29,8 +29,8 @@ static void dropCachedRange(int fd, uint64_t offset, uint64_t bytes) {
     if (fd < 0 || bytes == 0) return;
     (void)posix_fadvise(
         fd,
-        static_cast<off_t>(offset),
-        static_cast<off_t>(bytes),
+        static_cast<int64_t>(offset),
+        static_cast<int64_t>(bytes),
         POSIX_FADV_DONTNEED
     );
 }
@@ -44,7 +44,7 @@ DeviceProfile calibrateDeviceProfile(
 ) {
     DeviceProfile profile;
 
-    struct stat st{};
+    struct _stat64 st{};
     if (fstat(fd, &st) == 0) {
         profile.device_id = static_cast<uint64_t>(st.st_dev);
     }

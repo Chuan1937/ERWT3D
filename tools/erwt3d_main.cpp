@@ -4,9 +4,14 @@
 #include <vector>
 #include <sstream>
 #include <cstring>
+#include <cctype>
 #include <unordered_set>
-#include <unistd.h>
+#include "erwt3d/platform_io.hpp"
+#ifdef _WIN32
+#include <process.h>
+#else
 #include <sys/wait.h>
+#endif
 #include <sys/stat.h>
 
 struct Task {
@@ -15,8 +20,13 @@ struct Task {
 };
 
 static bool fileExists(const std::string& path) {
-    struct stat st;
+#ifdef _WIN32
+    struct _stat st;
+    return _stat(path.c_str(), &st) == 0 && (st.st_mode & _S_IFREG);
+#else
+    struct _stat64 st;
     return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+#endif
 }
 
 static std::string trim(const std::string& s) {
@@ -173,6 +183,20 @@ static int runTask(const Task& task, const std::string& binDir, bool dryRun) {
         return 0;
     }
 
+#ifdef _WIN32
+    std::string cmdLine;
+    for (size_t i = 0; argvVec[i]; ++i) {
+        if (i > 0) cmdLine += " ";
+        cmdLine += "\"";
+        cmdLine += argvVec[i];
+        cmdLine += "\"";
+    }
+    for (auto p : allocs) free(p);
+    int code = system(cmdLine.c_str());
+    if (code != 0)
+        std::cerr << "Command failed (exit=" << code << "): " << binaryName << "\n";
+    return code;
+#else
     pid_t pid = fork();
     if (pid < 0) {
         std::cerr << "Error: fork failed\n";
@@ -199,6 +223,7 @@ static int runTask(const Task& task, const std::string& binDir, bool dryRun) {
     }
     std::cerr << "Command terminated abnormally\n";
     return 1;
+#endif
 }
 
 // Parse config file into tasks (sw4 style)

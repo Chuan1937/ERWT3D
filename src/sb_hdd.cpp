@@ -21,7 +21,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <random>
-#include <unistd.h>
+#include "erwt3d/platform_io.hpp"
 #include <fcntl.h>
 
 namespace erwt3d {
@@ -40,7 +40,7 @@ inline void adviseSequential(int fd) {
 
 inline void tryReadahead(int fd, uint64_t offset, uint64_t bytes) {
 #if defined(__linux__)
-    readahead(fd, static_cast<off_t>(offset), static_cast<size_t>(bytes));
+    readahead(fd, static_cast<int64_t>(offset), static_cast<size_t>(bytes));
 #else
     (void)fd;
     (void)offset;
@@ -539,12 +539,12 @@ HDDReadWindowConfig calibrateHDD(int raw_fd, uint64_t raw_size) {
     for (int region = 0; region < 3; ++region) {
         uint64_t off = (region == 0) ? 0 : (region == 1) ? raw_size / 2 : raw_size - seqChunk;
         if (off + seqChunk > raw_size) off = raw_size > seqChunk ? raw_size - seqChunk : 0;
-        posix_fadvise(raw_fd, static_cast<off_t>(off), static_cast<off_t>(seqChunk), POSIX_FADV_DONTNEED);
+        posix_fadvise(raw_fd, static_cast<int64_t>(off), static_cast<int64_t>(seqChunk), POSIX_FADV_DONTNEED);
 
         auto t0 = Clock::now();
         size_t done = 0;
         while (done < seqChunk) {
-            ssize_t n = pread(raw_fd, seqBuf.data() + done, seqChunk - done, static_cast<off_t>(off + done));
+            ssize_t n = pread(raw_fd, seqBuf.data() + done, seqChunk - done, static_cast<int64_t>(off + done));
             if (n <= 0) break;
             done += static_cast<size_t>(n);
         }
@@ -566,10 +566,10 @@ HDDReadWindowConfig calibrateHDD(int raw_fd, uint64_t raw_size) {
     for (uint64_t i = 0; i < 128; ++i) {
         uint64_t off = dist(rng) & ~4095ULL;
         if (off + sampleSize > raw_size) off = raw_size - sampleSize;
-        posix_fadvise(raw_fd, static_cast<off_t>(off), static_cast<off_t>(sampleSize), POSIX_FADV_DONTNEED);
+        posix_fadvise(raw_fd, static_cast<int64_t>(off), static_cast<int64_t>(sampleSize), POSIX_FADV_DONTNEED);
 
         auto rt0 = Clock::now();
-        ssize_t n = pread(raw_fd, randBuf.data(), sampleSize, static_cast<off_t>(off));
+        ssize_t n = pread(raw_fd, randBuf.data(), sampleSize, static_cast<int64_t>(off));
         auto rt1 = Clock::now();
         if (n == static_cast<ssize_t>(sampleSize)) {
             latencies.push_back(std::chrono::duration<double, std::milli>(rt1 - rt0).count());

@@ -1,3 +1,4 @@
+#include "erwt3d/platform_io.hpp"
 #include "erwt3d/reader.hpp"
 #include <iostream>
 #include <iomanip>
@@ -52,12 +53,12 @@ int main(int argc, char* argv[]) {
               << std::fixed << std::setprecision(2) << rawSize / (1024.0 * 1024.0) << " MB)" << std::endl;
     
     // Get actual file size
-    struct stat st;
+    struct _stat64 st;
     if (stat(inputPath.c_str(), &st) == 0) {
         uint64_t fileSize = st.st_size;
         if (erwt3d::hasXPSidecar(header)) {
             std::string xpPath = inputPath + ".xp";
-            struct stat xpStat;
+            struct _stat64 xpStat;
             if (stat(xpPath.c_str(), &xpStat) == 0) {
                 fileSize += xpStat.st_size;
                 std::cout << "Sidecar (.xp) size: " << xpStat.st_size << " bytes ("

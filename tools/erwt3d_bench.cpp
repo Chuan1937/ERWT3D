@@ -1,3 +1,4 @@
+#include "erwt3d/platform_io.hpp"
 #include "erwt3d/reader.hpp"
 #include <iostream>
 #include <fstream>
@@ -592,7 +593,7 @@ int main(int argc, char* argv[]) {
         }
         // Write contest_profile.csv if requested
         if (contestProfile) {
-            struct stat fst; uint64_t fileSize = 0;
+            struct _stat64 fst; uint64_t fileSize = 0;
             stat(inputPath.c_str(), &fst); fileSize = fst.st_size;
             uint64_t totalSB = erwt3d::getTotalSuperblocks(header);
             uint64_t sbBV = erwt3d::getSuperblockBytes(header);
@@ -753,7 +754,7 @@ int main(int argc, char* argv[]) {
     
     // Calculate storage ratio
     uint64_t rawSize = erwt3d::getRawSize(header);
-    struct stat st;
+    struct _stat64 st;
     if (stat(inputPath.c_str(), &st) == 0) {
         double ratio = static_cast<double>(st.st_size) / rawSize;
         std::cout << "\nStorage ratio: " << std::fixed << std::setprecision(3) << ratio << "x" << std::endl;

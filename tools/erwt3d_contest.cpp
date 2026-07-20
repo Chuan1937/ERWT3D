@@ -20,7 +20,7 @@
 #include <string>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <unistd.h>
+#include "erwt3d/platform_io.hpp"
 #include <vector>
 
 namespace {
@@ -80,7 +80,7 @@ static bool precreateOutputs(
         std::ostringstream oss;
         oss << output_dir << "/" << prefix << "_" << i << ".raw";
         const std::string path = oss.str();
-        int fd = open(
+        int fd = io_open(
             path.c_str(),
             O_RDWR | O_CREAT | O_TRUNC,
             0644
@@ -89,10 +89,10 @@ static bool precreateOutputs(
             std::cerr << "Error: cannot create output " << path << "\n";
             return false;
         }
-        if (posix_fallocate(fd, 0, static_cast<off_t>(bytes)) != 0 &&
-            ftruncate(fd, static_cast<off_t>(bytes)) != 0) {
+        if (posix_fallocate(fd, 0, static_cast<int64_t>(bytes)) != 0 &&
+            ftruncate(fd, static_cast<int64_t>(bytes)) != 0) {
             std::cerr << "Error: cannot preallocate output " << path << "\n";
-            close(fd);
+            io_close(fd);
             return false;
         }
         fds[i] = fd;
@@ -102,7 +102,7 @@ static bool precreateOutputs(
 
 static void closeOutputs(std::vector<int>& fds) {
     for (int& fd : fds) {
-        if (fd >= 0) close(fd);
+        if (fd >= 0) io_close(fd);
         fd = -1;
     }
 }
@@ -114,7 +114,7 @@ static bool writeFullyAt(int fd, const void* data, uint64_t bytes, uint64_t offs
         const ssize_t written = pwrite(
             fd, cursor + completed,
             static_cast<size_t>(bytes - completed),
-            static_cast<off_t>(offset + completed)
+            static_cast<int64_t>(offset + completed)
         );
         if (written > 0) { completed += static_cast<uint64_t>(written); continue; }
         if (written < 0 && errno == EINTR) continue;
@@ -224,7 +224,7 @@ int main(int argc, char* argv[]) {
         budget.window_cache_bytes
     );
 
-    struct stat st{};
+    struct _stat64 st{};
     uint64_t fileBytes = 0;
     if (stat(inputPath.c_str(), &st) == 0) fileBytes = static_cast<uint64_t>(st.st_size);
     const std::string sidecarPath = inputPath + ".xp";

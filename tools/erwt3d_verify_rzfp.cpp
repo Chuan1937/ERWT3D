@@ -11,7 +11,7 @@
 #include <iostream>
 #include <random>
 #include <string>
-#include <unistd.h>
+#include "erwt3d/platform_io.hpp"
 #include <vector>
 
 using namespace erwt3d;
@@ -35,7 +35,7 @@ static bool readFullyAt(int fd, void* buffer, size_t bytes, uint64_t offset) {
     auto* dst = static_cast<uint8_t*>(buffer);
     size_t done = 0;
     while (done < bytes) {
-        ssize_t n = pread(fd, dst + done, bytes - done, static_cast<off_t>(offset + done));
+        ssize_t n = pread(fd, dst + done, bytes - done, static_cast<int64_t>(offset + done));
         if (n == 0) return false;
         if (n < 0) {
             if (errno == EINTR) continue;
@@ -86,7 +86,7 @@ static uint64_t buildValidMaskFast(
 }
 
 static int runFastFullVerify(const VerifyOptions& opt) {
-    int rzfpFd = open(opt.rzfp_path.c_str(), O_RDONLY);
+    int rzfpFd = io_open(opt.rzfp_path.c_str(), O_RDONLY);
     if (rzfpFd < 0) {
         std::cerr << "Error: cannot open RZFP file" << std::endl;
         return 1;
@@ -95,7 +95,7 @@ static int runFastFullVerify(const VerifyOptions& opt) {
     RzfpFileHeader header{};
     if (pread(rzfpFd, &header, sizeof(header), 0) != sizeof(header) || !validateRzfpHeader(header)) {
         std::cerr << "Error: invalid RZFP header" << std::endl;
-        close(rzfpFd);
+        io_close(rzfpFd);
         return 1;
     }
 
@@ -104,20 +104,20 @@ static int runFastFullVerify(const VerifyOptions& opt) {
     std::vector<RzfpSuperblockIndex> sbIndex(totalSB);
     if (!readFullyAt(rzfpFd, sbIndex.data(), totalSB * sizeof(RzfpSuperblockIndex), sizeof(RzfpFileHeader))) {
         std::cerr << "Error: cannot read superblock index" << std::endl;
-        close(rzfpFd);
+        io_close(rzfpFd);
         return 1;
     }
     std::vector<RzfpLeafDescriptor> descriptors(totalLeaves);
     if (!readFullyAt(rzfpFd, descriptors.data(), totalLeaves * sizeof(RzfpLeafDescriptor), header.descriptor_offset)) {
         std::cerr << "Error: cannot read descriptors" << std::endl;
-        close(rzfpFd);
+        io_close(rzfpFd);
         return 1;
     }
 
-    int rawFd = open(opt.raw_path.c_str(), O_RDONLY);
+    int rawFd = io_open(opt.raw_path.c_str(), O_RDONLY);
     if (rawFd < 0) {
         std::cerr << "Error: cannot open raw file" << std::endl;
-        close(rzfpFd);
+        io_close(rzfpFd);
         return 1;
     }
 
@@ -152,8 +152,8 @@ static int runFastFullVerify(const VerifyOptions& opt) {
         const uint64_t slabBytes = slabFloats * sizeof(float);
         if (!readFullyAt(rawFd, slab.data(), slabBytes, xStart * yzFloats * sizeof(float))) {
             std::cerr << "Error: failed to read raw X-slab x=" << xStart << std::endl;
-            close(rawFd);
-            close(rzfpFd);
+            io_close(rawFd);
+            io_close(rzfpFd);
             return 1;
         }
 
@@ -169,8 +169,8 @@ static int runFastFullVerify(const VerifyOptions& opt) {
                 payloadBuf.resize(sb.payload_bytes);
                 if (sb.payload_bytes > 0 && !readFullyAt(rzfpFd, payloadBuf.data(), sb.payload_bytes, sb.payload_offset)) {
                     std::cerr << "Error: failed to read payload for sb=" << phys << std::endl;
-                    close(rawFd);
-                    close(rzfpFd);
+                    io_close(rawFd);
+                    io_close(rzfpFd);
                     return 1;
                 }
 
@@ -192,8 +192,8 @@ static int runFastFullVerify(const VerifyOptions& opt) {
 
                     if (!codec.decode(cand, leaf)) {
                         std::cerr << "Error: RZFP decode failed for sb=" << phys << " leaf=" << j << std::endl;
-                        close(rawFd);
-                        close(rzfpFd);
+                        io_close(rawFd);
+                        io_close(rzfpFd);
                         return 1;
                     }
 
@@ -233,8 +233,8 @@ static int runFastFullVerify(const VerifyOptions& opt) {
     }
     std::cerr << std::endl;
 
-    close(rawFd);
-    close(rzfpFd);
+    io_close(rawFd);
+    io_close(rzfpFd);
 
     std::cout << "checked: " << checked << std::endl;
     std::cout << "failed: " << failed << std::endl;
@@ -254,7 +254,7 @@ static int runFullVerify(const VerifyOptions& opt) {
     const auto cfg = makeConfig(opt);
     std::vector<float> slice(opt.nx * opt.ny);
 
-    int rawFd = open(opt.raw_path.c_str(), O_RDONLY);
+    int rawFd = io_open(opt.raw_path.c_str(), O_RDONLY);
     if (rawFd < 0) {
         std::cerr << "Error: cannot open raw file" << std::endl;
         return 1;
@@ -265,10 +265,10 @@ static int runFullVerify(const VerifyOptions& opt) {
     raw_volume.resize(totalFloats);
     if (!readFullyAt(rawFd, raw_volume.data(), totalFloats * sizeof(float), 0)) {
         std::cerr << "Error: failed to read whole raw file" << std::endl;
-        close(rawFd);
+        io_close(rawFd);
         return 1;
     }
-    close(rawFd);
+    io_close(rawFd);
 
     uint64_t failed = 0;
     double max_abs = 0.0;
@@ -335,7 +335,7 @@ static int runSampleVerify(const VerifyOptions& opt) {
         return a.z < b.z;
     });
 
-    int rawFd = open(opt.raw_path.c_str(), O_RDONLY);
+    int rawFd = io_open(opt.raw_path.c_str(), O_RDONLY);
     if (rawFd < 0) {
         std::cerr << "Error: cannot open raw file" << std::endl;
         return 1;
@@ -352,7 +352,7 @@ static int runSampleVerify(const VerifyOptions& opt) {
         uint64_t z = samples[i].z;
         if (!reader.readSlice(erwt3d::SliceAxis::Z, z, slice.data())) {
             std::cerr << "Error: failed to read Z slice " << z << std::endl;
-            close(rawFd);
+            io_close(rawFd);
             return 1;
         }
         while (i < samples.size() && samples[i].z == z) {
@@ -361,7 +361,7 @@ static int runSampleVerify(const VerifyOptions& opt) {
             const uint64_t off = rawOffsetZFastest(s.x, s.y, s.z, opt.ny, opt.nz);
             if (!readFullyAt(rawFd, &raw_val, sizeof(float), off * sizeof(float))) {
                 std::cerr << "Error reading raw sample" << std::endl;
-                close(rawFd);
+                io_close(rawFd);
                 return 1;
             }
             float dec_val = slice[s.x * opt.ny + s.y];
@@ -373,7 +373,7 @@ static int runSampleVerify(const VerifyOptions& opt) {
             ++i;
         }
     }
-    close(rawFd);
+    io_close(rawFd);
 
     std::cout << "checked: " << checked << std::endl;
     std::cout << "failed: " << failed << std::endl;

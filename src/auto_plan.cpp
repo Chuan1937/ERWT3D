@@ -12,7 +12,7 @@
 #include <cmath>
 #include <fcntl.h>
 #include <iostream>
-#include <unistd.h>
+#include "erwt3d/platform_io.hpp"
 #include <vector>
 
 namespace erwt3d {
@@ -113,7 +113,7 @@ PlannerResult planFormat(
     }
     double rawMB = static_cast<double>(rawSize) / (1024.0 * 1024.0);
 
-    int raw_fd = open(raw_path.c_str(), O_RDONLY);
+    int raw_fd = io_open(raw_path.c_str(), O_RDONLY);
     if (raw_fd < 0) {
         result.recommended.feasible = false;
         result.recommended.reason = "cannot open raw file";
@@ -124,7 +124,7 @@ PlannerResult planFormat(
     result.disk_cfg = calibrateHDD(raw_fd, rawSize);
     std::cout << "Disk: seq=" << result.disk_cfg.sequential_mb_s
               << " MB/s, seek=" << result.disk_cfg.seek_ms << " ms" << std::endl;
-    close(raw_fd);
+    io_close(raw_fd);
 
     // LZ4 Probe
     Lz4ProbeConfig lz4_cfg;
@@ -203,7 +203,7 @@ PlannerResult planFormat(
     // --- RZFP candidates ---
 #ifdef ERWT3D_HAVE_RZFP
     result.rzfp_available = true;
-    raw_fd = open(raw_path.c_str(), O_RDONLY);
+    raw_fd = io_open(raw_path.c_str(), O_RDONLY);
     if (raw_fd >= 0) {
         RzfpAutoPlanConfig rzfpCfg;
         rzfpCfg.time_limit_seconds = 300;
@@ -275,7 +275,7 @@ addCandidate(result.alternatives, c, result.disk_cfg, rawSize,
                 result.alternatives.push_back(c);
             }
         }
-        close(raw_fd);
+        io_close(raw_fd);
     }
 #endif
 

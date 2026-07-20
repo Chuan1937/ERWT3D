@@ -10,7 +10,7 @@
 #include <sstream>
 #include <filesystem>
 #include <fcntl.h>
-#include <unistd.h>
+#include "erwt3d/platform_io.hpp"
 #include <sys/stat.h>
 
 struct RawBenchResult {
@@ -79,14 +79,14 @@ int main(int argc, char* argv[]) {
     std::cout << "Dimensions: " << nx << " x " << ny << " x " << nz << std::endl;
     
     // Memory-map or pread raw file for slice extraction
-    int fd = open(inputPath.c_str(), O_RDONLY);
+    int fd = io_open(inputPath.c_str(), O_RDONLY);
     if (fd < 0) { std::cerr << "Error: Cannot open input file" << std::endl; return 1; }
     
     uint64_t fileSize = nx * ny * nz * sizeof(float);
-    struct stat st;
+    struct _stat64 st;
     if (fstat(fd, &st) != 0 || static_cast<uint64_t>(st.st_size) < fileSize) {
         std::cerr << "Error: Input file too small" << std::endl;
-        close(fd); return 1;
+        io_close(fd); return 1;
     }
     
     std::mt19937 rng(seed);
@@ -116,14 +116,14 @@ int main(int argc, char* argv[]) {
                 for (uint64_t y = 0; y < outD1; ++y) {
                     uint64_t off = (baseOff + y * nx) * sizeof(float);
                     ssize_t n = pread(fd, output.data() + y * outD2, outD2 * sizeof(float), off);
-                    if (n != static_cast<ssize_t>(outD2 * sizeof(float))) { close(fd); return false; }
+                    if (n != static_cast<ssize_t>(outD2 * sizeof(float))) { io_close(fd); return false; }
                 }
             } else if (isY) {
                 // Y slice: all x,z at fixed y. Each z has one contiguous row of nx floats.
                 for (uint64_t z = 0; z < outD1; ++z) {
                     uint64_t off = ((z * ny + idx) * nx) * sizeof(float);
                     ssize_t n = pread(fd, output.data() + z * outD2, outD2 * sizeof(float), off);
-                    if (n != static_cast<ssize_t>(outD2 * sizeof(float))) { close(fd); return false; }
+                    if (n != static_cast<ssize_t>(outD2 * sizeof(float))) { io_close(fd); return false; }
                 }
             } else {
                 // X slice: all y,z at fixed x. One float at a time (non-contiguous in raw).
@@ -131,17 +131,17 @@ int main(int argc, char* argv[]) {
                     for (uint64_t y = 0; y < outD2; ++y) {
                         uint64_t off = ((z * ny + y) * nx + idx) * sizeof(float);
                         ssize_t n = pread(fd, &output[z * outD2 + y], sizeof(float), off);
-                        if (n != sizeof(float)) { close(fd); return false; }
+                        if (n != sizeof(float)) { io_close(fd); return false; }
                     }
                 }
             }
             
             // Write output
             std::ofstream outFile(outPath, std::ios::binary);
-            if (!outFile) { close(fd); return false; }
+            if (!outFile) { io_close(fd); return false; }
             outFile.write(reinterpret_cast<const char*>(output.data()), outBytes);
             outFile.close();
-            if (!outFile.good()) { close(fd); return false; }
+            if (!outFile.good()) { io_close(fd); return false; }
             
             auto end = std::chrono::high_resolution_clock::now();
             double t = std::chrono::duration<double, std::milli>(end - start).count();
@@ -188,16 +188,16 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < countZ; ++i) cz.push_back(sz2_v + i);
     
     std::cout << "\nRandom slices:" << std::endl;
-    if (!run("x", nx, nz, ny, false, false, rx, "random")) { close(fd); return 1; }
-    if (!run("y", ny, nz, nx, true, false, ry, "random")) { close(fd); return 1; }
-    if (!run("z", nz, ny, nx, false, true, rz, "random")) { close(fd); return 1; }
+    if (!run("x", nx, nz, ny, false, false, rx, "random")) { io_close(fd); return 1; }
+    if (!run("y", ny, nz, nx, true, false, ry, "random")) { io_close(fd); return 1; }
+    if (!run("z", nz, ny, nx, false, true, rz, "random")) { io_close(fd); return 1; }
     
     std::cout << "\nContinuous slices:" << std::endl;
-    if (!run("x", nx, nz, ny, false, false, cx, "continuous")) { close(fd); return 1; }
-    if (!run("y", ny, nz, nx, true, false, cy, "continuous")) { close(fd); return 1; }
-    if (!run("z", nz, ny, nx, false, true, cz, "continuous")) { close(fd); return 1; }
+    if (!run("x", nx, nz, ny, false, false, cx, "continuous")) { io_close(fd); return 1; }
+    if (!run("y", ny, nz, nx, true, false, cy, "continuous")) { io_close(fd); return 1; }
+    if (!run("z", nz, ny, nx, false, true, cz, "continuous")) { io_close(fd); return 1; }
     
-    close(fd);
+    io_close(fd);
     
     // Write CSVs
     std::string csvPath = outputDir + "/bench_result.csv";

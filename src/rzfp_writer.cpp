@@ -17,7 +17,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <sys/stat.h>
-#include <unistd.h>
+#include "erwt3d/platform_io.hpp"
 #include <vector>
 
 namespace erwt3d {
@@ -193,31 +193,31 @@ bool writeRzfpFile(
     header.descriptor_offset = sizeof(RzfpFileHeader) + indexBytes;
     header.payload_offset = payloadStart;
 
-    int rawFd = open(raw_path.c_str(), O_RDONLY);
+    int rawFd = io_open(raw_path.c_str(), O_RDONLY);
     if (rawFd < 0) {
         std::cerr << "Error: cannot open raw file: " << raw_path << std::endl;
         return false;
     }
 
     const std::string tmpPath = output_path + ".tmp";
-    int outFd = open(tmpPath.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
+    int outFd = io_open(tmpPath.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
     if (outFd < 0) {
         std::cerr << "Error: cannot create output file: " << tmpPath << std::endl;
-        close(rawFd);
+        io_close(rawFd);
         return false;
     }
 
-    if (posix_fallocate(outFd, 0, static_cast<off_t>(payloadStart)) != 0) {
-        if (ftruncate(outFd, static_cast<off_t>(payloadStart)) != 0) {
+    if (posix_fallocate(outFd, 0, static_cast<int64_t>(payloadStart)) != 0) {
+        if (ftruncate(outFd, static_cast<int64_t>(payloadStart)) != 0) {
             std::cerr << "Error: failed to reserve output header/index/descriptor area" << std::endl;
-            close(rawFd); close(outFd); unlink(tmpPath.c_str());
+            io_close(rawFd); io_close(outFd); unlink(tmpPath.c_str());
             return false;
         }
     }
 
     if (!writeFullyAt(outFd, &header, sizeof(header), 0)) {
         std::cerr << "Error: failed to write header" << std::endl;
-        close(rawFd); close(outFd); unlink(tmpPath.c_str());
+        io_close(rawFd); io_close(outFd); unlink(tmpPath.c_str());
         return false;
     }
 
@@ -248,7 +248,7 @@ bool writeRzfpFile(
     std::future<bool> readFuture;
     if (!readSlab(0, 0)) {
         std::cerr << "Error reading initial raw X-slab" << std::endl;
-        close(rawFd); close(outFd); unlink(tmpPath.c_str());
+        io_close(rawFd); io_close(outFd); unlink(tmpPath.c_str());
         return false;
     }
 
@@ -313,7 +313,7 @@ bool writeRzfpFile(
 
                 if (stats.violation_count > 0) {
                     std::cerr << "Error: violations detected during write, aborting" << std::endl;
-                    close(rawFd); close(outFd); unlink(tmpPath.c_str());
+                    io_close(rawFd); io_close(outFd); unlink(tmpPath.c_str());
                     return false;
                 }
 
@@ -321,13 +321,13 @@ bool writeRzfpFile(
                 auto t0 = Clock::now();
                 if (!writeFullyAt(outFd, descriptors.data(), descriptors.size() * sizeof(RzfpLeafDescriptor), descOff)) {
                     std::cerr << "Error writing descriptors for sb=" << sbId << std::endl;
-                    close(rawFd); close(outFd); unlink(tmpPath.c_str());
+                    io_close(rawFd); io_close(outFd); unlink(tmpPath.c_str());
                     return false;
                 }
                 if (!payload.empty()) {
                     if (!writeFullyAt(outFd, payload.data(), payload.size(), currentPayloadOffset)) {
                         std::cerr << "Error writing payload for sb=" << sbId << std::endl;
-                        close(rawFd); close(outFd); unlink(tmpPath.c_str());
+                        io_close(rawFd); io_close(outFd); unlink(tmpPath.c_str());
                         return false;
                     }
                 }
@@ -348,7 +348,7 @@ bool writeRzfpFile(
             auto rt0 = Clock::now();
             if (!readFuture.get()) {
                 std::cerr << "Error reading raw X-slab at x=" << nextStart << std::endl;
-                close(rawFd); close(outFd); unlink(tmpPath.c_str());
+                io_close(rawFd); io_close(outFd); unlink(tmpPath.c_str());
                 return false;
             }
             auto rt1 = Clock::now();
@@ -358,17 +358,17 @@ bool writeRzfpFile(
     }
     std::cout << std::endl;
 
-    close(rawFd);
+    io_close(rawFd);
 
     auto t0 = Clock::now();
     if (!writeFullyAt(outFd, sbIndex.data(), indexBytes, sizeof(RzfpFileHeader))) {
         std::cerr << "Error writing superblock index" << std::endl;
-        close(outFd); unlink(tmpPath.c_str());
+        io_close(outFd); unlink(tmpPath.c_str());
         return false;
     }
     if (!writeFullyAt(outFd, &header, sizeof(header), 0)) {
         std::cerr << "Error finalizing header" << std::endl;
-        close(outFd); unlink(tmpPath.c_str());
+        io_close(outFd); unlink(tmpPath.c_str());
         return false;
     }
     auto t1 = Clock::now();
@@ -377,7 +377,7 @@ bool writeRzfpFile(
     if (fsync(outFd) != 0) {
         std::cerr << "Warning: fsync failed" << std::endl;
     }
-    close(outFd);
+    io_close(outFd);
 
     if (rename(tmpPath.c_str(), output_path.c_str()) != 0) {
         std::cerr << "Error renaming " << tmpPath << " to " << output_path << std::endl;
@@ -416,7 +416,7 @@ bool appendRawXAuxToRzfpFile(
     RawXAuxStats* stats, bool forceEdge) {
     if (stats) *stats = RawXAuxStats{};
 
-    ScopedFd rzfpFd(open(rzfpPath.c_str(), O_RDWR));
+    ScopedFd rzfpFd(io_open(rzfpPath.c_str(), O_RDWR));
     if (!rzfpFd.valid()) {
         std::cerr << "Error: Cannot open RZFP file for raw X aux append: " << rzfpPath << std::endl;
         setRawXAuxFailure(stats, "cannot open RZFP file");
@@ -442,7 +442,7 @@ bool appendRawXAuxToRzfpFile(
         return true;
     }
 
-    struct stat st;
+    struct _stat64 st;
     if (fstat(rzfpFd.get(), &st) != 0) {
         std::cerr << "Error: cannot stat " << rzfpPath << std::endl;
         setRawXAuxFailure(stats, "stat failed");
@@ -450,14 +450,14 @@ bool appendRawXAuxToRzfpFile(
     }
     const uint64_t mainFileBytes = static_cast<uint64_t>(st.st_size);
 
-    ScopedFd rawFd(open(rawPath.c_str(), O_RDONLY));
+    ScopedFd rawFd(io_open(rawPath.c_str(), O_RDONLY));
     if (!rawFd.valid()) {
         std::cerr << "Error: Cannot open raw file: " << rawPath << std::endl;
         setRawXAuxFailure(stats, "cannot open raw file");
         return false;
     }
 
-    struct stat rawSt;
+    struct _stat64 rawSt;
     if (fstat(rawFd.get(), &rawSt) != 0) {
         std::cerr << "Error: cannot stat raw file" << std::endl;
         setRawXAuxFailure(stats, "raw file stat failed");
@@ -527,11 +527,11 @@ bool appendRawXAuxToRzfpFile(
         }
     }
 
-    posix_fadvise(rawFd.get(), 0, static_cast<off_t>(rawBytes), POSIX_FADV_SEQUENTIAL);
-    posix_fadvise(rawFd.get(), 0, static_cast<off_t>(rawBytes), POSIX_FADV_WILLNEED);
+    posix_fadvise(rawFd.get(), 0, static_cast<int64_t>(rawBytes), POSIX_FADV_SEQUENTIAL);
+    posix_fadvise(rawFd.get(), 0, static_cast<int64_t>(rawBytes), POSIX_FADV_WILLNEED);
 
-    if (posix_fallocate(rzfpFd.get(), static_cast<off_t>(alignedOffset),
-                        static_cast<off_t>(rawAuxBytes)) != 0) {
+    if (posix_fallocate(rzfpFd.get(), static_cast<int64_t>(alignedOffset),
+                        static_cast<int64_t>(rawAuxBytes)) != 0) {
         std::cerr << "Warning: posix_fallocate failed, using sequential write" << std::endl;
     }
 

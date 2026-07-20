@@ -15,7 +15,7 @@
 #include <numeric>
 #include <random>
 #include <sstream>
-#include <unistd.h>
+#include "erwt3d/platform_io.hpp"
 #include <vector>
 
 namespace erwt3d {

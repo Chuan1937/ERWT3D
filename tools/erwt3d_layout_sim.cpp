@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <iomanip>
 #include <algorithm>
+#include <string>
 
 struct LayoutResult {
     std::string layout, axis;

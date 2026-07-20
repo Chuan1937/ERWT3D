@@ -1,4 +1,5 @@
 #include "erwt3d/memory_budget.hpp"
+#include "erwt3d/platform_io.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -44,6 +45,9 @@ static bool parseExplicitMiB(const std::string& value, uint64_t& bytes) {
 } // namespace
 
 uint64_t readLinuxMemAvailableBytes() {
+#ifdef _WIN32
+    return win32_get_available_physical_memory_bytes();
+#else
     std::ifstream input("/proc/meminfo");
     if (!input) return 0;
 
@@ -63,6 +67,7 @@ uint64_t readLinuxMemAvailableBytes() {
     }
 
     return 0;
+#endif
 }
 
 MemoryBudget makeMemoryBudget(
@@ -83,7 +88,7 @@ MemoryBudget makeMemoryBudget(
 
         const uint64_t memAvailable = readLinuxMemAvailableBytes();
         if (memAvailable == 0) {
-            budget.error = "cannot read MemAvailable from /proc/meminfo";
+            budget.error = "cannot determine available physical memory";
             return budget;
         }
 

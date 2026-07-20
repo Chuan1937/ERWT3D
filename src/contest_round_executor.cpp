@@ -10,7 +10,7 @@
 #include <memory>
 #include <sstream>
 #include <sys/stat.h>
-#include <unistd.h>
+#include "erwt3d/platform_io.hpp"
 #include <vector>
 
 namespace erwt3d {
@@ -30,7 +30,7 @@ bool writeFullyAt(int fd, const void* data, uint64_t bytes, uint64_t offset) {
         const ssize_t written = pwrite(
             fd, cursor + completed,
             static_cast<size_t>(bytes - completed),
-            static_cast<off_t>(offset + completed)
+            static_cast<int64_t>(offset + completed)
         );
         if (written > 0) { completed += static_cast<uint64_t>(written); continue; }
         if (written < 0 && errno == EINTR) continue;
@@ -107,14 +107,14 @@ bool executeContestRound(
         for (size_t i = 0; i < groups[g].indices->size(); ++i) {
             std::ostringstream oss;
             oss << output_dir << "/" << prefix.str() << "_" << i << ".raw";
-            int fd = open(oss.str().c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
+            int fd = io_open(oss.str().c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
             if (fd < 0) {
-                for (auto& afds : allFds) for (int f : afds) if (f >= 0) close(f);
+                for (auto& afds : allFds) for (int f : afds) if (f >= 0) io_close(f);
                 return false;
             }
-            if (posix_fallocate(fd, 0, static_cast<off_t>(outBytes)) != 0 &&
-                ftruncate(fd, static_cast<off_t>(outBytes)) != 0) {
-                close(fd);
+            if (posix_fallocate(fd, 0, static_cast<int64_t>(outBytes)) != 0 &&
+                ftruncate(fd, static_cast<int64_t>(outBytes)) != 0) {
+                io_close(fd);
                 return false;
             }
             fds[i] = fd;
@@ -214,7 +214,7 @@ bool executeContestRound(
             const auto readStart = Clock::now();
             std::vector<RzfpReader::RzfpRoundReadResult> batchResults;
             if (!reader.readContestRound(cgroups, reader_config, &batchResults)) {
-                for (auto& afds : allFds) for (int f : afds) if (f >= 0) close(f);
+                for (auto& afds : allFds) for (int f : afds) if (f >= 0) io_close(f);
                 return false;
             }
             totalReadMs += msSince(readStart);
@@ -248,7 +248,7 @@ bool executeContestRound(
                 for (size_t i = 0; i < m.take; ++i) {
                     if (!writeFullyAt(allFds[m.groupId][m.startIdx + i],
                                       cgroups[mi].outputs[i], outBytes, 0)) {
-                        for (auto& afds : allFds) for (int f : afds) if (f >= 0) close(f);
+                        for (auto& afds : allFds) for (int f : afds) if (f >= 0) io_close(f);
                         return false;
                     }
                 }
@@ -277,7 +277,7 @@ bool executeContestRound(
     }
 
     const auto closeStart = Clock::now();
-    for (auto& afds : allFds) for (int f : afds) if (f >= 0) close(f);
+    for (auto& afds : allFds) for (int f : afds) if (f >= 0) io_close(f);
     closeMs = msSince(closeStart);
 
     const double wallMs = msSince(wallStart);

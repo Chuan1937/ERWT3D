@@ -8,7 +8,7 @@
 #include <cstring>
 #include <cmath>
 #include <fcntl.h>
-#include <unistd.h>
+#include "erwt3d/platform_io.hpp"
 #include <algorithm>
 
 #ifdef ERWT3D_HAVE_LZ4
@@ -26,7 +26,7 @@ static bool estimateCompressionRatio(const std::string& rawPath,
     uint64_t sbFloats = (uint64_t)sx * sy * sz;
     uint64_t sbBytes = sbFloats * sizeof(float);
 
-    int fd = open(rawPath.c_str(), O_RDONLY);
+    int fd = io_open(rawPath.c_str(), O_RDONLY);
     if (fd < 0) return false;
 
     std::vector<float> sbBuf(sbFloats);
@@ -54,7 +54,7 @@ static bool estimateCompressionRatio(const std::string& rawPath,
                 uint64_t rawOff = ((gz * ny + gy) * nx + startX) * sizeof(float);
                 uint64_t vx = std::min<uint64_t>(sx, nx - startX);
                 ssize_t rd = pread(fd, sbBuf.data() + (z * sy + y) * sx, vx * sizeof(float), rawOff);
-                if (rd < 0) { close(fd); return false; }
+                if (rd < 0) { io_close(fd); return false; }
             }
         }
 
@@ -87,7 +87,7 @@ static bool estimateCompressionRatio(const std::string& rawPath,
         }
     }
 
-    close(fd);
+    io_close(fd);
 
     if (actualSamples == 0) return false;
     outRatio = static_cast<double>(totalComp) / totalRaw;

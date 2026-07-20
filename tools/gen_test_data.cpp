@@ -4,6 +4,7 @@
 #include <random>
 #include <cstdint>
 #include <cstring>
+#include <string>
 
 void printUsage(const char* progName) {
     std::cerr << "Usage: " << progName << " --nx N --ny N --nz N --output FILE [--seed N]" << std::endl;

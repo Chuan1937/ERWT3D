@@ -17,7 +17,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
-#include <unistd.h>
+#include "erwt3d/platform_io.hpp"
 #include <vector>
 
 namespace erwt3d {
@@ -163,7 +163,7 @@ static bool readFullyAt(int fd, void* buffer, size_t bytes, uint64_t offset) {
     auto* dst = static_cast<uint8_t*>(buffer);
     size_t done = 0;
     while (done < bytes) {
-        ssize_t n = pread(fd, dst + done, bytes - done, static_cast<off_t>(offset + done));
+        ssize_t n = pread(fd, dst + done, bytes - done, static_cast<int64_t>(offset + done));
         if (n == 0) return false;
         if (n < 0) {
             if (errno == EINTR) continue;
@@ -360,7 +360,7 @@ int main(int argc, char* argv[]) {
 
     std::mt19937_64 rng(20260511);
 
-    int raw_fd = open(opt.raw_path.c_str(), O_RDONLY);
+    int raw_fd = io_open(opt.raw_path.c_str(), O_RDONLY);
     if (raw_fd < 0) {
         std::cerr << "Error: cannot open raw file: " << opt.raw_path << std::endl;
         return 1;
@@ -464,7 +464,7 @@ int main(int argc, char* argv[]) {
         const uint64_t offset = x_start * yz_floats * sizeof(float);
         if (!readFullyAt(raw_fd, slab.data(), slab_floats * sizeof(float), offset)) {
             std::cerr << "Error reading raw X-slab at x=" << x_start << std::endl;
-            close(raw_fd);
+            io_close(raw_fd);
             return 1;
         }
 
@@ -510,7 +510,7 @@ int main(int argc, char* argv[]) {
                   << std::flush;
     }
     std::cout << std::endl;
-    close(raw_fd);
+    io_close(raw_fd);
 
     if (!opt.csv_path.empty()) {
         csv_file.close();

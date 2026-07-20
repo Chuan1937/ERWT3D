@@ -8,7 +8,7 @@
 #include <iomanip>
 #include <iostream>
 #include <string>
-#include <unistd.h>
+#include "erwt3d/platform_io.hpp"
 
 static void printUsage(const char* prog) {
     std::cerr
@@ -157,7 +157,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (auto_plan) {
-        int fd = open(inputPath.c_str(), O_RDONLY);
+        int fd = io_open(inputPath.c_str(), O_RDONLY);
         if (fd < 0) {
             std::cerr << "Error: cannot open raw file for auto plan: " << inputPath << std::endl;
             return 1;
@@ -171,11 +171,11 @@ int main(int argc, char* argv[]) {
 
         erwt3d::RzfpAutoPlanResult result;
         if (!erwt3d::runRzfpAutoPlan(fd, cfg.nx, cfg.ny, cfg.nz, plan_cfg, result)) {
-            close(fd);
+            io_close(fd);
             std::cerr << "Error: auto plan failed" << std::endl;
             return 1;
         }
-        close(fd);
+        io_close(fd);
 
         std::cout << result.toJson() << std::endl;
         xplane_sidecar = result.enable_x_sidecar;

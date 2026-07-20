@@ -13,7 +13,7 @@
 #include <iostream>
 #include <string>
 #include <sys/stat.h>
-#include <unistd.h>
+#include "erwt3d/platform_io.hpp"
 #include <vector>
 
 namespace erwt3d {
@@ -61,26 +61,26 @@ bool writeXPlaneSidecarFile(
     int threads,
     RzfpXPlaneWriterStats* out_stats
 ) {
-    int raw_fd = open(raw_path.c_str(), O_RDONLY);
+    int raw_fd = io_open(raw_path.c_str(), O_RDONLY);
     if (raw_fd < 0) {
         std::cerr << "Error: cannot open raw file for sidecar: " << raw_path << std::endl;
         return false;
     }
 
     const std::string tmp_path = output_path + ".tmp";
-    int out_fd = open(tmp_path.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
+    int out_fd = io_open(tmp_path.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
     if (out_fd < 0) {
         std::cerr << "Error: cannot create sidecar temp file: " << tmp_path << std::endl;
-        close(raw_fd);
+        io_close(raw_fd);
         return false;
     }
 
     const uint64_t index_offset = XPLANE_HEADER_SIZE;
     const uint64_t data_offset = index_offset + nx * XPLANE_INDEX_ENTRY_SIZE;
-    if (posix_fallocate(out_fd, 0, static_cast<off_t>(data_offset)) != 0) {
-        if (ftruncate(out_fd, static_cast<off_t>(data_offset)) != 0) {
+    if (posix_fallocate(out_fd, 0, static_cast<int64_t>(data_offset)) != 0) {
+        if (ftruncate(out_fd, static_cast<int64_t>(data_offset)) != 0) {
             std::cerr << "Error: failed to reserve sidecar header/index area" << std::endl;
-            close(raw_fd); close(out_fd); unlink(tmp_path.c_str());
+            io_close(raw_fd); io_close(out_fd); unlink(tmp_path.c_str());
             return false;
         }
     }
@@ -113,7 +113,7 @@ bool writeXPlaneSidecarFile(
         const uint64_t read_offset = x_start * plane_bytes;
         if (!readFullyAt(raw_fd, chunk_buffer.data(), chunk_floats * sizeof(float), read_offset)) {
             std::cerr << "Error: failed to read X-plane chunk x=" << x_start << std::endl;
-            close(raw_fd); close(out_fd); unlink(tmp_path.c_str());
+            io_close(raw_fd); io_close(out_fd); unlink(tmp_path.c_str());
             return false;
         }
 
@@ -145,7 +145,7 @@ bool writeXPlaneSidecarFile(
             if (!record.empty()) {
                 if (!writeFullyAt(out_fd, record.data(), record.size(), next_data_offset)) {
                     std::cerr << "Error: failed to write sidecar record for x=" << x << std::endl;
-                    close(raw_fd); close(out_fd); unlink(tmp_path.c_str());
+                    io_close(raw_fd); io_close(out_fd); unlink(tmp_path.c_str());
                     return false;
                 }
             }
@@ -162,18 +162,18 @@ bool writeXPlaneSidecarFile(
 
     if (!writeFullyAt(out_fd, index.data(), nx * XPLANE_INDEX_ENTRY_SIZE, index_offset)) {
         std::cerr << "Error: failed to write sidecar index" << std::endl;
-        close(raw_fd); close(out_fd); unlink(tmp_path.c_str());
+        io_close(raw_fd); io_close(out_fd); unlink(tmp_path.c_str());
         return false;
     }
 
     if (!writeFullyAt(out_fd, &header, XPLANE_HEADER_SIZE, 0)) {
         std::cerr << "Error: failed to write sidecar header" << std::endl;
-        close(raw_fd); close(out_fd); unlink(tmp_path.c_str());
+        io_close(raw_fd); io_close(out_fd); unlink(tmp_path.c_str());
         return false;
     }
 
-    close(raw_fd);
-    close(out_fd);
+    io_close(raw_fd);
+    io_close(out_fd);
 
     if (rename(tmp_path.c_str(), output_path.c_str()) != 0) {
         std::cerr << "Error: failed to rename sidecar file" << std::endl;

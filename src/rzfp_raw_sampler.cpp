@@ -6,7 +6,7 @@
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
-#include <unistd.h>
+#include "erwt3d/platform_io.hpp"
 #include <vector>
 
 namespace erwt3d {

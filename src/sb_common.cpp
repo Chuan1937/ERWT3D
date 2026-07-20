@@ -7,6 +7,9 @@
 
 #include "erwt3d/sb_plan.hpp"
 #include "erwt3d/morton.hpp"
+#ifdef _MSC_VER
+#define __restrict__ __restrict
+#endif
 #include <algorithm>
 
 namespace erwt3d {

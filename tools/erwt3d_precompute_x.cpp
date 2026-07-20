@@ -7,7 +7,7 @@
 #include <cmath>
 #include <future>
 #include <fcntl.h>
-#include <unistd.h>
+#include "erwt3d/platform_io.hpp"
 #include <sys/stat.h>
 
 #ifdef ERWT3D_HAVE_LZ4
@@ -116,19 +116,19 @@ static int runSidecar(const std::string& rawPath, const std::string& erwtPath,
     uint64_t rawBytes = nx * ny * nz * sizeof(float);
     uint64_t planeFloats = ny * nz;
 
-    int fdRaw = open(rawPath.c_str(), O_RDONLY);
+    int fdRaw = io_open(rawPath.c_str(), O_RDONLY);
     if (fdRaw < 0) { perror("open raw"); return 1; }
 
-    int fdErwt = open(erwtPath.c_str(), O_RDWR);
-    if (fdErwt < 0) { perror("open erwt3d"); close(fdRaw); return 1; }
+    int fdErwt = io_open(erwtPath.c_str(), O_RDWR);
+    if (fdErwt < 0) { perror("open erwt3d"); io_close(fdRaw); return 1; }
 
     ERWT3DHeader header;
     if (pread(fdErwt, &header, sizeof(header), 0) != sizeof(header)) {
         std::cerr << "Error reading ERWT3D header" << std::endl;
-        close(fdRaw); close(fdErwt); return 1;
+        io_close(fdRaw); io_close(fdErwt); return 1;
     }
 
-    struct stat erwtStat;
+    struct _stat64 erwtStat;
     fstat(fdErwt, &erwtStat);
     uint64_t mainBytes = erwtStat.st_size;
 
@@ -160,7 +160,7 @@ static int runSidecar(const std::string& rawPath, const std::string& erwtPath,
         header.flags &= ~erwt3d::FLAG_HAS_XP_SIDECAR;
         header.reserved[21] = 0;
         pwrite(fdErwt, &header, sizeof(header), 0);
-        close(fdRaw); close(fdErwt);
+        io_close(fdRaw); io_close(fdErwt);
         return 0;
     }
 
@@ -186,8 +186,8 @@ static int runSidecar(const std::string& rawPath, const std::string& erwtPath,
     std::cout << "  Streaming memory per z-chunk batch: " << memNeeded / (1024*1024) << " MB" << std::endl;
 
     // Create sidecar file
-    int fdXp = open(xpPath.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
-    if (fdXp < 0) { perror("open sidecar"); close(fdRaw); close(fdErwt); return 1; }
+    int fdXp = io_open(xpPath.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (fdXp < 0) { perror("open sidecar"); io_close(fdRaw); io_close(fdErwt); return 1; }
 
     // Write header placeholder
     XPSidecarHeader xpHdr{};
@@ -203,7 +203,7 @@ static int runSidecar(const std::string& rawPath, const std::string& erwtPath,
     xpHdr.total_chunks = totalChunks;
     xpHdr.compression = 1;
     if (pwrite(fdXp, &xpHdr, sizeof(xpHdr), 0) != sizeof(xpHdr)) {
-        perror("write sidecar header"); close(fdXp); close(fdRaw); close(fdErwt); return 1;
+        perror("write sidecar header"); io_close(fdXp); io_close(fdRaw); io_close(fdErwt); return 1;
     }
 
     // Initialize streaming build state
@@ -245,7 +245,7 @@ static int runSidecar(const std::string& rawPath, const std::string& erwtPath,
         ssize_t rd = pread(fdRaw, s.rawRow.data(), planeFloats * sizeof(float), planeOff);
         if (rd != static_cast<ssize_t>(planeFloats * sizeof(float))) {
             std::cerr << "\nError reading raw X-plane at x=" << x << std::endl;
-            close(fdXp); close(fdRaw); close(fdErwt); return 1;
+            io_close(fdXp); io_close(fdRaw); io_close(fdErwt); return 1;
         }
         const float* plane = s.rawRow.data();
 
@@ -279,7 +279,7 @@ static int runSidecar(const std::string& rawPath, const std::string& erwtPath,
             if (!ok) {
                 std::cerr << "\nLZ4 compress failed for plane " << pi
                           << " chunk " << c << std::endl;
-                close(fdXp); close(fdRaw); close(fdErwt); return 1;
+                io_close(fdXp); io_close(fdRaw); io_close(fdErwt); return 1;
             }
 
             uint64_t globalChunkIdx = static_cast<uint64_t>(pi) * chunksPerPlane + c;
@@ -291,26 +291,26 @@ static int runSidecar(const std::string& rawPath, const std::string& erwtPath,
             if (pwrite(fdXp, compWorkspace[c].data(), cs,
                        s.index[globalChunkIdx].chunk_offset) != cs) {
                 perror("write chunk");
-                close(fdXp); close(fdRaw); close(fdErwt); return 1;
+                io_close(fdXp); io_close(fdRaw); io_close(fdErwt); return 1;
             }
         }
     }
     std::cout << "\r  plane " << planeCount << "/" << planeCount << " (100%)" << std::endl;
 
-    close(fdRaw);
+    io_close(fdRaw);
 
     // Write index at end
     uint64_t indexOffset = s.dataOffset + s.totalStorageBytes;
     ssize_t idxBytes = static_cast<ssize_t>(totalChunks * sizeof(XPChunkIndex));
     if (pwrite(fdXp, s.index.data(), idxBytes, indexOffset) != idxBytes) {
-        perror("write index"); close(fdXp); close(fdErwt); return 1;
+        perror("write index"); io_close(fdXp); io_close(fdErwt); return 1;
     }
 
     // Patch header
     xpHdr.index_offset = indexOffset;
     xpHdr.total_storage_bytes = s.totalStorageBytes;
     if (pwrite(fdXp, &xpHdr, sizeof(xpHdr), 0) != sizeof(xpHdr)) {
-        perror("patch sidecar header"); close(fdXp); close(fdErwt); return 1;
+        perror("patch sidecar header"); io_close(fdXp); io_close(fdErwt); return 1;
     }
 
     // Update main ERWT3D header
@@ -320,8 +320,8 @@ static int runSidecar(const std::string& rawPath, const std::string& erwtPath,
         std::cerr << "Warning: failed to update main header" << std::endl;
     }
 
-    close(fdXp);
-    close(fdErwt);
+    io_close(fdXp);
+    io_close(fdErwt);
 
     double finalRatio = static_cast<double>(mainBytes + s.totalStorageBytes) / rawBytes;
     std::cout << "Done. Sidecar: " << s.totalStorageBytes / (1024 * 1024) << " MB compressed"
@@ -343,13 +343,13 @@ static int runLegacy(const std::string& rawPath, const std::string& erwtPath,
     std::cout << "  Planes: " << planeCount << " x " << totalPlaneBytes / planeCount / (1024*1024) << " MB"
               << " = " << totalPlaneBytes / (1024*1024) << " MB" << std::endl;
 
-    int fdRaw = open(rawPath.c_str(), O_RDONLY);
+    int fdRaw = io_open(rawPath.c_str(), O_RDONLY);
     if (fdRaw < 0) { perror("open raw"); return 1; }
 
-    int fdErwt = open(erwtPath.c_str(), O_RDWR);
-    if (fdErwt < 0) { perror("open erwt3d"); close(fdRaw); return 1; }
+    int fdErwt = io_open(erwtPath.c_str(), O_RDWR);
+    if (fdErwt < 0) { perror("open erwt3d"); io_close(fdRaw); return 1; }
 
-    struct stat st;
+    struct _stat64 st;
     fstat(fdErwt, &st);
     uint64_t xPlaneOffset = st.st_size;
 
@@ -373,7 +373,7 @@ static int runLegacy(const std::string& rawPath, const std::string& erwtPath,
         ssize_t rd = pread(fdRaw, rawPlane.data(), planeBytes, planeOff);
         if (rd != static_cast<ssize_t>(planeBytes)) {
             std::cerr << "\nError reading raw X-plane at x=" << x << std::endl;
-            close(fdRaw); close(fdErwt);
+            io_close(fdRaw); io_close(fdErwt);
             return 1;
         }
         const float* src = reinterpret_cast<const float*>(rawPlane.data());
@@ -387,7 +387,7 @@ static int runLegacy(const std::string& rawPath, const std::string& erwtPath,
         ssize_t wr = pwrite(fdErwt, plane.data(), planeBytes, off);
         if (wr != static_cast<ssize_t>(planeBytes)) {
             std::cerr << "\nError writing plane " << pi << std::endl;
-            close(fdRaw); close(fdErwt);
+            io_close(fdRaw); io_close(fdErwt);
             return 1;
         }
 
@@ -397,7 +397,7 @@ static int runLegacy(const std::string& rawPath, const std::string& erwtPath,
         }
     }
     std::cout << "\r  plane " << planeCount << "/" << planeCount << " (100%)" << std::endl;
-    close(fdRaw);
+    io_close(fdRaw);
 
     header.flags |= (1ULL << 3);
     header.reserved[16] = xPlaneOffset;
@@ -407,7 +407,7 @@ static int runLegacy(const std::string& rawPath, const std::string& erwtPath,
         std::cerr << "Error updating header" << std::endl;
     }
 
-    close(fdErwt);
+    io_close(fdErwt);
     std::cout << "Done. X-plane offset: " << xPlaneOffset
               << " (" << totalPlaneBytes / (1024*1024) << " MB stored)" << std::endl;
     return 0;

@@ -6,7 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
-#include <unistd.h>
+#include "erwt3d/platform_io.hpp"
 
 namespace {
 
@@ -73,7 +73,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    int fd = open(opt.raw_path.c_str(), O_RDONLY);
+    int fd = io_open(opt.raw_path.c_str(), O_RDONLY);
     if (fd < 0) {
         std::cerr << "Error: cannot open raw file: " << opt.raw_path << std::endl;
         return 1;
@@ -94,10 +94,10 @@ int main(int argc, char* argv[]) {
     erwt3d::RzfpAutoPlanResult result;
     if (!erwt3d::runRzfpAutoPlan(fd, opt.nx, opt.ny, opt.nz, cfg, result)) {
         std::cerr << "Error: auto plan failed" << std::endl;
-        close(fd);
+        io_close(fd);
         return 1;
     }
-    close(fd);
+    io_close(fd);
 
     const std::string json = result.toJson();
     if (!opt.output_plan.empty()) {

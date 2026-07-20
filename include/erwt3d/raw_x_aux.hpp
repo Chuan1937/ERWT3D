@@ -1,14 +1,14 @@
 #pragma once
 
 #include "format.hpp"
+#include <algorithm>
 #include <cstdint>
 #include <cerrno>
 #include <cmath>
 #include <cstring>
-#include <fcntl.h>
+#include "erwt3d/platform_io.hpp"
 #include <limits>
 #include <string>
-#include <unistd.h>
 #include <vector>
 
 namespace erwt3d {
@@ -108,7 +108,7 @@ inline bool readFullyAt(int fd, void* buffer, uint64_t bytes, uint64_t offset) {
     uint64_t done = 0;
     while (done < bytes) {
         size_t remaining = static_cast<size_t>(std::min<uint64_t>(bytes - done, static_cast<uint64_t>(SIZE_MAX)));
-        ssize_t n = pread(fd, dst + done, remaining, static_cast<off_t>(offset + done));
+        ssize_t n = pread(fd, dst + done, remaining, static_cast<int64_t>(offset + done));
         if (n == 0) return false;
         if (n < 0) {
             if (errno == EINTR) continue;
@@ -124,7 +124,7 @@ inline bool writeFullyAt(int fd, const void* buffer, uint64_t bytes, uint64_t of
     uint64_t done = 0;
     while (done < bytes) {
         size_t remaining = static_cast<size_t>(std::min<uint64_t>(bytes - done, static_cast<uint64_t>(SIZE_MAX)));
-        ssize_t n = pwrite(fd, src + done, remaining, static_cast<off_t>(offset + done));
+        ssize_t n = pwrite(fd, src + done, remaining, static_cast<int64_t>(offset + done));
         if (n < 0) {
             if (errno == EINTR) continue;
             return false;
@@ -150,7 +150,7 @@ public:
     bool valid() const noexcept { return fd_ >= 0; }
     int release() noexcept { int r = fd_; fd_ = -1; return r; }
     void reset(int newFd = -1) noexcept {
-        if (fd_ >= 0) close(fd_);
+        if (fd_ >= 0) io_close(fd_);
         fd_ = newFd;
     }
 private:
@@ -168,7 +168,7 @@ public:
     bool rollback() noexcept {
         if (fd_ < 0) return false;
         bool ok = true;
-        if (ftruncate(fd_, static_cast<off_t>(originalSize_)) != 0) ok = false;
+        if (ftruncate(fd_, static_cast<int64_t>(originalSize_)) != 0) ok = false;
         if (fsync(fd_) != 0) ok = false;
         return ok;
     }
@@ -190,7 +190,7 @@ public:
     bool rollback() noexcept {
         if (fd_ < 0) return false;
         bool ok = true;
-        if (ftruncate(fd_, static_cast<off_t>(originalSize_)) != 0) ok = false;
+        if (ftruncate(fd_, static_cast<int64_t>(originalSize_)) != 0) ok = false;
         if (!writeFullyAt(fd_, &originalHeader_, sizeof(originalHeader_), 0)) ok = false;
         if (fsync(fd_) != 0) ok = false;
         return ok;

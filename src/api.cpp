@@ -10,9 +10,8 @@
 #include <sstream>
 #include <filesystem>
 #include <sys/stat.h>
-#include <sys/mman.h>
 #include <fcntl.h>
-#include <unistd.h>
+#include "erwt3d/platform_io.hpp"
 
 namespace erwt3d {
 
@@ -191,12 +190,12 @@ ContestResult benchmarkContest(const BenchConfig& cfg) {
 
     // 存储比例
     uint64_t rawBytes = getRawSize(header);
-    struct stat st;
+    struct _stat64 st;
     if (stat(cfg.input.c_str(), &st) == 0) {
         uint64_t fileBytes = st.st_size;
         if (hasXPSidecar(header)) {
             std::string xpPath = cfg.input + ".xp";
-            struct stat xpStat;
+            struct _stat64 xpStat;
             if (stat(xpPath.c_str(), &xpStat) == 0) fileBytes += xpStat.st_size;
         }
         result.storageRatio = static_cast<double>(fileBytes) / rawBytes;
@@ -229,26 +228,26 @@ bool verify(const std::string& rawPath, const std::string& erwt3dPath,
     std::cout << "Verifying " << erwt3dPath << " against " << rawPath << std::endl;
 
     // 打开文件
-    int rawFd = open(rawPath.c_str(), O_RDONLY);
-    int erwt3dFd = open(erwt3dPath.c_str(), O_RDONLY);
+    int rawFd = io_open(rawPath.c_str(), O_RDONLY);
+    int erwt3dFd = io_open(erwt3dPath.c_str(), O_RDONLY);
     if (rawFd < 0 || erwt3dFd < 0) {
         std::cerr << "Cannot open files" << std::endl;
-        if (rawFd >= 0) close(rawFd);
-        if (erwt3dFd >= 0) close(erwt3dFd);
+        if (rawFd >= 0) io_close(rawFd);
+        if (erwt3dFd >= 0) io_close(erwt3dFd);
         return false;
     }
 
     // 读取 header
     ERWT3DHeader header;
-    if (read(erwt3dFd, &header, sizeof(header)) != sizeof(header)) {
-        close(rawFd); close(erwt3dFd);
+    if (io_read(erwt3dFd, &header, sizeof(header)) != sizeof(header)) {
+        io_close(rawFd); io_close(erwt3dFd);
         return false;
     }
 
     // 构建 reader
     ERWT3DReader reader(erwt3dPath);
     if (!reader.getHeader().nx) {
-        close(rawFd); close(erwt3dFd);
+        io_close(rawFd); io_close(erwt3dFd);
         return false;
     }
 
@@ -261,14 +260,14 @@ bool verify(const std::string& rawPath, const std::string& erwt3dPath,
     uint64_t rawSize = nx * ny * nz * sizeof(float);
 
     // mmap 原始文件
-    struct stat st;
+    struct _stat64 st;
     fstat(rawFd, &st);
     const float* rawData = static_cast<const float*>(
         mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE, rawFd, 0));
 
     if (rawData == MAP_FAILED) {
         std::cerr << "mmap failed" << std::endl;
-        close(rawFd); close(erwt3dFd);
+        io_close(rawFd); io_close(erwt3dFd);
         return false;
     }
 
@@ -297,8 +296,8 @@ bool verify(const std::string& rawPath, const std::string& erwt3dPath,
     }
 
     munmap(const_cast<float*>(rawData), st.st_size);
-    close(rawFd);
-    close(erwt3dFd);
+    io_close(rawFd);
+    io_close(erwt3dFd);
 
     std::cout << "  Samples:      " << samples << std::endl;
     std::cout << "  Max abs err:  " << std::scientific << maxAbsErr << std::endl;

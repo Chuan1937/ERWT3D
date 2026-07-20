@@ -38,8 +38,15 @@ if(ERWT3D_ENABLE_RZFP)
 endif()
 
 # lz4 for compression
-find_library(LZ4_LIBRARY lz4)
-find_path(LZ4_INCLUDE_DIR lz4.h)
+if(WIN32)
+    set(LZ4_SEARCH_LIB "${CMAKE_SOURCE_DIR}/deps/lz4-build/Release")
+    set(LZ4_SEARCH_INC "${CMAKE_SOURCE_DIR}/deps/lz4-src/lib")
+    find_library(LZ4_LIBRARY NAMES lz4 PATHS ${LZ4_SEARCH_LIB} NO_DEFAULT_PATH)
+    find_path(LZ4_INCLUDE_DIR NAMES lz4.h PATHS ${LZ4_SEARCH_INC} NO_DEFAULT_PATH)
+else()
+    find_library(LZ4_LIBRARY lz4)
+    find_path(LZ4_INCLUDE_DIR lz4.h)
+endif()
 if(LZ4_LIBRARY AND LZ4_INCLUDE_DIR)
     message(STATUS "Found lz4: ${LZ4_LIBRARY}")
     set(HAVE_LZ4 TRUE)
@@ -68,6 +75,15 @@ if(ERWT3D_NATIVE_OPT)
     message(STATUS "Native optimization enabled (Release only): -O3 -march=native -mtune=native")
 else()
     message(STATUS "Portable x86-64 build enabled; ERWT3D_NATIVE_OPT=OFF")
+endif()
+
+# Windows-specific settings
+if(WIN32)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)
+    add_compile_options(/EHsc /W3 /utf-8)
+    if(MSVC)
+        add_compile_options(/O2 /fp:fast)
+    endif()
 endif()
 
 # Library sources
@@ -144,12 +160,16 @@ add_executable(erwt3d_bench_line tools/erwt3d_bench_line.cpp)
 target_link_libraries(erwt3d_bench_line PRIVATE erwt3d)
 
 add_executable(gen_test_data tools/gen_test_data.cpp)
+target_include_directories(gen_test_data PRIVATE include)
 
 add_executable(gen_fast_data tools/gen_fast_data.cpp)
+target_include_directories(gen_fast_data PRIVATE include)
 
 add_executable(erwt3d_bench_raw tools/erwt3d_bench_raw.cpp)
+target_include_directories(erwt3d_bench_raw PRIVATE include)
 
 add_executable(erwt3d_layout_sim tools/erwt3d_layout_sim.cpp)
+target_include_directories(erwt3d_layout_sim PRIVATE include)
 
 add_executable(erwt3d_bench_contest tools/erwt3d_bench_contest.cpp)
 target_link_libraries(erwt3d_bench_contest PRIVATE erwt3d)
@@ -162,6 +182,7 @@ target_link_libraries(example_api PRIVATE erwt3d)
 
 # sw4-style single entry point
 add_executable(erwt3d_cli tools/erwt3d_main.cpp)
+target_include_directories(erwt3d_cli PRIVATE include)
 set_target_properties(erwt3d_cli PROPERTIES OUTPUT_NAME erwt3d)
 
 # RZFP tools and tests

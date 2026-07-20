@@ -18,7 +18,7 @@
 #include <limits>
 #include <memory>
 #include <sys/stat.h>
-#include <unistd.h>
+#include "erwt3d/platform_io.hpp"
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -76,7 +76,7 @@ static uint64_t physicalSuperblockId(const RzfpFileHeader& rh, uint64_t logical_
     );
 }
 
-static uint64_t combineFileIdentity(const struct stat& st, uint64_t fileSize) {
+static uint64_t combineFileIdentity(const struct _stat64& st, uint64_t fileSize) {
     uint64_t h = static_cast<uint64_t>(st.st_dev);
     h ^= static_cast<uint64_t>(st.st_ino) +
          0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
@@ -467,8 +467,8 @@ static StrategyDecision buildAdaptiveDecision(
                 if (config.adaptive.cache_policy != CachePolicy::WarmAllowed) {
                     (void)posix_fadvise(
                         fd,
-                        static_cast<off_t>(payloadStart),
-                        static_cast<off_t>(probeBytes),
+                        static_cast<int64_t>(payloadStart),
+                        static_cast<int64_t>(probeBytes),
                         POSIX_FADV_DONTNEED
                     );
                 }
@@ -506,8 +506,8 @@ static StrategyDecision buildAdaptiveDecision(
                 if (config.adaptive.cache_policy != CachePolicy::WarmAllowed) {
                     (void)posix_fadvise(
                         fd,
-                        static_cast<off_t>(payloadStart),
-                        static_cast<off_t>(probeBytes),
+                        static_cast<int64_t>(payloadStart),
+                        static_cast<int64_t>(probeBytes),
                         POSIX_FADV_DONTNEED
                     );
                 }
@@ -1024,12 +1024,12 @@ static bool magicMatches(const char* a, const char* b) {
 
 RzfpReader::RzfpReader(const std::string& path)
     : path_(path), fd_(-1) {
-    fd_ = open(path.c_str(), O_RDONLY);
+    fd_ = io_open(path.c_str(), O_RDONLY);
     if (fd_ < 0) return;
 
-    struct stat st{};
+    struct _stat64 st{};
     if (fstat(fd_, &st) != 0) {
-        close(fd_);
+        io_close(fd_);
         fd_ = -1;
         return;
     }
@@ -1038,13 +1038,13 @@ RzfpReader::RzfpReader(const std::string& path)
     file_identity_ = combineFileIdentity(st, file_size_);
 
     if (!readFullyAt(fd_, &header_, sizeof(header_), 0)) {
-        close(fd_);
+        io_close(fd_);
         fd_ = -1;
         return;
     }
 
     if (!validateRzfpHeader(header_)) {
-        close(fd_);
+        io_close(fd_);
         fd_ = -1;
         return;
     }
@@ -1058,21 +1058,21 @@ RzfpReader::RzfpReader(const std::string& path)
 
     if (sizeof(RzfpFileHeader) > file_size_ ||
         indexBytes > file_size_ - sizeof(RzfpFileHeader)) {
-        close(fd_);
+        io_close(fd_);
         fd_ = -1;
         return;
     }
     if (header_.descriptor_offset <
             sizeof(RzfpFileHeader) + indexBytes ||
         descriptorBytes > file_size_ - header_.descriptor_offset) {
-        close(fd_);
+        io_close(fd_);
         fd_ = -1;
         return;
     }
     if (header_.payload_offset <
             header_.descriptor_offset + descriptorBytes ||
         header_.payload_offset > file_size_) {
-        close(fd_);
+        io_close(fd_);
         fd_ = -1;
         return;
     }
@@ -1083,7 +1083,7 @@ RzfpReader::RzfpReader(const std::string& path)
             sb_index_.data(),
             indexBytes,
             sizeof(RzfpFileHeader))) {
-        close(fd_);
+        io_close(fd_);
         fd_ = -1;
         return;
     }
@@ -1094,7 +1094,7 @@ RzfpReader::RzfpReader(const std::string& path)
             descriptors_.data(),
             descriptorBytes,
             header_.descriptor_offset)) {
-        close(fd_);
+        io_close(fd_);
         fd_ = -1;
         return;
     }
@@ -1104,7 +1104,7 @@ RzfpReader::RzfpReader(const std::string& path)
         if (index.payload_offset < header_.payload_offset ||
             index.payload_offset > file_size_ ||
             index.payload_bytes > file_size_ - index.payload_offset) {
-            close(fd_);
+            io_close(fd_);
             fd_ = -1;
             return;
         }
@@ -1113,7 +1113,7 @@ RzfpReader::RzfpReader(const std::string& path)
     for (uint64_t i = 0; i < totalLeaves; ++i) {
         if (static_cast<uint8_t>(
                 descriptorCodec(descriptors_[i])) > 5) {
-            close(fd_);
+            io_close(fd_);
             fd_ = -1;
             return;
         }
@@ -1131,7 +1131,7 @@ RzfpReader::RzfpReader(const std::string& path)
             sumSizes += descriptorSize(descriptors_[leafIndex]);
         }
         if (sumSizes != sb_index_[sb].payload_bytes) {
-            close(fd_);
+            io_close(fd_);
             fd_ = -1;
             return;
         }
@@ -1143,9 +1143,9 @@ RzfpReader::RzfpReader(const std::string& path)
 }
 
 RzfpReader::~RzfpReader() {
-    if (rawXAuxFd_ >= 0) close(rawXAuxFd_);
-    if (fd_ >= 0) close(fd_);
-    if (xplane_fd_ >= 0) close(xplane_fd_);
+    if (rawXAuxFd_ >= 0) io_close(rawXAuxFd_);
+    if (fd_ >= 0) io_close(fd_);
+    if (xplane_fd_ >= 0) io_close(xplane_fd_);
 }
 
 const DeviceProfile& RzfpReader::ensureDeviceProfile(
@@ -1178,8 +1178,8 @@ bool RzfpReader::dropPayloadCache() {
     if (start >= end) return false;
     return posix_fadvise(
         fd_,
-        static_cast<off_t>(start),
-        static_cast<off_t>(end - start),
+        static_cast<int64_t>(start),
+        static_cast<int64_t>(end - start),
         POSIX_FADV_DONTNEED
     ) == 0;
 }
@@ -1218,7 +1218,7 @@ void RzfpReader::initRawXAux_() {
 
     rawXAuxOffset_ = region.offset;
     rawXAuxPlaneBytes_ = region.plane_bytes;
-    rawXAuxFd_ = open(path_.c_str(), O_RDONLY);
+    rawXAuxFd_ = io_open(path_.c_str(), O_RDONLY);
     if (rawXAuxFd_ < 0) return;
     rawXAuxAvailable_ = true;
 }
@@ -1251,8 +1251,8 @@ bool RzfpReader::tryReadSliceRawXAux_(
 
     (void)posix_fadvise(
         rawXAuxFd_,
-        static_cast<off_t>(offset),
-        static_cast<off_t>(planeBytes),
+        static_cast<int64_t>(offset),
+        static_cast<int64_t>(planeBytes),
         POSIX_FADV_DONTNEED
     );
     return true;
@@ -1342,8 +1342,8 @@ bool RzfpReader::tryReadBatchRawXAux_(
 
         (void)posix_fadvise(
             rawXAuxFd_,
-            static_cast<off_t>(windowStart),
-            static_cast<off_t>(windowSize),
+            static_cast<int64_t>(windowStart),
+            static_cast<int64_t>(windowSize),
             POSIX_FADV_DONTNEED
         );
         i = j;
@@ -1356,12 +1356,12 @@ bool RzfpReader::tryReadBatchRawXAux_(
 
 bool RzfpReader::openXPlaneSidecar() {
     const std::string sidecarPath = path_ + ".xp";
-    const int fd = open(sidecarPath.c_str(), O_RDONLY);
+    const int fd = io_open(sidecarPath.c_str(), O_RDONLY);
     if (fd < 0) return false;
 
     XPlaneHeader sidecarHeader{};
     if (!readFullyAt(fd, &sidecarHeader, sizeof(sidecarHeader), 0)) {
-        close(fd);
+        io_close(fd);
         return false;
     }
 
@@ -1373,7 +1373,7 @@ bool RzfpReader::openXPlaneSidecar() {
         sidecarHeader.nx != header_.nx ||
         sidecarHeader.ny != header_.ny ||
         sidecarHeader.nz != header_.nz) {
-        close(fd);
+        io_close(fd);
         return false;
     }
 
@@ -1387,11 +1387,11 @@ bool RzfpReader::openXPlaneSidecar() {
             entries.data(),
             indexBytes,
             sizeof(XPlaneHeader))) {
-        close(fd);
+        io_close(fd);
         return false;
     }
 
-    struct stat st{};
+    struct _stat64 st{};
     uint64_t sidecarSize = 0;
     if (fstat(fd, &st) == 0) {
         sidecarSize = static_cast<uint64_t>(st.st_size);
@@ -1403,7 +1403,7 @@ bool RzfpReader::openXPlaneSidecar() {
             if (entry.size == 0 || entry.size > 512ULL * MiB ||
                 entry.offset > sidecarSize ||
                 entry.size > sidecarSize - entry.offset) {
-                close(fd);
+                io_close(fd);
                 return false;
             }
         }

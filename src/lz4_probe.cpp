@@ -11,7 +11,7 @@
 #include <fcntl.h>
 #include <future>
 #include <iostream>
-#include <unistd.h>
+#include "erwt3d/platform_io.hpp"
 #include <vector>
 
 #ifdef ERWT3D_HAVE_LZ4
@@ -88,7 +88,7 @@ Lz4ProbeResult probeLz4Compression(const std::string& raw_path,
     using Clock = std::chrono::steady_clock;
     auto t0 = Clock::now();
 
-    int fd = open(raw_path.c_str(), O_RDONLY);
+    int fd = io_open(raw_path.c_str(), O_RDONLY);
     if (fd < 0) {
         result.skipped = true;
         result.skip_reason = "cannot open raw file";
@@ -134,7 +134,7 @@ Lz4ProbeResult probeLz4Compression(const std::string& raw_path,
         if (!readFullyAt(fd, slab.data(), readX * yzBytes, xStart * yzBytes)) {
             result.skipped = true;
             result.skip_reason = "read error at x=" + std::to_string(xStart);
-            close(fd);
+            io_close(fd);
             return result;
         }
 
@@ -195,7 +195,7 @@ Lz4ProbeResult probeLz4Compression(const std::string& raw_path,
     }
 
     pool.waitAll();
-    close(fd);
+    io_close(fd);
 
     if (superblockCount == 0) {
         result.skipped = true;

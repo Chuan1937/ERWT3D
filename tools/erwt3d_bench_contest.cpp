@@ -13,8 +13,7 @@
 #include <thread>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <unistd.h>
-#include <sys/mman.h>
+#include "erwt3d/platform_io.hpp"
 
 static void printUsage(const char* prog) {
     std::cerr << "Usage: " << prog << " --input data.erwt3d --output-dir DIR [options]\n\n"
@@ -91,14 +90,14 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
     std::vector<int> preCreatedFDs(indices.size(), -1);
     for (size_t i = 0; i < indices.size(); ++i) {
         std::string outPath = outputDir + "/" + axisName + "_" + mode + "_" + std::to_string(i) + ".raw";
-        int fd = open(outPath.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
+        int fd = io_open(outPath.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
         if (fd < 0) {
             std::cerr << "\nError: Cannot pre-create " << outPath << "\n";
             return false;
         }
-        if (ftruncate(fd, static_cast<off_t>(outBytes)) != 0) {
+        if (ftruncate(fd, static_cast<int64_t>(outBytes)) != 0) {
             std::cerr << "\nError: Cannot pre-allocate " << outPath << "\n";
-            close(fd);
+            io_close(fd);
             return false;
         }
         preCreatedFDs[i] = fd;
@@ -138,7 +137,7 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
             auto rStart = std::chrono::high_resolution_clock::now();
             if (!reader.readSlicesBatch(reqs, numThreads, memoryLimitMB, wcfg)) {
                 std::cerr << "\nError: batch read failed for " << axisName << "\n";
-                for (auto fd : preCreatedFDs) if (fd >= 0) close(fd);
+                for (auto fd : preCreatedFDs) if (fd >= 0) io_close(fd);
                 return false;
             }
             auto rEnd = std::chrono::high_resolution_clock::now();
@@ -150,7 +149,7 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
                 auto wEnd = std::chrono::high_resolution_clock::now();
                 if (written != static_cast<ssize_t>(outBytes)) {
                     std::cerr << "\nError: Write failed for " << axisName << "[" << (batchStart+i) << "]\n";
-                    for (auto fd : preCreatedFDs) if (fd >= 0) close(fd);
+                    for (auto fd : preCreatedFDs) if (fd >= 0) io_close(fd);
                     return false;
                 }
                 double t = std::chrono::duration<double, std::milli>(wEnd - wStart).count();
@@ -168,7 +167,7 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
             auto rStart = std::chrono::high_resolution_clock::now();
             if (!reader.readSlice(axis, indices[i], output.data(), numThreads, memoryLimitMB)) {
                 std::cerr << "\nError: readSlice failed for " << axisName << "[" << indices[i] << "]\n";
-                for (auto fd : preCreatedFDs) if (fd >= 0) close(fd);
+                for (auto fd : preCreatedFDs) if (fd >= 0) io_close(fd);
                 return false;
             }
             auto rEnd = std::chrono::high_resolution_clock::now();
@@ -179,7 +178,7 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
             auto wEnd = std::chrono::high_resolution_clock::now();
             if (written != static_cast<ssize_t>(outBytes)) {
                 std::cerr << "\nError: Write failed for " << axisName << "[" << i << "]\n";
-                for (auto fd : preCreatedFDs) if (fd >= 0) close(fd);
+                for (auto fd : preCreatedFDs) if (fd >= 0) io_close(fd);
                 return false;
             }
             double t = std::chrono::duration<double, std::milli>(wEnd - wStart).count();
@@ -195,7 +194,7 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
 
     // Close all pre-created file descriptors (after timing)
     for (auto fd : preCreatedFDs) {
-        if (fd >= 0) close(fd);
+        if (fd >= 0) io_close(fd);
     }
 
     return true;
@@ -291,12 +290,12 @@ int main(int argc, char* argv[]) {
 
     // Storage check
     uint64_t rawBytes = erwt3d::getRawSize(header);
-    struct stat fileStat;
+    struct _stat64 fileStat;
     uint64_t fileBytes = 0;
     if (stat(inputPath.c_str(), &fileStat) == 0) fileBytes = fileStat.st_size;
     if (erwt3d::hasXPSidecar(header)) {
         std::string xpPath = inputPath + ".xp";
-        struct stat xpStat;
+        struct _stat64 xpStat;
         if (stat(xpPath.c_str(), &xpStat) == 0) fileBytes += xpStat.st_size;
     }
     double storageRatio = static_cast<double>(fileBytes) / rawBytes;

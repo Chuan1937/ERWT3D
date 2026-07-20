@@ -10,10 +10,7 @@
 #include <vector>
 #include <cstring>
 #include <chrono>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/stat.h>
-#include <sys/mman.h>
+#include "erwt3d/platform_io.hpp"
 #include <unordered_map>
 
 #ifdef ERWT3D_HAVE_LZ4
@@ -26,7 +23,7 @@ namespace {
 
 inline void adviseSequential(int fd, uint64_t offset = 0, uint64_t bytes = 0) {
 #if defined(POSIX_FADV_SEQUENTIAL)
-    posix_fadvise(fd, static_cast<off_t>(offset), static_cast<off_t>(bytes), POSIX_FADV_SEQUENTIAL);
+    posix_fadvise(fd, static_cast<int64_t>(offset), static_cast<int64_t>(bytes), POSIX_FADV_SEQUENTIAL);
 #else
     (void)fd;
     (void)offset;
@@ -36,7 +33,7 @@ inline void adviseSequential(int fd, uint64_t offset = 0, uint64_t bytes = 0) {
 
 inline void adviseWillNeed(int fd, uint64_t offset, uint64_t bytes) {
 #if defined(POSIX_FADV_WILLNEED)
-    posix_fadvise(fd, static_cast<off_t>(offset), static_cast<off_t>(bytes), POSIX_FADV_WILLNEED);
+    posix_fadvise(fd, static_cast<int64_t>(offset), static_cast<int64_t>(bytes), POSIX_FADV_WILLNEED);
 #else
     (void)fd;
     (void)offset;
@@ -48,17 +45,17 @@ inline void adviseWillNeed(int fd, uint64_t offset, uint64_t bytes) {
 
 ERWT3DReader::ERWT3DReader(const std::string& path, size_t cacheMB, bool useMmap)
     : path_(path), fd_(-1), cacheMB_(cacheMB), useMmap_(useMmap) {
-    fd_ = open(path.c_str(), O_RDONLY);
+    fd_ = io_open(path.c_str(), O_RDONLY);
     if (fd_ < 0) return;
 
-    if (read(fd_, &header_, sizeof(header_)) != sizeof(header_)) {
-        close(fd_);
+    if (io_read(fd_, &header_, sizeof(header_)) != sizeof(header_)) {
+        io_close(fd_);
         fd_ = -1;
         return;
     }
 
     if (!validateHeader(header_)) {
-        close(fd_);
+        io_close(fd_);
         fd_ = -1;
         return;
     }
@@ -87,7 +84,7 @@ ERWT3DReader::ERWT3DReader(const std::string& path, size_t cacheMB, bool useMmap
     }
 
     if (useMmap_) {
-        struct stat st;
+        struct _stat64 st;
         if (fstat(fd_, &st) == 0) {
             mmapSize_ = st.st_size;
             mmapData_ = mmap(nullptr, mmapSize_, PROT_READ, MAP_PRIVATE, fd_, 0);
@@ -112,13 +109,13 @@ ERWT3DReader::~ERWT3DReader() {
         munmap(mmapData_, mmapSize_);
     }
     if (rawXAuxFd_ >= 0) {
-        close(rawXAuxFd_);
+        io_close(rawXAuxFd_);
     }
     if (fd_ >= 0) {
-        close(fd_);
+        io_close(fd_);
     }
     if (xpFd_ >= 0) {
-        close(xpFd_);
+        io_close(xpFd_);
     }
 }
 
@@ -521,11 +518,11 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
     size_t maxBuf = memoryLimitMB * 1024 * 1024;
     if (superBytes + leafBytes > maxBuf) return false;
     
-    int outFd = open(outputPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int outFd = io_open(outputPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (outFd < 0) return false;
     
     uint64_t rawSize = nx * ny * nz * sizeof(float);
-    if (ftruncate(outFd, rawSize) != 0) { close(outFd); return false; }
+    if (ftruncate(outFd, rawSize) != 0) { io_close(outFd); return false; }
     
     // mmap output file for scatter writes without pwrite overhead
     float* outMap = static_cast<float*>(mmap(nullptr, rawSize, PROT_WRITE, MAP_SHARED, outFd, 0));
@@ -537,7 +534,7 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
                 for (uint64_t sxi = 0; sxi < getSuperGridX(header_); ++sxi) {
                     uint64_t superIdx = (szi * getSuperGridY(header_) + syi) * getSuperGridX(header_) + sxi;
                     ssize_t rd = pread(fd_, superBuffer.data(), superBytes, header_.data_offset + superIdx * superBytes);
-                    if (rd != static_cast<ssize_t>(superBytes)) { close(outFd); return false; }
+                    if (rd != static_cast<ssize_t>(superBytes)) { io_close(outFd); return false; }
                     uint64_t startX = sxi * sx, startY = syi * sy, startZ = szi * sz;
                     for (uint64_t lzi = 0; lzi < leafsPerSuperZ; ++lzi) {
                         for (uint64_t lyi = 0; lyi < leafsPerSuperY; ++lyi) {
@@ -564,7 +561,7 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
                 }
             }
         }
-        close(outFd);
+        io_close(outFd);
         return true;
     }
     
@@ -578,7 +575,7 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
                 uint64_t superIdx = (szi * getSuperGridY(header_) + syi) * getSuperGridX(header_) + sxi;
                 
                 if (!readSuperblock(superIdx, superBuffer.data())) {
-                    munmap(outMap, rawSize); close(outFd); return false;
+                    munmap(outMap, rawSize); io_close(outFd); return false;
                 }
                 
                 uint64_t startX = sxi * sx, startY = syi * sy, startZ = szi * sz;
@@ -616,7 +613,7 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
     
     msync(outMap, rawSize, MS_ASYNC);
     munmap(outMap, rawSize);
-    if (close(outFd) != 0) return false;
+    if (io_close(outFd) != 0) return false;
     return true;
 }
 
@@ -631,7 +628,7 @@ void ERWT3DReader::initRawXAux_() {
     region.plane_bytes = getRawXAuxPlaneBytes(header_);
     region.version = getRawXAuxVersion(header_);
 
-    struct stat st;
+    struct _stat64 st;
     if (fstat(fd_, &st) != 0) return;
     uint64_t fileSize = static_cast<uint64_t>(st.st_size);
 
@@ -679,7 +676,7 @@ void ERWT3DReader::initRawXAux_() {
     rawXAuxPlaneBytes_ = region.plane_bytes;
 
     int flags = O_RDONLY;
-    rawXAuxFd_ = open(path_.c_str(), flags);
+    rawXAuxFd_ = io_open(path_.c_str(), flags);
     if (rawXAuxFd_ < 0) return;
 
     rawXAuxAvailable_ = true;
@@ -694,8 +691,8 @@ bool ERWT3DReader::tryReadSliceRawXAux_(uint64_t x, float* output) {
     if (!readFullyAt(rawXAuxFd_, output, planeBytes, offset))
         return false;
 
-    posix_fadvise(rawXAuxFd_, static_cast<off_t>(offset),
-                  static_cast<off_t>(planeBytes), POSIX_FADV_DONTNEED);
+    posix_fadvise(rawXAuxFd_, static_cast<int64_t>(offset),
+                  static_cast<int64_t>(planeBytes), POSIX_FADV_DONTNEED);
 
     return true;
 }
@@ -768,8 +765,8 @@ bool ERWT3DReader::tryReadBatchRawXAux_(
                 handled[tasks[k].req_idx] = true;
             }
 
-        posix_fadvise(rawXAuxFd_, static_cast<off_t>(wstart),
-                      static_cast<off_t>(wsize), POSIX_FADV_DONTNEED);
+        posix_fadvise(rawXAuxFd_, static_cast<int64_t>(wstart),
+                      static_cast<int64_t>(wsize), POSIX_FADV_DONTNEED);
 
         i = j;
     }
@@ -781,26 +778,26 @@ bool ERWT3DReader::tryReadBatchRawXAux_(
 
 void ERWT3DReader::loadSidecar_() {
     std::string xpPath = path_ + ".xp";
-    xpFd_ = open(xpPath.c_str(), O_RDONLY);
+    xpFd_ = io_open(xpPath.c_str(), O_RDONLY);
     if (xpFd_ < 0) return;
 
     if (pread(xpFd_, &xpHeader_, sizeof(xpHeader_), 0) != sizeof(xpHeader_)) {
-        close(xpFd_); xpFd_ = -1; return;
+        io_close(xpFd_); xpFd_ = -1; return;
     }
     if (std::memcmp(xpHeader_.magic, XPSIDECAR_MAGIC, 8) != 0 ||
         xpHeader_.version != XPSIDECAR_VERSION ||
         xpHeader_.nx != header_.nx || xpHeader_.ny != header_.ny ||
         xpHeader_.nz != header_.nz) {
-        close(xpFd_); xpFd_ = -1; return;
+        io_close(xpFd_); xpFd_ = -1; return;
     }
 
     uint64_t idxBytes = xpHeader_.total_chunks * sizeof(XPChunkIndex);
     if (idxBytes == 0) {
-        close(xpFd_); xpFd_ = -1; return;
+        io_close(xpFd_); xpFd_ = -1; return;
     }
     xpIndex_.resize(xpHeader_.total_chunks);
     if (pread(xpFd_, xpIndex_.data(), idxBytes, xpHeader_.index_offset) != static_cast<ssize_t>(idxBytes)) {
-        close(xpFd_); xpFd_ = -1; return;
+        io_close(xpFd_); xpFd_ = -1; return;
     }
     xpAvailable_ = true;
 }
@@ -1305,7 +1302,7 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
             // Prefetch next window
             if (sj < sortedSBs.size()) {
                 uint64_t next_start = sortedSBs[sj]->compressed_offset;
-                readahead(fd_, static_cast<off_t>(next_start),
+                readahead(fd_, static_cast<int64_t>(next_start),
                           static_cast<size_t>(128ULL * 1024 * 1024));
             }
 

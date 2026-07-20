@@ -11,10 +11,7 @@
 #include <chrono>
 #include <iomanip>
 #include <memory>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
+#include "erwt3d/platform_io.hpp"
 #include <future>
 
 #ifdef ERWT3D_HAVE_LZ4
@@ -172,7 +169,7 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
     uint64_t sgX=getSuperGridX(header), sgY=getSuperGridY(header), sgZ=getSuperGridZ(header);
     uint64_t totalSB=sgX*sgY*sgZ, sbBytes=getSuperblockBytes(header);
 
-    int inFd = open(inputPath.c_str(), O_RDONLY);
+    int inFd = io_open(inputPath.c_str(), O_RDONLY);
     if (inFd < 0) {
         std::cerr << "Error: Cannot open input file: " << inputPath << std::endl;
         return false;
@@ -180,7 +177,7 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
 
     std::ofstream outFile(outputPath, std::ios::binary);
     if (!outFile) {
-        close(inFd);
+        io_close(inFd);
         std::cerr << "Error: Cannot create output file: " << outputPath << std::endl;
         return false;
     }
@@ -218,7 +215,7 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
                   << "Use --compress without --panel-stride for parallel compression, "
                   << "or use erwt3d_precompute_x --mode sidecar for external X-plane acceleration."
                   << std::endl;
-        close(inFd);
+        io_close(inFd);
         outFile.close();
         unlink(outputPath.c_str());
         return false;
@@ -251,7 +248,7 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
                   << "Required at least " << (requiredBytes / (1024 * 1024) + 1)
                   << " MB for one X-slab (" << slabX << " planes) + superblock + compression buffer."
                   << std::endl;
-        close(inFd);
+        io_close(inFd);
         return false;
     }
     uint64_t usableSlabX = std::min<uint64_t>(slabX, nx);
@@ -286,7 +283,7 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
                           xStart * yzBytes);
         if (n != static_cast<ssize_t>(slabReadBytes)) {
             std::cerr << "Error reading X-slab at x=" << xStart << std::endl;
-            close(inFd);
+            io_close(inFd);
             return false;
         }
 
@@ -457,7 +454,7 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
         }
     }
 
-    close(inFd);
+    io_close(inFd);
     std::cout << std::endl;
 
     if (doPanels) {
@@ -654,7 +651,7 @@ bool appendRawXAuxToFile(const std::string& erwt3dPath,
                          RawXAuxStats* stats, bool forceEdge) {
     if (stats) *stats = RawXAuxStats{};
 
-    ScopedFd erwt3dFd(open(erwt3dPath.c_str(), O_RDWR));
+    ScopedFd erwt3dFd(io_open(erwt3dPath.c_str(), O_RDWR));
     if (!erwt3dFd.valid()) {
         std::cerr << "Error: Cannot open ERWT3D file for raw X aux append: " << erwt3dPath << std::endl;
         setRawXAuxFailure(stats, "cannot open output file");
@@ -680,7 +677,7 @@ bool appendRawXAuxToFile(const std::string& erwt3dPath,
         return true;
     }
 
-    struct stat st;
+    struct _stat64 st;
     if (fstat(erwt3dFd.get(), &st) != 0) {
         std::cerr << "Error: cannot stat " << erwt3dPath << std::endl;
         setRawXAuxFailure(stats, "stat failed");
@@ -688,14 +685,14 @@ bool appendRawXAuxToFile(const std::string& erwt3dPath,
     }
     const uint64_t mainFileBytes = static_cast<uint64_t>(st.st_size);
 
-    ScopedFd rawFd(open(rawPath.c_str(), O_RDONLY));
+    ScopedFd rawFd(io_open(rawPath.c_str(), O_RDONLY));
     if (!rawFd.valid()) {
         std::cerr << "Error: Cannot open raw file: " << rawPath << std::endl;
         setRawXAuxFailure(stats, "cannot open raw file");
         return false;
     }
 
-    struct stat rawSt;
+    struct _stat64 rawSt;
     if (fstat(rawFd.get(), &rawSt) != 0) {
         std::cerr << "Error: cannot stat raw file" << std::endl;
         setRawXAuxFailure(stats, "raw file stat failed");
@@ -765,11 +762,11 @@ bool appendRawXAuxToFile(const std::string& erwt3dPath,
         }
     }
 
-    posix_fadvise(rawFd.get(), 0, static_cast<off_t>(rawBytes), POSIX_FADV_SEQUENTIAL);
-    posix_fadvise(rawFd.get(), 0, static_cast<off_t>(rawBytes), POSIX_FADV_WILLNEED);
+    posix_fadvise(rawFd.get(), 0, static_cast<int64_t>(rawBytes), POSIX_FADV_SEQUENTIAL);
+    posix_fadvise(rawFd.get(), 0, static_cast<int64_t>(rawBytes), POSIX_FADV_WILLNEED);
 
-    if (posix_fallocate(erwt3dFd.get(), static_cast<off_t>(alignedOffset),
-                        static_cast<off_t>(rawAuxBytes)) != 0) {
+    if (posix_fallocate(erwt3dFd.get(), static_cast<int64_t>(alignedOffset),
+                        static_cast<int64_t>(rawAuxBytes)) != 0) {
         std::cerr << "Warning: posix_fallocate failed, using sequential write" << std::endl;
     }
 

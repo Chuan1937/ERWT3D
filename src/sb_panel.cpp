@@ -14,7 +14,7 @@
 #include "erwt3d/thread_pool.hpp"
 #include <algorithm>
 #include <vector>
-#include <unistd.h>
+#include "erwt3d/platform_io.hpp"
 #include <fcntl.h>
 
 namespace erwt3d {

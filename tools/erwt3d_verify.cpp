@@ -11,7 +11,7 @@
 #include <random>
 #include <vector>
 #include <fcntl.h>
-#include <unistd.h>
+#include "erwt3d/platform_io.hpp"
 
 #ifdef ERWT3D_HAVE_LZ4
 #include <lz4.h>
@@ -96,7 +96,7 @@ bool compareRawVsErwt3d(const VerifyOptions& opt, VerifyStats& stats) {
         std::cout << "Comparing raw file with ERWT3D..." << std::endl;
         std::cout << "Using streaming sampling mode (" << opt.numSamples << " samples)" << std::endl;
 
-        int rawFd = open(opt.rawPath.c_str(), O_RDONLY);
+        int rawFd = io_open(opt.rawPath.c_str(), O_RDONLY);
         if (rawFd < 0) {
             std::cerr << "Error: Cannot open raw file" << std::endl;
             return false;
@@ -109,10 +109,10 @@ bool compareRawVsErwt3d(const VerifyOptions& opt, VerifyStats& stats) {
         uint64_t gridX = erwt3d::getSuperGridX(hdr);
         uint64_t gridY = erwt3d::getSuperGridY(hdr);
 
-        int erwt3dFd = open(opt.erwt3dPath.c_str(), O_RDONLY);
+        int erwt3dFd = io_open(opt.erwt3dPath.c_str(), O_RDONLY);
         if (erwt3dFd < 0) {
             std::cerr << "Error: Cannot open ERWT3D file" << std::endl;
-            close(rawFd);
+            io_close(rawFd);
             return false;
         }
 
@@ -175,8 +175,8 @@ bool compareRawVsErwt3d(const VerifyOptions& opt, VerifyStats& stats) {
                     if (pread(erwt3dFd, compBuf.data(), entry.compressed_size, entry.file_offset) !=
                         static_cast<ssize_t>(entry.compressed_size)) {
                         std::cerr << "Error: failed to read compressed block " << sbIdx << std::endl;
-                        close(erwt3dFd);
-                        close(rawFd);
+                        io_close(erwt3dFd);
+                        io_close(rawFd);
                         return false;
                     }
                     if (LZ4_decompress_safe(
@@ -185,29 +185,29 @@ bool compareRawVsErwt3d(const VerifyOptions& opt, VerifyStats& stats) {
                             entry.compressed_size,
                             superBytes) != static_cast<int>(superBytes)) {
                         std::cerr << "Error: failed to decompress block " << sbIdx << std::endl;
-                        close(erwt3dFd);
-                        close(rawFd);
+                        io_close(erwt3dFd);
+                        io_close(rawFd);
                         return false;
                     }
 #else
                     std::cerr << "Error: lz4 not available" << std::endl;
-                    close(erwt3dFd);
-                    close(rawFd);
+                    io_close(erwt3dFd);
+                    io_close(rawFd);
                     return false;
 #endif
                 } else if (pread(erwt3dFd, sbBuf.data(), superBytes, entry.file_offset) !=
                            static_cast<ssize_t>(superBytes)) {
                     std::cerr << "Error: failed to read block " << sbIdx << std::endl;
-                    close(erwt3dFd);
-                    close(rawFd);
+                    io_close(erwt3dFd);
+                    io_close(rawFd);
                     return false;
                 }
             } else {
                 uint64_t sbOff = hdr.data_offset + sbIdx * superBytes;
                 if (pread(erwt3dFd, sbBuf.data(), superBytes, sbOff) != static_cast<ssize_t>(superBytes)) {
                     std::cerr << "Error: failed to read superblock " << sbIdx << std::endl;
-                    close(erwt3dFd);
-                    close(rawFd);
+                    io_close(erwt3dFd);
+                    io_close(rawFd);
                     return false;
                 }
             }
@@ -216,8 +216,8 @@ bool compareRawVsErwt3d(const VerifyOptions& opt, VerifyStats& stats) {
                 float rawVal = 0.0f;
                 if (pread(rawFd, &rawVal, sizeof(float), linIdx * sizeof(float)) != sizeof(float)) {
                     std::cerr << "Error: failed to read raw index " << linIdx << std::endl;
-                    close(erwt3dFd);
-                    close(rawFd);
+                    io_close(erwt3dFd);
+                    io_close(rawFd);
                     return false;
                 }
                 float erwt3dVal = *reinterpret_cast<const float*>(sbBuf.data() + byteOffSb);
@@ -225,8 +225,8 @@ bool compareRawVsErwt3d(const VerifyOptions& opt, VerifyStats& stats) {
             }
         }
 
-        close(erwt3dFd);
-        close(rawFd);
+        io_close(erwt3dFd);
+        io_close(rawFd);
         return true;
     }
 
