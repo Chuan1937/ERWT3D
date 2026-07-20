@@ -8,7 +8,87 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 存储得分：≤1.5x → 20分，每超10% → 扣1分
 ```
 
-## 最新结果（v0.6.0，Z-fastest 布局修正）
+## 最新结果（v0.7.0，P5 Round-Level Joint Planning）
+
+`erwt3d_contest` 入口，`--threads 8`，`--seed 20260511`，stable-auto。
+
+测试环境：i9-10850K（8C/16T）、62 GiB RAM、0 swap、G 盘 HDD via WSL2 9p、GCC 15.2.1、CMake 3.31、HEAD `edd6f2a`。
+
+### 50GB RZFP + Raw X Aux（1.421x）
+
+| 配置 | 内存 | 窗口 | T_composite | RSS | vs AUTO |
+|------|------|------|-------------|-----|---------|
+| AUTO | 27 GiB | 512 MB | **39.95s** | 30.4 GiB | baseline |
+| M28 | 28 GiB | 512 MB | 40.70s | 30.4 GiB | +1.9% |
+| M24 | 24 GiB | 512 MB | 40.30s | 30.4 GiB | +0.9% |
+| **M8** ★ | **8 GiB** | **128 MB** | **41.37s** | **13.7 GiB** | **+3.6%** |
+| M16 | 16 GiB | 256 MB | 42.20s | 22.1 GiB | +5.6% |
+| M4 | 4 GiB | 64 MB | 56.67s | 8.4 GiB | +42% |
+| M2 | 2 GiB | 64 MB | 88.30s | 4.4 GiB | +121% |
+
+### 稳定性（stable-auto x5）
+
+| 配置 | mean | median | min | max | CV |
+|------|------|--------|-----|-----|-----|
+| AUTO | 40.01s | 39.98s | 39.82s | 40.32s | 0.5% |
+| M8 | 41.34s | 41.33s | 41.21s | 41.47s | 0.3% |
+
+### cold-round x3
+
+| 配置 | mean |
+|------|------|
+| AUTO | 40.27s |
+| M8 | 41.68s |
+
+### 20GB RZFP + X-plane sidecar（1.036x）
+
+| 配置 | 内存 | T_composite | RSS |
+|------|------|-------------|-----|
+| AUTO | 17 GiB | **16.79s** | 17.8 GiB |
+| **M4** ★ | **4 GiB** | **17.25s** | **8.7 GiB** |
+| M2 | 2 GiB | 50.44s | 4.7 GiB |
+
+### P4 vs P5（50GB M8, stable-auto）
+
+| 模式 | mean |
+|------|------|
+| P4 (p4-groups) | 42.36s |
+| P5 (p5-round) | 41.83s ¹ |
+
+¹ P5 round 2 outlier 45.4s excluded (disk activity)。
+
+### 同盘/异盘（50GB M8）
+
+| 模式 | mean |
+|------|------|
+| 同盘 (G→G) | 41.60s |
+| 异盘 (G→WSL) | **37.69s** |
+| 差异 | **-9.4%** |
+
+### 推荐参赛配置
+
+|  | 50GB | 20GB |
+|---|------|------|
+| 推荐 | M8 (8 GiB, 128 MB) | M4 (4 GiB) |
+| T_composite | 41.37s | 17.25s |
+| RSS | 13.7 GiB | 8.7 GiB |
+| vs 最快 | +3.6% | +2.7% |
+| 绝对最快 | AUTO (27 GiB) 39.95s | AUTO (17 GiB) 16.79s |
+| 低内存 | M2 (2 GiB) 88.30s | M2 (2 GiB) 50.44s |
+
+### 关键验证
+
+| 条件 | 结果 |
+|------|------|
+| 21/21 CTest | ✅ |
+| 2GB 不崩溃 | ✅ |
+| decode errors | 0 |
+| AUTO vs M8 hash | 一致 |
+| 输出文件 | 330/330 |
+| 存储 ≤ 1.50 | ✅ 50GB 1.421x, 20GB 1.036x |
+| 5 轮 CV | ≤ 0.5% |
+
+## 历史结果（v0.6.0，Z-fastest 布局修正）
 
 测试环境：G 盘 HDD，~200-220 MB/s 顺序带宽，4GB 内存限制。
 
