@@ -85,7 +85,51 @@
 
 ## 40GB 测试
 
-(待测)
+### 数据信息
+
+| 项目 | 值 |
+|------|------|
+| 文件 | `/mnt/g/erwt3d_bench/data_40g.dat` |
+| Raw大小 | 42,889,264,572 字节 (39.94 GiB) |
+| ERWT3D大小 | 33,559,211,781 字节 (31.26 GiB) |
+| Nx | 1857 |
+| Ny | 2057 |
+| Nz | 2807 |
+| 切片大小 | X: 2057×2807×4=23.1MB, Y: 1857×2807×4=20.8MB, Z: 1857×2057×4=15.3MB |
+| 形状比 | 1 : 1.11 : 1.51 |
+| 存储比 | 0.782x (**LZ4压缩有效**) |
+| 压缩率 | 0.728x (启用LZ4) |
+
+### 转换
+
+- 命令：`erwt3d_convert --input data_40g.dat --output data_40g.erwt3d --nx 1857 --ny 2057 --nz 2807 --threads 16 --memory-limit-mb 40960 --compress --raw-x-aux auto`
+- 压缩率0.728x，LZ4压缩有效
+- 29800/43560 blocks compressed
+- 在K盘转换后移动到G盘
+
+### 验证
+
+- `erwt3d_verify --raw data_40g.dat --erwt3d data_40g.erwt3d --nx 1857 --ny 2057 --nz 2807 --samples 10000`
+- max_abs_error: 0, max_rel_error: 0, num_failed: 0, **passed: true**
+
+### 性能测试
+
+| 配置 | 内存 | T_composite | X random | Y random | Z random | X cont | Y cont | Z cont |
+|------|------|-------------|----------|----------|----------|--------|--------|--------|
+| M4 | 4 GiB | **136.61s** | 601.76s | 111.56s | 92.54s | 3.47s | 7.52s | 2.79s |
+| M8 | 8 GiB | **53.74s** | 109.09s | 107.96s | 91.22s | 3.37s | 7.89s | 2.89s |
+| M12 | 12 GiB | **54.21s** | 109.77s | 107.05s | 93.66s | 3.48s | 8.30s | 3.02s |
+| AUTO(55G) | 55 GiB | **55.76s** | 114.25s | 110.91s | 95.22s | 3.37s | 7.90s | 2.88s |
+
+### 40GB 分析
+
+- **M4灾难性X random（601s）**：4GB内存不足以容纳LZ4解压batch，X切片需要逐个解压整个superblock链
+- M8起X random恢复正常（109s），M8/M12/AUTO差异很小
+- **关键发现**：LZ4压缩数据在低内存下X切片性能断崖式下降（6x）
+- M8是最优性价比：53.74s，比M12和AUTO还略快
+- AUTO反而比M8慢2s，可能是大内存导致更多page cache竞争
+- 推荐配置：**M8 (8GiB)** — LZ4压缩数据最低安全内存
+- 存储比0.782x → 20/20分
 
 ## 30GB 测试
 
