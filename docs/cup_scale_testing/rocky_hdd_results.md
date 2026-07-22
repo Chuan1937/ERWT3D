@@ -74,21 +74,98 @@ FUSE vmhgfs-fuse 下 Device 探测存在两个问题：
 
 ## 10GB 测试结果 (1185×1289×1751, RZFP 0.588x)
 
-> 待冷缓存重测
+### 冷缓存（每组前 drop_caches）
+
+| 配置 | 内存限制 | Window Cache | IO Buffer | T_composite | Read time | Write time |
+|------|---------|-------------|-----------|-------------|-----------|------------|
+| AUTO | 12057 MiB | 5913 MiB | 1024 MiB | **31.404s** | 185.160s | 3.265s |
+| M2 | 2048 MiB | 754 MiB | 256 MiB | 10.257s | 58.345s | 3.195s |
+| M4 | 4096 MiB | 2435 MiB | 512 MiB | 9.467s | 53.613s | 3.188s |
+| M8 | 8192 MiB | 5913 MiB | 1024 MiB | **9.283s** | 52.436s | 3.259s |
+| M16 | 16384 MiB | 5913 MiB | 1024 MiB | 9.269s | 52.280s | 3.335s |
+| M32 | 32768 MiB | 5913 MiB | 1024 MiB | 9.350s | 52.917s | 3.186s |
+
+### 分析
+
+- **AUTO 冷缓存严重退化**：T_composite=31.4s，Read time=185s，是手动模式的 3.4 倍
+- M4~M32 性能接近（9.3~9.5s），M2 略慢（10.3s）
+- M8 最快（9.283s），M4~M32 差异在 HDD 波动范围内
+- 10GB RZFP 约 6GB，M4（window cache 2435 MiB）已足够
+- **推荐：M4~M8**（9.3~9.5s），避免 AUTO
+
+### 内存使用
+
+- AUTO: 实际使用 ~12 GiB（但冷缓存下性能差）
+- M4: 实际使用 ~4 GiB，性能最优
+- M2: 实际使用 ~2 GiB，性能损失 ~10%
 
 ## 20GB 测试结果 (1493×1621×2218, RZFP 0.588x)
 
-> 待冷缓存重测
+### 冷缓存（每组前 drop_caches）
 
-## 50GB 测试结果
+| 配置 | 内存限制 | Window Cache | IO Buffer | T_composite | Read time | Write time |
+|------|---------|-------------|-----------|-------------|-----------|------------|
+| AUTO | 18006 MiB | 11862 MiB | 1024 MiB | **61.600s** | 363.596s | 6.002s |
+| M2 | 2048 MiB | 763 MiB | 256 MiB | 19.259s | 109.910s | 5.644s |
+| M4 | 4096 MiB | 1924 MiB | 512 MiB | 16.481s | 92.842s | 6.044s |
+| M8 | 8192 MiB | 5508 MiB | 1024 MiB | 15.110s | 85.388s | 5.271s |
+| M16 | 16384 MiB | 11862 MiB | 1024 MiB | **15.100s** | 85.367s | 5.233s |
+| M32 | 32768 MiB | 11862 MiB | 1024 MiB | 15.055s | 84.893s | 5.436s |
 
-> 待测试（需先生成 RZFP 文件）
+### 分析
+
+- **AUTO 冷缓存严重退化**：T_composite=61.6s，Read time=364s，是手动模式的 4 倍
+- M8~M32 性能接近（15.0~15.1s），M4 略慢（16.5s），M2 明显慢（19.3s）
+- 20GB RZFP 约 12GB，M8（window cache 5508 MiB）开始够用
+- M2 window cache 仅 763 MiB，远不够缓存 12GB 数据，Read time 110s
+- **推荐：M8~M16**（15.1s），M2 不可用
+
+### 内存使用
+
+- AUTO: 实际使用 ~18 GiB（但冷缓存下性能差）
+- M8: 实际使用 ~8 GiB，性能最优
+- M4: 实际使用 ~4 GiB，慢 9%
+- M2: 实际使用 ~2 GiB，慢 28%
+
+## 50GB 测试结果 (2001×2201×3000, RZFP 1.008x with raw-x-aux)
+
+### 冷缓存（每组前 drop_caches）
+
+| 配置 | 内存限制 | Window Cache | IO Buffer | T_composite | Read time | Write time |
+|------|---------|-------------|-----------|-------------|-----------|------------|
+| AUTO | 6144 MiB | 0 MiB | 768 MiB | **19.677s** | 108.067s | 9.995s |
+| M2 | 2048 MiB | 0 MiB | 256 MiB | **10.337s** | 52.065s | 9.957s |
+| M4 | 4096 MiB | 0 MiB | 512 MiB | 11.481s | 59.691s | 9.196s |
+| M8 | 8192 MiB | 0 MiB | 1024 MiB | 11.319s | 58.717s | 9.195s |
+| M16 | 16384 MiB | 0 MiB | 1024 MiB | 11.324s | 58.730s | 9.215s |
+| M32 | 32768 MiB | 0 MiB | 1024 MiB | 11.480s | 59.078s | 9.802s |
+
+### 分析
+
+- **所有配置 window cache = 0 MiB**：50GB RZFP 数据几乎全是 zero leaves（215610200/215613440），payload 仅 829KB，所以 window cache 无意义
+- **M2 最快**（10.337s）：IO buffer 最小（256 MiB），每次读少，HDD 顺序读效率高
+- **M4~M32 性能接近**（11.3~11.5s）：IO buffer 512~1024 MiB，差异在 HDD 波动范围内
+- **AUTO 又退化**（19.677s）：MemAvailable 在清缓存后偏低（buff/cache 被清），auto reserve 计算 导致内存预算过小，window cache=0 + IO buffer=768MiB
+- 50GB 规模下 Write time 固定 ~9.5s，是 Read time 的 ~17%
+- **推荐：M2**（10.3s），因为 window cache 无用，IO buffer 越小 HDD 越顺序
+
+### 数据特征
+
+- raw 50GB，RZFP payload 仅 829KB（数据几乎全零）
+- raw-x-aux 50GB（追加），总存储比 1.008x
+- 这是 gen_fast_data 生成的数据，**不是真实赛题数据**，压缩率不具代表性
+
+### 内存使用
+
+- M2: 实际使用 ~2 GiB，性能最优
+- AUTO: 实际使用 ~6 GiB，但性能差（冷缓存下 auto 预算不足）
 
 ## 关键发现
 
 1. **Device 探测对比赛不利**：FUSE 下不稳定 + 耗时 2~3s，直接用 preset 更优
 2. **冷缓存是比赛真实成绩**：热缓存测试结果不可复现，必须每组前清 page cache
-3. **存储比全部达标**：0.588x~0.589x，远低于 1.5x 上限（存储满分 20 分）
-4. **HDD I/O 是根本瓶颈**：同配置多次运行 T_composite 波动 ±1~2s
-5. **小数据集内存不是瓶颈**：5GB 下 M2~M32 性能差距 <6%
-6. **比赛计时含全部开销**：进程启动、内存分配、I/O 读取、解码、写出，都不能忽略
+3. **AUTO 冷缓存退化**：10GB/20GB/50GB 下 AUTO 冷缓存均比手动慢 2~4 倍，原因是 `drop_caches` 后 MemAvailable 偏低，auto 预算计算不足
+4. **存储比**：5/10/20GB RZFP 0.588x（达标），50GB RZFP+raw-x-aux 1.008x（达标，≤1.5x）
+5. **HDD I/O 是根本瓶颈**：同配置多次运行 T_composite 波动 ±1~2s
+6. **内存对性能影响**：5GB 无影响，10GB M4 起够，20GB M8 起够，50GB M2 就够（因为数据几乎全零）
+7. **50GB 测试数据不具代表性**：gen_fast_data 生成数据几乎全零，RZFP 压缩后仅 829KB payload，真实赛题数据应压缩率更低
