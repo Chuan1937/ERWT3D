@@ -83,8 +83,8 @@ void testAutomaticMemoryBudget() {
 
     CHECK(budget.valid);
     CHECK(budget.automatic);
-    CHECK(budget.total_bytes <= 32ULL * GiB);
-    CHECK(budget.total_bytes <= available / 2);
+    CHECK(budget.total_bytes <= available);
+    CHECK(budget.total_bytes >= available * 7 / 10 - 4ULL * GiB);
     CHECK(budget.accountedBytes() <= budget.total_bytes);
     CHECK(budget.output_batch_size >= 1);
 }

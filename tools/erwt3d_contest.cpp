@@ -116,7 +116,6 @@ int main(int argc, char* argv[]) {
     int continuousCount = 10;
     int threads = 8;
     uint32_t seed = 20260511;
-
     std::string memoryLimit = "auto";
     uint64_t readWindowMb = 0;
 
@@ -153,14 +152,14 @@ int main(int argc, char* argv[]) {
                 << "  --random-count N       Random slices per axis (default: 100)\n"
                 << "  --continuous-count N   Continuous slices per axis (default: 10)\n"
                 << "  --threads N            Thread count (default: 8)\n"
-                << "  --memory-limit-mb auto|N    Memory limit MB (default: auto)\n"
-                << "  --read-window-mb N        Max read window MB (0=auto/512)\n"
+                << "  --memory-limit-mb auto|N    Memory limit MB (default: auto=70% MemAvailable)\n"
+                << "  --read-window-mb N          Max read window MB (0=auto, max 128, default: 0)\n"
                 << "  --seed N               Random seed (default: 20260511)\n\n"
-                << "Internal policy (fixed):\n"
-                << "  strategy = auto, cache = stable-auto, window cache = auto\n"
+                << "Fixed policy:\n"
+                << "  strategy = auto, cache = stable-auto\n"
                 << "  execution mode = p5-round (cross-group dedup)\n"
-                << "  no active cache drop, no hidden warm-up\n"
-                << "  explicit memory limits are enforced\n";
+                << "  IO buffer max 1 GiB, read window max 128 MiB\n"
+                << "  raw-x-aux = off, no .xp sidecar\n";
             return 0;
         } else {
             std::cerr << "Unknown option: " << argv[i] << "\n";
@@ -173,6 +172,8 @@ int main(int argc, char* argv[]) {
         std::cerr << "Error: invalid or missing required arguments\n";
         return 1;
     }
+
+    const auto e2eStart = Clock::now();
 
     if (!mkdirP(outputDir)) {
         std::cerr << "Error: cannot create output directory " << outputDir << "\n";
@@ -252,6 +253,22 @@ int main(int argc, char* argv[]) {
         {erwt3d::SliceAxis::Z, "z_continuous", &contZ},
     };
 
+    erwt3d::RzfpReaderConfig config;
+    config.strategy = erwt3d::RzfpReadStrategy::Auto;
+    config.decode_threads = threads;
+    config.window_cache = windowCache;
+    config.window_cache_file_identity = reader.fileIdentity();
+    config.use_window_cache = true;
+    config.adaptive.auto_calibrate_device = false;
+    config.adaptive.cache_policy = erwt3d::CachePolicy::StableAuto;
+    config.hdd.sequential_mb_s = 250.0;
+    config.hdd.seek_ms = 10.0;
+    config.hdd.read_window_bytes = readWindowMb > 0
+        ? std::min<uint64_t>(readWindowMb * MiB, 128ULL * MiB)
+        : std::min<uint64_t>(128ULL * MiB, budget.window_cache_bytes / 2 > 0
+            ? budget.window_cache_bytes / 2 : 64ULL * MiB);
+    config.hdd.max_gap_bytes = 8ULL * MiB;
+
     std::cout
         << "============================================================\n"
         << "  ERWT3D Contest Entry (正式入口)\n"
@@ -259,18 +276,24 @@ int main(int argc, char* argv[]) {
         << "  File:          " << inputPath << "\n"
         << "  Dims:          " << header.nx << " x "
         << header.ny << " x " << header.nz << "\n"
+        << "  Threads:       " << threads << "\n"
         << "  Device:        250.0 MB/s (preset)\n"
         << "  Memory mode:   " << (budget.automatic ? "AUTO" : "MANUAL") << "\n";
     if (budget.automatic) {
         std::cout
             << "  MemAvailable:  " << budget.auto_mem_available / MiB << " MiB\n"
+            << "  AUTO fraction: 70%\n"
+            << "  Memory hard limit: " << budget.total_bytes / MiB << " MiB\n"
             << "  Auto reserve:  " << budget.auto_reserve / MiB << " MiB\n";
+    } else {
+        std::cout
+            << "  Memory limit:  " << budget.total_bytes / MiB << " MiB\n";
     }
     std::cout
-        << "  Memory limit:  " << budget.total_bytes / MiB << " MiB\n"
         << "  Window cache:  " << budget.window_cache_bytes / MiB << " MiB\n"
         << "  Output batch:  " << budget.output_batch_size << " slices\n"
         << "  IO buffer:     " << budget.io_buffer_bytes / MiB << " MiB\n"
+        << "  Read window:   " << config.hdd.read_window_bytes / MiB << " MiB\n"
         << "  Reserve:       " << budget.reserve_bytes / MiB << " MiB\n"
         << "  Storage ratio: " << std::setprecision(3) << storageRatio << "x\n"
         << "============================================================\n\n";
@@ -284,22 +307,6 @@ int main(int argc, char* argv[]) {
         execGroups.push_back(eg);
     }
 
-    erwt3d::RzfpReaderConfig config;
-    config.strategy = erwt3d::RzfpReadStrategy::Auto;
-    config.decode_threads = threads;
-    config.window_cache = windowCache;
-    config.window_cache_file_identity = reader.fileIdentity();
-    config.use_window_cache = true;
-    config.adaptive.auto_calibrate_device = false;
-    config.adaptive.cache_policy = erwt3d::CachePolicy::StableAuto;
-    config.hdd.sequential_mb_s = 250.0;
-    config.hdd.seek_ms = 10.0;
-    config.hdd.read_window_bytes = readWindowMb > 0
-        ? readWindowMb * MiB
-        : std::min<uint64_t>(512ULL * MiB, budget.window_cache_bytes / 2 > 0
-            ? budget.window_cache_bytes / 2 : 128ULL * MiB);
-    config.hdd.max_gap_bytes = 8ULL * MiB;
-
     erwt3d::ContestExecutionProfile execProfile;
     if (!erwt3d::executeContestRound(
             reader, header, execGroups, outputDir, "contest",
@@ -308,16 +315,24 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    const double e2eMs = std::chrono::duration<double, std::milli>(Clock::now() - e2eStart).count();
     const double readMs = execProfile.read_time_ms;
     const double writeMs = execProfile.write_time_ms;
+    const double setupMs = execProfile.setup_time_ms;
+    const double prepareMs = execProfile.output_prepare_ms;
+    const double closeMs = execProfile.close_time_ms;
     const double totalMs = execProfile.total_time_ms;
     const double compositeMs = totalMs / static_cast<double>(groups.size());
 
     std::cout << std::fixed << std::setprecision(3);
-    std::cout << "Read time:   " << readMs / 1000.0 << " s\n";
-    std::cout << "Write time:  " << writeMs / 1000.0 << " s\n";
-    std::cout << "Total time:  " << totalMs / 1000.0 << " s\n";
-    std::cout << "T_composite: " << compositeMs / 1000.0 << " s\n";
+    std::cout << "Setup time:     " << setupMs / 1000.0 << " s\n";
+    std::cout << "Prepare time:   " << prepareMs / 1000.0 << " s\n";
+    std::cout << "Read time:      " << readMs / 1000.0 << " s\n";
+    std::cout << "Write time:     " << writeMs / 1000.0 << " s\n";
+    std::cout << "Close time:     " << closeMs / 1000.0 << " s\n";
+    std::cout << "Total (e2e):    " << totalMs / 1000.0 << " s\n";
+    std::cout << "T_composite:    " << compositeMs / 1000.0 << " s\n";
+    std::cout << "Process e2e:    " << e2eMs / 1000.0 << " s\n";
 
     // Write score CSV
     const std::string scorePath = outputDir + "/contest_score.csv";
@@ -327,10 +342,33 @@ int main(int argc, char* argv[]) {
             << "input_file," << inputPath << '\n'
             << "dimensions," << header.nx << 'x' << header.ny << 'x' << header.nz << '\n'
             << "storage_ratio," << storageRatio << '\n'
+            << "threads," << threads << '\n'
+            << "memory_mode," << (budget.automatic ? "AUTO" : "MANUAL") << '\n'
+            << "mem_available_mib," << budget.auto_mem_available / MiB << '\n'
+            << "memory_limit_mib," << budget.total_bytes / MiB << '\n'
+            << "window_cache_mib," << budget.window_cache_bytes / MiB << '\n'
+            << "output_batch," << budget.output_batch_size << '\n'
+            << "io_buffer_mib," << budget.io_buffer_bytes / MiB << '\n'
+            << "read_window_mib," << config.hdd.read_window_bytes / MiB << '\n'
+            << "reserve_mib," << budget.reserve_bytes / MiB << '\n'
+            << "setup_time_ms," << setupMs << '\n'
+            << "output_prepare_ms," << prepareMs << '\n'
             << "read_time_ms," << readMs << '\n'
             << "write_time_ms," << writeMs << '\n'
+            << "close_time_ms," << closeMs << '\n'
             << "total_time_ms," << totalMs << '\n'
-            << "T_composite_ms," << compositeMs << '\n';
+            << "T_composite_ms," << compositeMs << '\n'
+            << "process_e2e_ms," << e2eMs << '\n'
+            << "logical_leaf_requests," << execProfile.logical_leaf_requests << '\n'
+            << "duplicate_leaf_requests," << execProfile.duplicate_leaf_requests << '\n'
+            << "eliminated_record_bytes," << execProfile.eliminated_record_bytes << '\n'
+            << "actual_read_bytes," << execProfile.actual_read_bytes << '\n';
+        if (execProfile.selected_strategy != erwt3d::RzfpReadStrategy::Auto) {
+            out << "selected_strategy," << static_cast<int>(execProfile.selected_strategy) << '\n';
+        }
+        if (!execProfile.strategy_reason.empty()) {
+            out << "strategy_reason," << execProfile.strategy_reason << '\n';
+        }
     }
 
     std::cout << "\nScore written to " << scorePath << "\n";

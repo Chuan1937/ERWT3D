@@ -90,26 +90,23 @@ MemoryBudget makeMemoryBudget(
             return budget;
         }
 
-        const uint64_t reserve = std::max<uint64_t>(2ULL * GiB, memAvailable / 8);
-        const uint64_t safeProcessRss = memAvailable > reserve
-            ? memAvailable - reserve : memAvailable / 2;
+        const uint64_t autoLimit = static_cast<uint64_t>(
+            static_cast<long double>(memAvailable) * 0.70L
+        );
 
-        uint64_t payloadPlusWorkspace = 0;
-        if (!checkedAdd(payload_bytes, 6ULL * GiB, payloadPlusWorkspace)) {
-            payloadPlusWorkspace = std::numeric_limits<uint64_t>::max();
-        }
+        const uint64_t reserve = 4ULL * GiB;
+        const uint64_t safeLimit = memAvailable > reserve
+            ? std::min<uint64_t>(autoLimit, memAvailable - reserve)
+            : memAvailable / 2;
 
-        budget.total_bytes = std::min<uint64_t>({
-            safeProcessRss,
-            payloadPlusWorkspace
-        });
+        budget.total_bytes = safeLimit;
 
-        if (budget.total_bytes < 4ULL * GiB && safeProcessRss >= 4ULL * GiB) {
+        if (budget.total_bytes < 4ULL * GiB && memAvailable >= 4ULL * GiB) {
             budget.total_bytes = 4ULL * GiB;
         }
 
         budget.auto_mem_available = memAvailable;
-        budget.auto_reserve = reserve;
+        budget.auto_reserve = memAvailable - safeLimit;
     } else {
         if (!parseExplicitMiB(effectiveValue, budget.total_bytes)) {
             budget.error = "memory limit must be 'auto', '0', or a positive integer MiB value";

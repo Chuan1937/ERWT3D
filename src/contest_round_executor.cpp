@@ -274,7 +274,7 @@ bool executeContestRound(
         profile->read_time_ms = totalReadMs;
         profile->write_time_ms = totalWriteMs;
         profile->close_time_ms = closeMs;
-        profile->total_time_ms = totalReadMs + totalWriteMs;
+        profile->total_time_ms = wallMs;
         profile->wall_time_ms = wallMs;
         profile->all_outputs_deferred = phasePlan.all_outputs_deferred;
         profile->logical_leaf_requests = aggregateProfile.logical_leaf_requests;
