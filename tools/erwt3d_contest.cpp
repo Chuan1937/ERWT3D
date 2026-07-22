@@ -186,8 +186,6 @@ int main(int argc, char* argv[]) {
     }
     const auto& header = reader.header();
 
-    (void)reader.ensureDeviceProfile();
-
     uint64_t largestOutputBytes = 0;
     largestOutputBytes = std::max(largestOutputBytes, header.ny * header.nz * sizeof(float));
     largestOutputBytes = std::max(largestOutputBytes, header.nx * header.nz * sizeof(float));
@@ -261,8 +259,7 @@ int main(int argc, char* argv[]) {
         << "  File:          " << inputPath << "\n"
         << "  Dims:          " << header.nx << " x "
         << header.ny << " x " << header.nz << "\n"
-        << "  Device:        " << std::fixed << std::setprecision(1)
-        << reader.deviceProfile().sequential_mb_s << " MB/s\n"
+        << "  Device:        250.0 MB/s (preset)\n"
         << "  Memory mode:   " << (budget.automatic ? "AUTO" : "MANUAL") << "\n";
     if (budget.automatic) {
         std::cout
@@ -293,8 +290,10 @@ int main(int argc, char* argv[]) {
     config.window_cache = windowCache;
     config.window_cache_file_identity = reader.fileIdentity();
     config.use_window_cache = true;
-    config.adaptive.auto_calibrate_device = true;
+    config.adaptive.auto_calibrate_device = false;
     config.adaptive.cache_policy = erwt3d::CachePolicy::StableAuto;
+    config.hdd.sequential_mb_s = 250.0;
+    config.hdd.seek_ms = 10.0;
     config.hdd.read_window_bytes = readWindowMb > 0
         ? readWindowMb * MiB
         : std::min<uint64_t>(512ULL * MiB, budget.window_cache_bytes / 2 > 0
