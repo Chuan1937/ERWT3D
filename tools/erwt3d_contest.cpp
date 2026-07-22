@@ -1,6 +1,8 @@
+#include "erwt3d/reader.hpp"
 #include "erwt3d/rzfp_reader.hpp"
 #include "erwt3d/memory_budget.hpp"
 #include "erwt3d/window_cache.hpp"
+#include "erwt3d/format.hpp"
 #include "erwt3d/rzfp_format.hpp"
 #include "erwt3d/contest_round_executor.hpp"
 #include "erwt3d/raw_x_aux.hpp"
@@ -28,14 +30,25 @@ namespace {
 using Clock = std::chrono::steady_clock;
 constexpr uint64_t MiB = 1024ULL * 1024ULL;
 
-static uint64_t sliceElements(
-    const erwt3d::RzfpFileHeader& header,
-    erwt3d::SliceAxis axis
-) {
+enum class FileFormat { LZ4, RZFP, Unknown };
+
+static FileFormat detectFormat(const std::string& path) {
+    int fd = open(path.c_str(), O_RDONLY);
+    if (fd < 0) return FileFormat::Unknown;
+    char magic[8] = {};
+    ssize_t rd = pread(fd, magic, 8, 0);
+    close(fd);
+    if (rd < 8) return FileFormat::Unknown;
+    if (std::memcmp(magic, erwt3d::ERWT3D_MAGIC, 8) == 0) return FileFormat::LZ4;
+    if (std::memcmp(magic, erwt3d::RZFP_MAGIC, 8) == 0) return FileFormat::RZFP;
+    return FileFormat::Unknown;
+}
+
+static uint64_t sliceElem(uint64_t nx, uint64_t ny, uint64_t nz, erwt3d::SliceAxis axis) {
     switch (axis) {
-        case erwt3d::SliceAxis::X: return header.ny * header.nz;
-        case erwt3d::SliceAxis::Y: return header.nx * header.nz;
-        case erwt3d::SliceAxis::Z: return header.nx * header.ny;
+        case erwt3d::SliceAxis::X: return ny * nz;
+        case erwt3d::SliceAxis::Y: return nx * nz;
+        case erwt3d::SliceAxis::Z: return nx * ny;
     }
     return 0;
 }
@@ -65,46 +78,6 @@ static bool mkdirP(const std::string& path) {
         start = slash + 1;
     }
     return true;
-}
-
-static bool precreateOutputs(
-    const std::string& output_dir,
-    const std::string& prefix,
-    size_t count,
-    uint64_t bytes,
-    std::vector<int>& fds
-) {
-    fds.clear();
-    fds.resize(count, -1);
-    for (size_t i = 0; i < count; ++i) {
-        std::ostringstream oss;
-        oss << output_dir << "/" << prefix << "_" << i << ".raw";
-        const std::string path = oss.str();
-        int fd = open(
-            path.c_str(),
-            O_RDWR | O_CREAT | O_TRUNC,
-            0644
-        );
-        if (fd < 0) {
-            std::cerr << "Error: cannot create output " << path << "\n";
-            return false;
-        }
-        if (posix_fallocate(fd, 0, static_cast<off_t>(bytes)) != 0 &&
-            ftruncate(fd, static_cast<off_t>(bytes)) != 0) {
-            std::cerr << "Error: cannot preallocate output " << path << "\n";
-            close(fd);
-            return false;
-        }
-        fds[i] = fd;
-    }
-    return true;
-}
-
-static void closeOutputs(std::vector<int>& fds) {
-    for (int& fd : fds) {
-        if (fd >= 0) close(fd);
-        fd = -1;
-    }
 }
 
 } // namespace
@@ -145,21 +118,16 @@ int main(int argc, char* argv[]) {
             readWindowMb = std::stoull(next());
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             std::cerr
-                << "Usage: erwt3d_contest --input DATA.rzfp --output-dir DIR [options]\n\n"
+                << "Usage: erwt3d_contest --input DATA.erwt3d --output-dir DIR [options]\n\n"
                 << "Official competition entrypoint (赛题2 正式入口)\n\n"
-                << "  --input PATH           RZFP file (required)\n"
+                << "  --input PATH           ERWT3D file (LZ4 or RZFP, auto-detected)\n"
                 << "  --output-dir DIR       Output directory (required)\n"
                 << "  --random-count N       Random slices per axis (default: 100)\n"
                 << "  --continuous-count N   Continuous slices per axis (default: 10)\n"
                 << "  --threads N            Thread count (default: 8)\n"
                 << "  --memory-limit-mb auto|N    Memory limit MB (default: auto=70% MemAvailable)\n"
                 << "  --read-window-mb N          Max read window MB (0=auto, max 128, default: 0)\n"
-                << "  --seed N               Random seed (default: 20260511)\n\n"
-                << "Fixed policy:\n"
-                << "  strategy = auto, cache = stable-auto\n"
-                << "  execution mode = p5-round (cross-group dedup)\n"
-                << "  IO buffer max 1 GiB, read window max 128 MiB\n"
-                << "  raw-x-aux = off, no .xp sidecar\n";
+                << "  --seed N               Random seed (default: 20260511)\n";
             return 0;
         } else {
             std::cerr << "Unknown option: " << argv[i] << "\n";
@@ -180,6 +148,174 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    const FileFormat fmt = detectFormat(inputPath);
+    if (fmt == FileFormat::Unknown) {
+        std::cerr << "Error: cannot detect file format (not ERWT3D or RZFP)\n";
+        return 1;
+    }
+
+    const char* fmtName = (fmt == FileFormat::LZ4) ? "LZ4" : "RZFP";
+
+    if (fmt == FileFormat::LZ4) {
+        // ========== LZ4 path ==========
+        erwt3d::ERWT3DReader reader(inputPath);
+        const auto& header = reader.getHeader();
+
+        uint64_t nx = header.nx, ny = header.ny, nz = header.nz;
+        uint64_t rawBytes = erwt3d::getRawSize(header);
+
+        struct stat st{};
+        uint64_t fileBytes = 0;
+        if (stat(inputPath.c_str(), &st) == 0) fileBytes = st.st_size;
+        const std::string sidecarPath = inputPath + ".xp";
+        if (stat(sidecarPath.c_str(), &st) == 0) fileBytes += st.st_size;
+        double storageRatio = rawBytes > 0 ? static_cast<double>(fileBytes) / rawBytes : 0.0;
+
+        std::mt19937 rng(seed);
+        std::uniform_int_distribution<uint64_t> xDist(0, nx - 1);
+        std::uniform_int_distribution<uint64_t> yDist(0, ny - 1);
+        std::uniform_int_distribution<uint64_t> zDist(0, nz - 1);
+
+        std::vector<uint64_t> rndX(randomCount), rndY(randomCount), rndZ(randomCount);
+        for (int i = 0; i < randomCount; ++i) {
+            rndX[i] = xDist(rng); rndY[i] = yDist(rng); rndZ[i] = zDist(rng);
+        }
+
+        auto makeCont = [](uint64_t dim, int cnt) {
+            const int n = std::min<int>(cnt, static_cast<int>(dim));
+            std::vector<uint64_t> v(static_cast<size_t>(n));
+            const uint64_t start = static_cast<uint64_t>(n) >= dim ? 0 : dim / 2 - static_cast<uint64_t>(n) / 2;
+            for (int i = 0; i < n; ++i) v[i] = start + static_cast<uint64_t>(i);
+            return v;
+        };
+        const auto contX = makeCont(nx, continuousCount);
+        const auto contY = makeCont(ny, continuousCount);
+        const auto contZ = makeCont(nz, continuousCount);
+
+        struct GroupDef {
+            erwt3d::SliceAxis axis;
+            std::string name;
+            const std::vector<uint64_t>* indices;
+        };
+        const std::vector<GroupDef> groups = {
+            {erwt3d::SliceAxis::X, "x_random", &rndX},
+            {erwt3d::SliceAxis::Y, "y_random", &rndY},
+            {erwt3d::SliceAxis::Z, "z_random", &rndZ},
+            {erwt3d::SliceAxis::X, "x_continuous", &contX},
+            {erwt3d::SliceAxis::Y, "y_continuous", &contY},
+            {erwt3d::SliceAxis::Z, "z_continuous", &contZ},
+        };
+
+        size_t memoryLimitMB = 4096;
+        if (memoryLimit == "auto" || memoryLimit == "0") {
+            uint64_t memAvail = erwt3d::readLinuxMemAvailableBytes();
+            memoryLimitMB = memAvail > 4ULL * 1024 * 1024 * 1024
+                ? static_cast<size_t>(memAvail * 0.70 / (1024 * 1024))
+                : static_cast<size_t>(memAvail / 2 / (1024 * 1024));
+        } else {
+            memoryLimitMB = std::stoull(memoryLimit);
+        }
+
+        reader.setIOBackend(erwt3d::IOBackend::Superblock);
+        reader.setSBReadMode(erwt3d::SBReadMode::HDDReadWindow);
+        reader.setSBTaskOrder(erwt3d::SBTaskOrder::FileOffset);
+        reader.setHDDReadWindowConfig({
+            readWindowMb > 0 ? std::min<uint64_t>(readWindowMb * MiB, 128ULL * MiB) : 128ULL * MiB,
+            8ULL * MiB
+        });
+
+        std::cout
+            << "============================================================\n"
+            << "  ERWT3D Contest Entry (LZ4 path)\n"
+            << "============================================================\n"
+            << "  File:          " << inputPath << "\n"
+            << "  Dims:          " << nx << " x " << ny << " x " << nz << "\n"
+            << "  Format:        LZ4\n"
+            << "  Threads:       " << threads << "\n"
+            << "  Memory limit:  " << memoryLimitMB << " MiB\n"
+            << "  Storage ratio: " << std::setprecision(3) << storageRatio << "x\n"
+            << "============================================================\n\n";
+
+        double totalGroupMs = 0.0;
+        for (size_t g = 0; g < groups.size(); ++g) {
+            const auto& gd = groups[g];
+            uint64_t elem = sliceElem(nx, ny, nz, gd.axis);
+            uint64_t outBytes = elem * sizeof(float);
+
+            std::vector<int> fds(gd.indices->size(), -1);
+            for (size_t i = 0; i < gd.indices->size(); ++i) {
+                std::ostringstream oss;
+                oss << outputDir << "/contest_g" << g << "_" << gd.name << "_" << i << ".raw";
+                int fd = open(oss.str().c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
+                if (fd >= 0) {
+                    posix_fallocate(fd, 0, static_cast<off_t>(outBytes));
+                    fds[i] = fd;
+                }
+            }
+
+            auto gStart = Clock::now();
+
+            size_t batchSize = std::min<size_t>(
+                gd.indices->size(),
+                std::max<size_t>(1, static_cast<size_t>(memoryLimitMB) * 1024 * 1024 / (outBytes + 1) / 2)
+            );
+            for (size_t batchStart = 0; batchStart < gd.indices->size(); batchStart += batchSize) {
+                size_t batchEnd = std::min(batchStart + batchSize, gd.indices->size());
+                std::vector<erwt3d::ERWT3DReader::SliceBatchRequest> reqs;
+                std::vector<std::vector<float>> buffers(batchEnd - batchStart);
+                for (size_t i = batchStart; i < batchEnd; ++i) {
+                    buffers[i - batchStart].resize(elem);
+                    reqs.push_back({gd.axis, (*gd.indices)[i], buffers[i - batchStart].data()});
+                }
+                erwt3d::HDDReadWindowConfig wcfg{
+                    readWindowMb > 0 ? std::min<uint64_t>(readWindowMb * MiB, 128ULL * MiB) : 128ULL * MiB,
+                    8ULL * MiB
+                };
+                reader.readSlicesBatch(reqs, threads, memoryLimitMB, wcfg);
+
+                for (size_t i = batchStart; i < batchEnd; ++i) {
+                    if (fds[i] >= 0) {
+                        erwt3d::writeFullyAt(fds[i], buffers[i - batchStart].data(), outBytes, 0);
+                    }
+                }
+            }
+
+            double gMs = std::chrono::duration<double, std::milli>(Clock::now() - gStart).count();
+            totalGroupMs += gMs;
+
+            for (int fd : fds) if (fd >= 0) close(fd);
+
+            std::cerr << "  [" << (g+1) << "/6] " << gd.name
+                      << " " << std::fixed << std::setprecision(3) << gMs / 1000.0 << "s" << std::endl;
+        }
+
+        double compositeMs = totalGroupMs / static_cast<double>(groups.size());
+        double e2eMs = std::chrono::duration<double, std::milli>(Clock::now() - e2eStart).count();
+
+        std::cout << std::fixed << std::setprecision(3);
+        std::cout << "Total (e2e):    " << totalGroupMs / 1000.0 << " s\n";
+        std::cout << "T_composite:    " << compositeMs / 1000.0 << " s\n";
+        std::cout << "Process e2e:    " << e2eMs / 1000.0 << " s\n";
+
+        const std::string scorePath = outputDir + "/contest_score.csv";
+        {
+            std::ofstream out(scorePath);
+            out << "metric,value\n"
+                << "input_file," << inputPath << '\n'
+                << "format,LZ4\n"
+                << "dimensions," << nx << 'x' << ny << 'x' << nz << '\n'
+                << "storage_ratio," << storageRatio << '\n'
+                << "threads," << threads << '\n'
+                << "memory_limit_mib," << memoryLimitMB << '\n'
+                << "total_time_ms," << totalGroupMs << '\n'
+                << "T_composite_ms," << compositeMs << '\n'
+                << "process_e2e_ms," << e2eMs << '\n';
+        }
+        std::cout << "\nScore written to " << scorePath << "\n";
+        return 0;
+    }
+
+    // ========== RZFP path ==========
     erwt3d::RzfpReader reader(inputPath);
     if (!reader.ok()) {
         std::cerr << "Error: cannot open RZFP file " << inputPath << "\n";
@@ -271,11 +407,12 @@ int main(int argc, char* argv[]) {
 
     std::cout
         << "============================================================\n"
-        << "  ERWT3D Contest Entry (正式入口)\n"
+        << "  ERWT3D Contest Entry (RZFP path)\n"
         << "============================================================\n"
         << "  File:          " << inputPath << "\n"
         << "  Dims:          " << header.nx << " x "
         << header.ny << " x " << header.nz << "\n"
+        << "  Format:        RZFP\n"
         << "  Threads:       " << threads << "\n"
         << "  Device:        250.0 MB/s (preset)\n"
         << "  Memory mode:   " << (budget.automatic ? "AUTO" : "MANUAL") << "\n";
@@ -334,12 +471,12 @@ int main(int argc, char* argv[]) {
     std::cout << "T_composite:    " << compositeMs / 1000.0 << " s\n";
     std::cout << "Process e2e:    " << e2eMs / 1000.0 << " s\n";
 
-    // Write score CSV
     const std::string scorePath = outputDir + "/contest_score.csv";
     {
         std::ofstream out(scorePath);
         out << "metric,value\n"
             << "input_file," << inputPath << '\n'
+            << "format,RZFP\n"
             << "dimensions," << header.nx << 'x' << header.ny << 'x' << header.nz << '\n'
             << "storage_ratio," << storageRatio << '\n'
             << "threads," << threads << '\n'
