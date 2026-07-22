@@ -282,9 +282,8 @@ static bool writeERWT3DFromFileSequential(const std::string& outputPath,
         uint64_t slabFloats = currentX * yzFloats;
         uint64_t slabReadBytes = slabFloats * sizeof(float);
 
-        ssize_t n = pread(inFd, slab.data(), slabReadBytes,
-                          xStart * yzBytes);
-        if (n != static_cast<ssize_t>(slabReadBytes)) {
+        if (!readFullyAt(inFd, slab.data(), slabReadBytes,
+                          xStart * yzBytes)) {
             std::cerr << "Error reading X-slab at x=" << xStart << std::endl;
             close(inFd);
             return false;

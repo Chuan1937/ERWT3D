@@ -3,9 +3,9 @@
 #include "erwt3d/window_cache.hpp"
 #include "erwt3d/rzfp_format.hpp"
 #include "erwt3d/contest_round_executor.hpp"
+#include "erwt3d/raw_x_aux.hpp"
 
 #include <algorithm>
-#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -105,22 +105,6 @@ static void closeOutputs(std::vector<int>& fds) {
         if (fd >= 0) close(fd);
         fd = -1;
     }
-}
-
-static bool writeFullyAt(int fd, const void* data, uint64_t bytes, uint64_t offset) {
-    const uint8_t* cursor = static_cast<const uint8_t*>(data);
-    uint64_t completed = 0;
-    while (completed < bytes) {
-        const ssize_t written = pwrite(
-            fd, cursor + completed,
-            static_cast<size_t>(bytes - completed),
-            static_cast<off_t>(offset + completed)
-        );
-        if (written > 0) { completed += static_cast<uint64_t>(written); continue; }
-        if (written < 0 && errno == EINTR) continue;
-        return false;
-    }
-    return true;
 }
 
 } // namespace

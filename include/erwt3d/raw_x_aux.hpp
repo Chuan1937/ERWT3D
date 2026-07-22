@@ -19,6 +19,7 @@ constexpr double RAW_X_AUX_AUTO_LIMIT = 1.490;
 constexpr uint64_t RAW_X_AUX_MIN_RAW_BYTES_FOR_RATIO_CHECK = 10ULL * 1024 * 1024;
 constexpr uint32_t RAW_X_AUX_ALIGN = 4096;
 constexpr uint64_t RAW_X_AUX_COPY_CHUNK = 256ULL * 1024 * 1024;
+constexpr uint64_t IO_DEFAULT_CHUNK = 256ULL * 1024 * 1024;
 
 enum class RawXAuxMode {
     Auto,
@@ -103,12 +104,14 @@ inline bool checkedAddU64(uint64_t a, uint64_t b, uint64_t& out) {
     return true;
 }
 
-inline bool readFullyAt(int fd, void* buffer, uint64_t bytes, uint64_t offset) {
+inline bool readFullyAt(int fd, void* buffer, uint64_t bytes, uint64_t offset,
+                        uint64_t maxChunkBytes = IO_DEFAULT_CHUNK) {
     auto* dst = static_cast<uint8_t*>(buffer);
     uint64_t done = 0;
     while (done < bytes) {
-        size_t remaining = static_cast<size_t>(std::min<uint64_t>(bytes - done, static_cast<uint64_t>(SIZE_MAX)));
-        ssize_t n = pread(fd, dst + done, remaining, static_cast<off_t>(offset + done));
+        const uint64_t left = bytes - done;
+        const size_t chunk = static_cast<size_t>(std::min(left, maxChunkBytes));
+        ssize_t n = pread(fd, dst + done, chunk, static_cast<off_t>(offset + done));
         if (n == 0) return false;
         if (n < 0) {
             if (errno == EINTR) continue;
@@ -119,12 +122,14 @@ inline bool readFullyAt(int fd, void* buffer, uint64_t bytes, uint64_t offset) {
     return true;
 }
 
-inline bool writeFullyAt(int fd, const void* buffer, uint64_t bytes, uint64_t offset) {
+inline bool writeFullyAt(int fd, const void* buffer, uint64_t bytes, uint64_t offset,
+                         uint64_t maxChunkBytes = IO_DEFAULT_CHUNK) {
     const auto* src = static_cast<const uint8_t*>(buffer);
     uint64_t done = 0;
     while (done < bytes) {
-        size_t remaining = static_cast<size_t>(std::min<uint64_t>(bytes - done, static_cast<uint64_t>(SIZE_MAX)));
-        ssize_t n = pwrite(fd, src + done, remaining, static_cast<off_t>(offset + done));
+        const uint64_t left = bytes - done;
+        const size_t chunk = static_cast<size_t>(std::min(left, maxChunkBytes));
+        ssize_t n = pwrite(fd, src + done, chunk, static_cast<off_t>(offset + done));
         if (n < 0) {
             if (errno == EINTR) continue;
             return false;
