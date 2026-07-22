@@ -34,7 +34,7 @@
 | 30GB | 30 GB | 1697 | 1865 | 2551 | 30.08 | 基准 | 待测 |
 | 40GB | 40 GB | 1857 | 2057 | 2807 | 39.94 | 基准 | 待测 |
 | 70GB | 70 GB | 2241 | 2473 | 3383 | 69.84 | 基准 | 待测 |
-| 100GB | 100 GB | 2529 | 2793 | 3799 | 99.97 | 基准 | 待测 |
+| 100GB | 100 GB | 2529 | 2793 | 3799 | 99.97 | 基准 | **转换失败** |
 
 ### 维度计算方法
 
@@ -293,7 +293,44 @@
 
 ## 100GB 测试
 
-(待测)
+### 数据信息
+
+| 项目 | 值 |
+|------|------|
+| 文件 | `/mnt/g/erwt3d_bench/data_100g.dat` |
+| Raw大小 | 107,336,900,412 字节 (99.97 GiB) |
+| Nx | 2529 |
+| Ny | 2793 |
+| Nz | 3799 |
+| 切片大小 | X: 2793×3799×4=42.4MB, Y: 2529×3799×4=38.4MB, Z: 2529×2793×4=28.2MB |
+| 形状比 | 1 : 1.10 : 1.50 |
+
+### 转换失败
+
+**问题1：默认super-size=64时pread失败**
+
+- 命令：`erwt3d_convert --input data_100g.dat --output data_100g.erwt3d --nx 2529 --ny 2793 --nz 3799 --threads 8 --memory-limit-mb 8192 --raw-x-aux auto`
+- 错误：`Error reading X-slab at x=0`
+- 原因：slabX=superX=64，一次pread读取 `64 × 2793 × 3799 × 4 = 2.53 GiB`
+- WSL2 9p文件系统的pread无法一次读取超过2GB的数据，返回值不等于请求字节数
+- 增大memory-limit-mb到40GB也无法解决，问题在单次pread调用
+
+**问题2：super-size=32可转换但极慢**
+
+- 命令：`erwt3d_convert ... --super-size 32`
+- slabX=32，每次pread 1.27 GiB，可以成功
+- 但slab数量从40增到80，ETA约6小时
+- 进度到62.5%后因超时中断
+
+**解决方案建议**
+
+1. 修改writer.cpp的sequential转换路径，将单次大pread拆分为多次小pread（如每次256MB）
+2. 或在WSL2上使用read+lseek替代pread
+3. 或减小slabX为更小值（如16），但会进一步增加转换时间
+
+### 性能测试
+
+(未完成，转换失败)
 
 ---
 
@@ -331,3 +368,4 @@
 3. **三轴失衡随规模增大**：70GB X比Z慢20%
 4. **WSL2 9p稳定性问题**：跨盘复制数据易损坏，大文件转换需8线程避免卡死
 5. **AUTO模式bug**：`--memory-limit-mb 0`导致readBufPerThread=0，batch read failed
+6. **100GB转换失败**：WSL2 9p的pread无法一次读取2.53GiB slab，需拆分pread或减小super-size
