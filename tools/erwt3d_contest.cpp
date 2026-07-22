@@ -263,8 +263,18 @@ int main(int argc, char* argv[]) {
         << header.ny << " x " << header.nz << "\n"
         << "  Device:        " << std::fixed << std::setprecision(1)
         << reader.deviceProfile().sequential_mb_s << " MB/s\n"
+        << "  Memory mode:   " << (budget.automatic ? "AUTO" : "MANUAL") << "\n";
+    if (budget.automatic) {
+        std::cout
+            << "  MemAvailable:  " << budget.auto_mem_available / MiB << " MiB\n"
+            << "  Auto reserve:  " << budget.auto_reserve / MiB << " MiB\n";
+    }
+    std::cout
         << "  Memory limit:  " << budget.total_bytes / MiB << " MiB\n"
         << "  Window cache:  " << budget.window_cache_bytes / MiB << " MiB\n"
+        << "  Output batch:  " << budget.output_batch_size << " slices\n"
+        << "  IO buffer:     " << budget.io_buffer_bytes / MiB << " MiB\n"
+        << "  Reserve:       " << budget.reserve_bytes / MiB << " MiB\n"
         << "  Storage ratio: " << std::setprecision(3) << storageRatio << "x\n"
         << "============================================================\n\n";
 
@@ -286,7 +296,9 @@ int main(int argc, char* argv[]) {
     config.adaptive.auto_calibrate_device = true;
     config.adaptive.cache_policy = erwt3d::CachePolicy::StableAuto;
     config.hdd.read_window_bytes = readWindowMb > 0
-        ? readWindowMb * MiB : 512ULL * MiB;
+        ? readWindowMb * MiB
+        : std::min<uint64_t>(512ULL * MiB, budget.window_cache_bytes / 2 > 0
+            ? budget.window_cache_bytes / 2 : 128ULL * MiB);
     config.hdd.max_gap_bytes = 8ULL * MiB;
 
     erwt3d::ContestExecutionProfile execProfile;

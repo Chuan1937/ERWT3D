@@ -78,7 +78,10 @@ MemoryBudget makeMemoryBudget(
         return budget;
     }
 
-    if (value == "auto") {
+    std::string effectiveValue = value;
+    if (effectiveValue == "0") effectiveValue = "auto";
+
+    if (effectiveValue == "auto") {
         budget.automatic = true;
 
         const uint64_t memAvailable = readLinuxMemAvailableBytes();
@@ -87,28 +90,29 @@ MemoryBudget makeMemoryBudget(
             return budget;
         }
 
-        // The 50 GB competition volume has an approximately 21 GB compressed
-        // RZFP payload. Six GiB of workspace leaves room for all group outputs,
-        // two active read windows, metadata and a reserve while still allowing
-        // the bounded cache to retain the complete payload on a 128 GB node.
+        const uint64_t reserve = std::max<uint64_t>(2ULL * GiB, memAvailable / 8);
+        const uint64_t safeProcessRss = memAvailable > reserve
+            ? memAvailable - reserve : memAvailable / 2;
+
         uint64_t payloadPlusWorkspace = 0;
         if (!checkedAdd(payload_bytes, 6ULL * GiB, payloadPlusWorkspace)) {
             payloadPlusWorkspace = std::numeric_limits<uint64_t>::max();
         }
 
         budget.total_bytes = std::min<uint64_t>({
-            32ULL * GiB,
-            memAvailable / 2,
+            safeProcessRss,
             payloadPlusWorkspace
         });
 
-        // Use 4 GiB when possible, but never exceed half of MemAvailable.
-        if (budget.total_bytes < 4ULL * GiB && memAvailable / 2 >= 4ULL * GiB) {
+        if (budget.total_bytes < 4ULL * GiB && safeProcessRss >= 4ULL * GiB) {
             budget.total_bytes = 4ULL * GiB;
         }
+
+        budget.auto_mem_available = memAvailable;
+        budget.auto_reserve = reserve;
     } else {
-        if (!parseExplicitMiB(value, budget.total_bytes)) {
-            budget.error = "memory limit must be 'auto' or a positive integer MiB value";
+        if (!parseExplicitMiB(effectiveValue, budget.total_bytes)) {
+            budget.error = "memory limit must be 'auto', '0', or a positive integer MiB value";
             return budget;
         }
     }
