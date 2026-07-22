@@ -2,7 +2,7 @@
 
 ## 测试环境
 
-- **日期**: 2026-07-22
+- **日期**: 2026-07-23
 - **系统**: Rocky Linux 9.8, VMware VM, 16 vCPU (i9-10850K), ~62 GiB RAM, 31.4 GiB swap
 - **存储**: Windows G 盘 HDD, 通过 vmhgfs-fuse 挂载（/mnt/g, /home 同一盘）
 - **分支**: `bench/cup-large-scale-first`
@@ -117,19 +117,96 @@ RZFP AUTO 配置：MemAvailable ~60 GiB, hard limit ~42 GiB, window cache 10995 
 - `--read-window-mb N`：0=auto（max 128 MiB），显式值也被 cap
 - `--threads N`：默认 8
 
+## 统一自动转换器 (erwt3d_convert)
+
+### 设计
+
+用户只需提供 input/output/dims，内部 AutoPlanner 自动选择格式：
+
+```
+erwt3d_convert --input data.raw --output data.erwt3d --nx N --ny N --nz N
+```
+
+候选方案：
+- **A: LZ4 + XP sidecar stride=2** — LZ4 压缩主文件 + LZ4 压缩 X-plane sidecar
+- **B: 纯 RZFP** — ZFP 有损压缩，误差约束 contest_bound=1e-3, internal_bound=7.5e-4
+
+决策流程：
+1. 对 Raw 均匀抽样
+2. 估算 LZ4 压缩率（probeLz4Compression）
+3. 估算 RZFP 压缩率（runRzfpAutoPlan）
+4. 估算 XP stride=2 sidecar 大小
+5. 预测两种候选的 T_composite（基于 I/O 量 + 寻道）
+6. 选择预测时间更短且存储比 ≤1.5x 的方案
+7. 只执行一次完整转换
+
+### 自动选择结果
+
+| 数据 | LZ4 压缩率 | RZFP 压缩率 | 自动选择 | 存储比 | 原因 |
+|------|-----------|------------|---------|--------|------|
+| 20GB small.dat | 0.432x | 0.607x | **LZ4 + XP s2** | **0.479x** | LZ4 更小更快 |
+| 50GB big.dat | ~0.92x | 0.421x | **RZFP** | **0.421x** | LZ4 压不动，RZFP 远优 |
+
+### XP sidecar 生成
+
+LZ4 路径使用 `erwt3d_precompute_x`（LZ4 plane-major sidecar），不是 RZFP 2D sidecar。
+- 20GB: sidecar 868MB，总存储比 0.479x
+- 50GB: 无 sidecar（RZFP 路径不需要）
+
+## K盘测试结果 (外接 HDD, 7.3TB)
+
+### 20GB small.dat (801×2405×2501)
+
+| 格式 | 存储比 | Run1 | Run2 | Run3 | 中位数 |
+|------|--------|------|------|------|--------|
+| **LZ4+XP s2** | **0.479x** | 9.075s | 9.081s | 9.154s | **9.081s** |
+| LZ4 only | 0.432x | 32.4s | 9.305s | 9.226s | 9.226s |
+| RZFP | 0.607x | 47.2s | 17.601s | 17.618s | 17.618s |
+
+### 50GB big.dat (2001×2201×3000)
+
+| 格式 | 存储比 | Run1 | Run2 | Run3 | 中位数 |
+|------|--------|------|------|------|--------|
+| **RZFP** | **0.421x** | 39.004s | 34.168s | 34.230s | **34.230s** |
+
+### G盘对比 (20GB, 系统盘 HDD)
+
+| 格式 | 存储比 | 中位数 | 备注 |
+|------|--------|--------|------|
+| LZ4 only | 0.432x | 6.157s | G盘比K盘快（系统盘） |
+| RZFP | 0.607x | 15.267s | AUTO 70% MemAvailable |
+
 ## 关键发现
 
-1. **LZ4 在真实赛题数据上远优于 RZFP**：20GB small.dat LZ4 T_composite 6.16s vs RZFP 15.27s，差 2.5 倍
-2. **压缩率是关键**：LZ4 0.432x vs RZFP 0.607x，文件更小 = I/O 更少 = 更快
-3. **LZ4 解码速度优势**：LZ4 解码 ~4 GB/s，ZFP 解码 ~1 GB/s，3-4 倍差距
-4. **AUTO 70% MemAvailable 工作正常**：冷缓存下 MemAvailable ~60 GiB，hard limit ~42 GiB，不再退化
-5. **Read Window 128 MiB 保守策略有效**：避免大窗口在 FUSE 环境下导致 HDD 抖动
-6. **端到端计时更真实**：包含 setup/prepare/close，RZFP 的 prepare（文件预创建）占 6-7s
-7. **Device 探测 preset 仍是最优**：250 MB/s preset，跳过运行时探测
-8. **冷缓存是比赛真实成绩**：热缓存不可复现
+1. **统一自动转换器验证成功**：20GB 自动选 LZ4+XP（0.479x），50GB 自动选 RZFP（0.421x），和历史结论一致
+2. **LZ4 XP sidecar 必须用 LZ4 压缩**：RZFP 2D sidecar 对 small.dat 生成 7.8GB（0.43x），而 LZ4 sidecar 仅 868MB（0.048x），差 9 倍
+3. **LZ4+XP 略优于 LZ4-only**：9.08s vs 9.23s，XP sidecar 加速 X random 读取
+4. **AUTO 70% MemAvailable 工作正常**：50GB RZFP 获 42GB 预算，window cache 20.8GB
+5. **Read Window 128 MiB 保守策略有效**
+6. **端到端计时**：total_time_ms 含 setup/prepare/read/write/close
+7. **冷缓存 Run1 偏高**：所有格式 Run1 都比 Run2/3 慢，是 K 盘冷缓存效应
+8. **50GB RZFP 误差零违规**：max_relative_error=0.001, violations=0
 
-## 待完成
+## 代码变更
 
-1. **50GB big.dat 测试**：需转换 LZ4 和 RZFP，各跑 3 次
-2. **50GB 格式选择**：big.dat std=5485（高动态范围），LZ4 压缩率可能不如 small.dat，需实测
-3. **最终参赛格式决定**：根据 20GB+50GB 综合结果选择 LZ4 或 RZFP
+### 统一转换器 `erwt3d_convert`
+- 只保留 `--input --output --nx --ny --nz --threads`
+- 内部调用 `planFormat()` 自动选择 LZ4+XP 或 RZFP
+- LZ4 路径调用 `erwt3d_precompute_x` 生成 LZ4 XP sidecar
+- RZFP 路径固定误差约束：contest_bound=1e-3, internal_bound=7.5e-4
+
+### AutoPlanner `auto_plan.cpp`
+- 精简为 2 个候选：LZ4+XP stride=2 和 纯 RZFP
+- 删除 Raw X Aux、多 stride 扫描、RZFP sidecar 候选
+- 跳过 disk 校准，用 preset 250MB/s + 10ms seek
+- 预测 T_composite 基于 I/O 量 + 寻道惩罚
+
+### AUTO 内存 `memory_budget.cpp`
+- 70% MemAvailable 硬上限
+- 4 GiB reserve 保护
+
+### 端到端计时 `contest_round_executor.cpp`
+- `total_time_ms = wallMs`（含全部开销）
+
+### Read Window `erwt3d_contest.cpp`
+- 最大 128 MiB（共享文件夹保守策略）
