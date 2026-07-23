@@ -454,3 +454,21 @@ erwt3d_contest --input /mnt/g/cup/converted/big_auto.erwt3d \
 | 合并模式标记 | N/A | merged ✓ |
 | close 错误传播 | 正常 | 正常 |
 | 未修改高性能路径 | ✓ | ✓ |
+
+## 5GB RZFP 测试 (2026-07-23 latest)
+
+**数据**: 929×1033×1399, raw 5.37 GB
+**转换**: `erwt3d_convert` → RZFP 0.589x (violations=0)
+**测试**: `erwt3d_contest --seed 20260511 --threads 8 --memory-limit-mb auto`
+
+| Run | T_composite | e2e (s) | merged_read (s) | real |
+|-----|------------|---------|------------------|------|
+| R1 (cold) | 5.009s | 30.056 | 27.412 | 0m30.657 |
+| R2 (cold) | 5.072s | 30.431 | 27.467 | |
+| R3 (cold) | 5.197s | 31.179 | 27.652 | |
+
+**中位数**: T_composite=5.072s, CV=1.9%
+**存储比**: 0.589x
+**输出**: 330×.dat ✓
+**timing_mode**: merged ✓
+**format**: RZFP (auto-detected) ✓
