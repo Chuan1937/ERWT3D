@@ -242,6 +242,8 @@ int main(int argc, char* argv[]) {
             uint64_t elem = sliceElem(nx, ny, nz, gd.axis);
             uint64_t outBytes = elem * sizeof(float);
 
+            auto gStart = Clock::now();
+
             std::vector<int> fds(gd.indices->size(), -1);
             for (size_t i = 0; i < gd.indices->size(); ++i) {
                 std::ostringstream oss;
@@ -252,8 +254,6 @@ int main(int argc, char* argv[]) {
                     fds[i] = fd;
                 }
             }
-
-            auto gStart = Clock::now();
 
             size_t batchSize = std::min<size_t>(
                 gd.indices->size(),
@@ -280,22 +280,22 @@ int main(int argc, char* argv[]) {
                 }
             }
 
+            for (int fd : fds) if (fd >= 0) close(fd);
+
             double gMs = std::chrono::duration<double, std::milli>(Clock::now() - gStart).count();
             totalGroupMs += gMs;
-
-            for (int fd : fds) if (fd >= 0) close(fd);
 
             std::cerr << "  [" << (g+1) << "/6] " << gd.name
                       << " " << std::fixed << std::setprecision(3) << gMs / 1000.0 << "s" << std::endl;
         }
 
-        double compositeMs = totalGroupMs / static_cast<double>(groups.size());
         double e2eMs = std::chrono::duration<double, std::milli>(Clock::now() - e2eStart).count();
+        double compositeMs = e2eMs / static_cast<double>(groups.size());
 
         std::cout << std::fixed << std::setprecision(3);
-        std::cout << "Total (e2e):    " << totalGroupMs / 1000.0 << " s\n";
-        std::cout << "T_composite:    " << compositeMs / 1000.0 << " s\n";
+        std::cout << "Group total:    " << totalGroupMs / 1000.0 << " s\n";
         std::cout << "Process e2e:    " << e2eMs / 1000.0 << " s\n";
+        std::cout << "T_composite:    " << compositeMs / 1000.0 << " s (e2e/6)\n";
 
         const std::string scorePath = outputDir + "/contest_score.csv";
         {

@@ -2,11 +2,11 @@
 #include "erwt3d/writer.hpp"
 #include "erwt3d/reader.hpp"
 #include "erwt3d/rzfp_writer.hpp"
+#include "erwt3d/lz4_xp_sidecar.hpp"
 #include "erwt3d/raw_x_aux.hpp"
 #include "erwt3d/memory_budget.hpp"
 
 #include <chrono>
-#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <iomanip>
@@ -63,8 +63,8 @@ int main(int argc, char* argv[]) {
                 << "  --threads N     Thread count (default: 8)\n"
                 << "  --to-raw        Convert ERWT3D back to raw\n\n"
                 << "Auto-selected candidates:\n"
-                << "  A) LZ4 + embedded XP stride=2  (best when LZ4 compresses well)\n"
-                << "  B) Pure RZFP                    (best when LZ4 ratio > 0.85)\n\n"
+                << "  A) LZ4 + XP sidecar stride=2  (best when LZ4 compresses well)\n"
+                << "  B) Pure RZFP                    (best when LZ4 ratio > 0.80)\n\n"
                 << "Internal policy:\n"
                 << "  RZFP error: contest_bound=1e-3, internal_bound=7.5e-4\n"
                 << "  XP stride=2 fixed, no Raw X Aux\n"
@@ -162,18 +162,18 @@ int main(int argc, char* argv[]) {
 
         if (hasXp && xpStride > 0) {
             std::cout << "Generating LZ4 XP sidecar (stride=" << xpStride << ")...\n";
-            std::ostringstream cmd;
-            cmd << "/root/ERWT3D/build/erwt3d_precompute_x"
-                << " --raw " << inputPath
-                << " --erwt3d " << outputPath
-                << " --nx " << nx << " --ny " << ny << " --nz " << nz
-                << " --mode sidecar"
-                << " --stride " << xpStride
-                << " --storage-budget 1.50";
-            int rc = std::system(cmd.str().c_str());
-            if (rc != 0) {
-                std::cerr << "Warning: XP sidecar generation failed (rc=" << rc << "), continuing without it\n";
+            erwt3d::Lz4XpSidecarStats xpStats;
+            if (!erwt3d::writeLz4XpSidecar(
+                    inputPath, outputPath, nx, ny, nz,
+                    xpStride, 256, 1.50, &xpStats)) {
+                std::cerr << "Error: XP sidecar generation failed\n";
+                std::filesystem::remove(outputPath);
+                std::filesystem::remove(outputPath + ".xp");
+                return 1;
             }
+            std::cout << "XP sidecar: " << xpStats.sidecar_bytes / (1024*1024) << " MB"
+                      << " ratio=" << std::fixed << std::setprecision(3)
+                      << xpStats.compression_ratio << "x\n";
         }
 
         uint64_t fileBytes = 0;

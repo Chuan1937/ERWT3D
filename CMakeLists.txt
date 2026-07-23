@@ -87,6 +87,7 @@ set(LIB_SOURCES
     src/sb_panel.cpp
     src/api.cpp
     src/lz4_probe.cpp
+    src/lz4_xp_sidecar.cpp
     src/auto_plan.cpp
 )
 
