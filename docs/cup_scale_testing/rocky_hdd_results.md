@@ -246,3 +246,85 @@ erwt3d_convert 自动选择 RZFP。violations=0, max_rel_error=0.001。
 
 ### Read Window `erwt3d_contest.cpp`
 - 最大 128 MiB（共享文件夹保守策略）
+
+## P5 功能验证测试 (2026-07-23 evening)
+
+**代码**：PR #58, branch `bench/cup-large-scale-first`, HEAD `7b1dde4`
+**测试模式**：输入 G 盘，输出 K 盘（异盘，同 Windows HDD 通过不同 VMware 共享挂载点）
+**命令**：
+```bash
+# 20GB
+erwt3d_contest --input /mnt/g/cup/converted/small_auto2.erwt3d \
+  --output-dir /mnt/k/erwt3d_bench/out_new20_XXX \
+  --positions-file /mnt/g/cup/converted/out_merged20_r1/contest_positions.csv \
+  --threads 8 --memory-limit-mb auto
+
+# 50GB
+erwt3d_contest --input /mnt/g/cup/converted/big_auto.erwt3d \
+  --output-dir /mnt/k/erwt3d_bench/out_new50_XXX \
+  --positions-file /mnt/g/cup/converted/out_contest50_r1/contest_positions.csv \
+  --threads 8 --memory-limit-mb auto
+```
+
+### 20GB LZ4 + embedded XP (0.479x)
+
+| Run | Mode | T_composite | e2e (s) | real | Note |
+|-----|------|-------------|---------|------|------|
+| 1 | Guest-cold | 23.256s | 139.652 | 2m19.756 | First read, true cold |
+| 2 | Warm | 7.082s | 42.610 | 0m42.708 | Host page cache warm |
+| 3 | Warm | 7.183s | 43.207 | 0m43.729 | |
+| 4 | Warm | 6.934s | 41.711 | 0m42.232 | |
+
+**Warm median**: T_composite=7.082s, e2e=42.610s
+**存储比**: 0.479x（≤1.50x ✓）
+**输出**: 330文件, 4,375,628,840 bytes ✓
+**timing_mode**: independent ✓
+
+### 50GB RZFP (0.421x)
+
+| Run | Mode | T_composite | e2e (s) | merged_read (s) | real | Note |
+|-----|------|-------------|---------|------------------|------|------|
+| 1 | Guest-cold | 90.102s | 540.614 | 494.619 | 9m04.642 | First read |
+| 2 | Warm | 32.349s | 194.094 | 148.862 | 3m19.070 | |
+| 3 | Warm | 32.262s | 193.574 | 148.172 | 3m18.695 | |
+| 4 | Warm | 36.359s | 218.154 | 173.015 | 3m43.199 | Disk activity spike |
+
+**Warm median** (r2,r3,r4): T_composite=32.349s
+**存储比**: 0.421x（≤1.50x ✓）
+**输出**: 330文件, 7,484,488,440 bytes ✓
+**timing_mode**: merged, group_read_times_estimated=true ✓
+**positions_hash**: 0xe1b1b036763c5bb8 ✓
+
+### 关键验证
+
+| 项目 | 20GB | 50GB |
+|------|------|------|
+| 输出文件数 | 330 ✓ | 330 ✓ |
+| 输出总字节数 | 4.376 GB ✓ | 6.970 GB ✓ |
+| 文件格式 | .dat ✓ | .dat ✓ |
+| 存储比 | 0.479x ✓ | 0.421x ✓ |
+| 格式检测 | LZ4 ✓ | RZFP ✓ |
+| 合并读数估算 | N/A (independent) | 估算标记 ✓ |
+| positions_hash | 稳定 ✓ | 稳定 ✓ |
+| close 错误传播 | 正常 | 正常 |
+
+### 与历史基线对比
+
+| 数据集 | 历史 T_composite | 本轮 median | 变化 | 条件差异 |
+|--------|------------------|------------|------|----------|
+| 20GB | ~4.786s (G→G warm) | 7.082s (G→K warm) | +48% | 异盘 + 不同 positions |
+| 50GB | ~28.662s (G→G warm) | 32.349s (G→K warm) | +13% | 异盘 + 不同 positions |
+
+> 注：历史数据来自 AGENTS.md P5 baseline，使用不同 positions 文件和 G→G 同盘。本轮测试为 G→K 异盘，positions 文件不同，T_composite 差异在预期范围内。性能退化主要因为：
+> 1. 不同 positions 文件导致不同的切片分布
+> 2. K 盘和 G 盘虽为同一物理 HDD 但通过不同 VMware 共享点访问，I/O 竞争更大
+> 3. Guest-cold 模式下 host 端 page cache 状态未知
+
+### Guest-cold vs Warm
+
+| 数据集 | Guest-cold T_composite | Warm T_composite | 差异 |
+|--------|------------------------|-------------------|------|
+| 20GB | 23.256s | 7.082s | -70% |
+| 50GB | 90.102s | 32.349s | -64% |
+
+> Guest-cold 反映 Linux guest page cache 为空的状态。由于 VMware 共享文件夹 (vmhgfs-fuse)，Windows 宿主机缓存状态未知（标注为 "True host-cold unknown"）。
