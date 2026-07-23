@@ -27,9 +27,17 @@ static ParseLineResult parseLine(const std::string& line, int lineNum,
     std::string l = line;
     while (!l.empty() && (l.back() == '\r' || l.back() == '\n' || l.back() == ' '))
         l.pop_back();
+    while (!l.empty() && (l.front() == ' ' || l.front() == '\t'))
+        l.erase(l.begin());
     if (l.empty() || l[0] == '#') return ParseLineResult::Skip;
 
-    for (auto& c : l) if (c == ',') c = ' ';
+    if (l.size() >= 3 && static_cast<uint8_t>(l[0]) == 0xEF &&
+        static_cast<uint8_t>(l[1]) == 0xBB &&
+        static_cast<uint8_t>(l[2]) == 0xBF) {
+        l = l.substr(3);
+    }
+
+    for (auto& c : l) if (c == ',' || c == '\t') c = ' ';
 
     {
         std::string lower;

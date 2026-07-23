@@ -16,6 +16,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <sys/stat.h>
 
 namespace {
 
@@ -93,20 +94,21 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    const auto resolvedMemory = erwt3d::resolveMemoryLimit(memoryLimit);
+    if (!resolvedMemory.valid) {
+        std::cerr << "Error: " << resolvedMemory.error << "\n";
+        return 1;
+    }
+    std::cout << "Memory mode: " << resolvedMemory.mode
+              << "\nResolved memory limit: " << resolvedMemory.mib << " MiB\n";
+
     if (toRaw) {
-        auto memLim = erwt3d::resolveMemoryLimit(memoryLimit);
-        if (!memLim.valid) {
-            std::cerr << "Error: " << memLim.error << "\n";
-            return 1;
-        }
-        std::cout << "Memory mode: " << memLim.mode
-                  << "\nResolved memory limit: " << memLim.mib << " MiB\n";
         auto fmt = erwt3d::detectOptimizedFileFormat(inputPath);
 
         if (fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D) {
             std::cout << "Converting LZ4 ERWT3D to raw...\n";
             erwt3d::ERWT3DReader reader(inputPath);
-            if (!reader.readFullToFile(outputPath, threads, memLim.mib)) {
+            if (!reader.readFullToFile(outputPath, threads, resolvedMemory.mib)) {
                 std::cerr << "Error: LZ4 reverse conversion failed\n";
                 return 1;
             }
@@ -137,9 +139,30 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    uint64_t rawElements = 0;
+    uint64_t rawSize = 0;
+    if (!erwt3d::checkedMulU64(nx, ny, rawElements) ||
+        !erwt3d::checkedMulU64(rawElements, nz, rawElements) ||
+        !erwt3d::checkedMulU64(rawElements, sizeof(float), rawSize)) {
+        std::cerr << "Error: raw data size overflow\n";
+        return 1;
+    }
+
+    struct stat st{};
+    if (stat(inputPath.c_str(), &st) != 0) {
+        std::cerr << "Error: cannot stat input file: " << inputPath << "\n";
+        return 1;
+    }
+    uint64_t fileBytes = static_cast<uint64_t>(st.st_size);
+    if (fileBytes != rawSize) {
+        std::cerr << "Error: raw file size mismatch:\n"
+                  << "  expected=" << rawSize << "\n"
+                  << "  actual=" << fileBytes << "\n";
+        return 1;
+    }
+
     const auto totalStart = Clock::now();
 
-    uint64_t rawSize = nx * ny * nz * sizeof(float);
     std::cout << "============================================================\n"
               << "  ERWT3D Auto Converter\n"
               << "============================================================\n"
@@ -192,13 +215,11 @@ int main(int argc, char* argv[]) {
             std::filesystem::remove(outputPath + ".xp", ec);
         }
 
-        size_t memLimitMB = erwt3d::resolveMemoryLimit(memoryLimit).mib;
-
         erwt3d::RawXAuxStats auxStats;
         if (!erwt3d::writeERWT3DFromFile(
                 outputPath, inputPath, nx, ny, nz,
                 64, 64, 64, 4, 4, 4,
-                threads, memLimitMB,
+                threads, resolvedMemory.mib,
                 0, 0,
                 true,
                 erwt3d::RawXAuxMode::Off,
@@ -223,11 +244,11 @@ int main(int argc, char* argv[]) {
                       << xpStats.compression_ratio << "x\n";
         }
 
-        uint64_t fileBytes = 0;
         std::error_code ec;
+        uint64_t outBytes = 0;
         if (std::filesystem::exists(outputPath, ec))
-            fileBytes = std::filesystem::file_size(outputPath, ec);
-        double storageRatio = rawSize > 0 ? static_cast<double>(fileBytes) / rawSize : 0.0;
+            outBytes = std::filesystem::file_size(outputPath, ec);
+        double storageRatio = rawSize > 0 ? static_cast<double>(outBytes) / rawSize : 0.0;
 
         std::cout << "LZ4 conversion complete: " << outputPath << "\n"
                   << "  Storage ratio: " << std::fixed << std::setprecision(3) << storageRatio << "x\n";
@@ -238,7 +259,7 @@ int main(int argc, char* argv[]) {
         cfg.ny = ny;
         cfg.nz = nz;
         cfg.threads = threads;
-        cfg.memory_limit_mb = erwt3d::resolveMemoryLimit(memoryLimit).mib;
+        cfg.memory_limit_mb = resolvedMemory.mib;
         cfg.codec.error.policy = erwt3d::RelativeErrorPolicy::Strict;
         cfg.codec.error.contest_bound = 1e-3;
         cfg.codec.error.internal_bound = 7.5e-4;

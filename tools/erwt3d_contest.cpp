@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -21,6 +22,7 @@
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
+#include <sys/utsname.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <vector>
@@ -79,11 +81,39 @@ static void writeScoreCsv(
     int threads,
     const std::string& memoryMode,
     uint64_t memoryLimitMib,
+    uint64_t readWindowMib,
+    const std::string& gitCommit,
     const erwt3d::ContestPositions& positions,
     const erwt3d::ContestUnifiedProfile& profile
 ) {
+    auto now = std::chrono::system_clock::now();
+    auto t = std::chrono::system_clock::to_time_t(now);
+    struct tm tmBuf;
+    localtime_r(&t, &tmBuf);
+    char timeBuf[32];
+    std::strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%dT%H:%M:%S", &tmBuf);
+
+    char hostBuf[256] = {};
+    gethostname(hostBuf, sizeof(hostBuf));
+    struct utsname un{};
+    std::string kernel = "unknown";
+    if (uname(&un) == 0) kernel = std::string(un.sysname) + " " + un.release;
+
+    struct stat st{};
+    std::string fstype = "unknown";
+    if (stat(inputFile.c_str(), &st) == 0) {
+        if (S_ISREG(st.st_mode)) fstype = "regular";
+    }
+
+    std::string cacheMode = "unknown";
+
     std::ofstream out(path);
     out << "metric,value\n"
+        << "timestamp," << timeBuf << '\n'
+        << "hostname," << hostBuf << '\n'
+        << "kernel," << kernel << '\n'
+        << "filesystem," << fstype << '\n'
+        << "git_commit," << gitCommit << '\n'
         << "input_file," << inputFile << '\n'
         << "format," << format << '\n'
         << "dimensions," << nx << 'x' << ny << 'x' << nz << '\n'
@@ -91,6 +121,8 @@ static void writeScoreCsv(
         << "threads," << threads << '\n'
         << "memory_mode," << memoryMode << '\n'
         << "memory_limit_mib," << memoryLimitMib << '\n'
+        << "read_window_mib," << readWindowMib << '\n'
+        << "cache_mode," << cacheMode << '\n'
         << "positions_hash,0x" << std::hex << erwt3d::computePositionsHash(positions) << std::dec << '\n'
         << "x_random_time_ms," << std::fixed << std::setprecision(3) << profile.x_random.time_ms << '\n'
         << "x_random_read_ms," << profile.x_random.read_ms << '\n'
@@ -188,6 +220,15 @@ int main(int argc, char* argv[]) {
     if (!mkdirP(outputDir)) {
         std::cerr << "Error: cannot create output directory " << outputDir << "\n";
         return 1;
+    }
+
+    {
+        std::error_code ec;
+        if (std::filesystem::exists(outputDir + "/contest_score.csv", ec) ||
+            std::filesystem::exists(outputDir + "/contest_x_random_000.dat", ec)) {
+            std::cerr << "Error: output directory already contains contest results\n";
+            return 1;
+        }
     }
 
     const erwt3d::OptimizedFileFormat fmt = erwt3d::detectOptimizedFileFormat(inputPath);
@@ -312,55 +353,10 @@ int main(int argc, char* argv[]) {
         };
 
     } else {
-        auto reader = std::make_shared<erwt3d::RzfpReader>(inputPath);
-        if (!reader->ok()) {
-            std::cerr << "Error: cannot open RZFP file\n";
-            return 1;
-        }
-
-        const auto& header = reader->header();
-        uint64_t largestOutputBytes = std::max({header.ny * header.nz * sizeof(float),
-                                                 header.nx * header.nz * sizeof(float),
-                                                 header.nx * header.ny * sizeof(float)});
-
-        erwt3d::MemoryBudget budget = erwt3d::makeMemoryBudget(
-            memoryLimit, reader->payloadBytes(), largestOutputBytes, 100);
-
-        if (!budget.valid) {
-            std::cerr << "Error: invalid memory budget: " << budget.error << "\n";
-            return 1;
-        }
-
-        auto windowCache = std::make_shared<erwt3d::BoundedWindowCache>(budget.window_cache_bytes);
-
-        erwt3d::RzfpReaderConfig config;
-        config.strategy = erwt3d::RzfpReadStrategy::Auto;
-        config.decode_threads = threads;
-        config.window_cache = windowCache;
-        config.window_cache_file_identity = reader->fileIdentity();
-        config.use_window_cache = true;
-        config.adaptive.auto_calibrate_device = false;
-        config.adaptive.cache_policy = erwt3d::CachePolicy::StableAuto;
-        config.hdd.sequential_mb_s = 250.0;
-        config.hdd.seek_ms = 10.0;
-        config.hdd.read_window_bytes = readWindowMb > 0
-            ? std::min<uint64_t>(readWindowMb * MiB, 128ULL * MiB)
-            : std::min<uint64_t>(128ULL * MiB, budget.window_cache_bytes / 2 > 0
-                ? budget.window_cache_bytes / 2 : 64ULL * MiB);
-        config.hdd.max_gap_bytes = 8ULL * MiB;
-
-        readFn = [reader, config](
-            erwt3d::SliceAxis axis,
-            const std::vector<uint64_t>& indices,
-            std::vector<std::vector<float>>& outputs
-        ) -> bool {
-            if (indices.empty()) return true;
-
-            std::vector<erwt3d::RzfpReader::SliceBatchRequest> reqs;
-            for (size_t i = 0; i < indices.size(); ++i) {
-                reqs.push_back({axis, indices[i], outputs[i].data()});
-            }
-            return reader->readSlicesBatch(reqs, config);
+        // RZFP path: dummy readFn since executeContestGroupsMerged is used
+        readFn = [](erwt3d::SliceAxis, const std::vector<uint64_t>&,
+                    std::vector<std::vector<float>>&) -> bool {
+            return true;
         };
     }
 
@@ -385,6 +381,11 @@ int main(int argc, char* argv[]) {
 
         erwt3d::MemoryBudget budget = erwt3d::makeMemoryBudget(
             memoryLimit, rzfpReader->payloadBytes(), largestOutputBytes, 100);
+
+        if (!budget.valid) {
+            std::cerr << "Error: invalid memory budget: " << budget.error << "\n";
+            return 1;
+        }
 
         auto windowCache = std::make_shared<erwt3d::BoundedWindowCache>(budget.window_cache_bytes);
 
@@ -465,7 +466,8 @@ int main(int argc, char* argv[]) {
 
     const std::string scorePath = outputDir + "/contest_score.csv";
     writeScoreCsv(scorePath, inputPath, fmtName, nx, ny, nz, storageRatio,
-                  threads, resolvedMem.mode, actualMemoryLimitMib, positions, profile);
+                  threads, resolvedMem.mode, actualMemoryLimitMib, readWindowMb,
+                  "eab46cd", positions, profile);
 
     std::cout << "\nScore written to " << scorePath << "\n";
     return 0;

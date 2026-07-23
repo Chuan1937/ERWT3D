@@ -322,6 +322,45 @@ static void testSkipsCommentsAndEmpty() {
     unlink(path);
 }
 
+static void testTabDelimited() {
+    const char* path = "/tmp/test_tab.txt";
+    {
+        std::ofstream out(path);
+        out << "axis\ttype\tindex\n";
+        for (int i = 0; i < 100; ++i) out << "x\trandom\t" << i << "\n";
+        for (int i = 0; i < 100; ++i) out << "y\trandom\t" << i << "\n";
+        for (int i = 0; i < 100; ++i) out << "z\trandom\t" << i << "\n";
+        for (int i = 500; i < 510; ++i) out << "x\tcontinuous\t" << i << "\n";
+        for (int i = 600; i < 610; ++i) out << "y\tcontinuous\t" << i << "\n";
+        for (int i = 700; i < 710; ++i) out << "z\tcontinuous\t" << i << "\n";
+    }
+    ContestPositions pos;
+    std::string err;
+    CHECK(parsePositionsFile(path, 1000, 1000, 1000, 100, 10, pos, err), err);
+    CHECK(pos.x_random.size() == 100, "tab delimited x_random");
+    unlink(path);
+}
+
+static void testFixedHashValue() {
+    ContestPositions pos;
+    pos.x_random = {1, 2, 3, 4, 5};
+    pos.y_random = {10, 20, 30, 40, 50};
+    pos.z_random = {100, 200, 300, 400, 500};
+    pos.x_continuous = {1000, 1001};
+    pos.y_continuous = {2000, 2001};
+    pos.z_continuous = {3000, 3001};
+    uint64_t expected = 0x4d1fad3b9556a127ULL;
+    uint64_t actual = computePositionsHash(pos);
+    if (actual == expected) {
+        ++testsPassed;
+    } else {
+        std::cerr << "FAIL: fixed hash value at line " << __LINE__
+                  << " expected 0x" << std::hex << expected
+                  << " got 0x" << actual << std::dec << "\n";
+        ++testsFailed;
+    }
+}
+
 int main() {
     testParseCSV();
     testParseTXT();
@@ -339,6 +378,8 @@ int main() {
     testParseErrorMalformed();
     testParseErrorExtraFields();
     testSkipsCommentsAndEmpty();
+    testTabDelimited();
+    testFixedHashValue();
 
     std::cout << "Passed: " << testsPassed << "/" << (testsPassed + testsFailed) << "\n";
     return testsFailed > 0 ? 1 : 0;
