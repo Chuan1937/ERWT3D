@@ -19,9 +19,10 @@ enum class IOBackend {
 };
 
 enum class SBReadMode {
-    RunBatch,      // batch contiguous superblock runs into single pread
-    LeafIndex,     // read only needed leaf blocks, merge into extents
-    HDDReadWindow, // HDD-max: large contiguous read windows with configurable gap tolerance
+    RunBatch,               // batch contiguous superblock runs into single pread
+    LeafIndex,              // read only needed leaf blocks, merge into extents
+    HDDReadWindow,          // HDD-max: large contiguous read windows with configurable gap tolerance
+    SSDConcurrentExtent,    // SSD: concurrent small-extent pread with decode pipeline
 };
 
 class ERWT3DReader {

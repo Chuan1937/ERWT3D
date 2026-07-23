@@ -92,6 +92,11 @@ set(LIB_SOURCES
     src/contest_positions.cpp
     src/contest_groups.cpp
     src/file_format_detect.cpp
+    src/io_profile.cpp
+    src/unified_read_config.cpp
+    src/ssd/ssd_extent_planner.cpp
+    src/ssd/ssd_executor.cpp
+    src/ssd/ssd_writer.cpp
 )
 
 if(ERWT3D_ENABLE_RZFP)

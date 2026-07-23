@@ -3,6 +3,8 @@
 #include "rzfp_format.hpp"
 #include "rzfp_xplane_codec.hpp"
 #include "device_profile.hpp"
+#include "io_profile.hpp"
+#include "ssd/ssd_config.hpp"
 #include "slice.hpp"
 #include "sb_hdd.hpp"
 #include "window_cache.hpp"
@@ -159,7 +161,10 @@ struct RzfpAdaptiveConfig {
 };
 
 struct RzfpReaderConfig {
+    IOProfileType io_profile = IOProfileType::Auto;
+
     HDDReadWindowConfig hdd;
+    SSDReadConfig ssd;
     RzfpReadStrategy strategy = RzfpReadStrategy::Auto;
     int decode_threads = 1;
     RzfpReadProfile* profile = nullptr;

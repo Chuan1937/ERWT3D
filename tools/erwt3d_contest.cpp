@@ -8,6 +8,8 @@
 #include "erwt3d/contest_groups.hpp"
 #include "erwt3d/raw_x_aux.hpp"
 #include "erwt3d/file_format_detect.hpp"
+#include "erwt3d/io_profile.hpp"
+#include "erwt3d/unified_read_config.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -84,7 +86,12 @@ static void writeScoreCsv(
     uint64_t readWindowMib,
     const std::string& gitCommit,
     const erwt3d::ContestPositions& positions,
-    const erwt3d::ContestUnifiedProfile& profile
+    const erwt3d::ContestUnifiedProfile& profile,
+    const std::string& requestedIoProfile,
+    const std::string& resolvedIoProfile,
+    const std::string& profileReason,
+    const std::string& filesystemType,
+    bool wslDetected
 ) {
     auto now = std::chrono::system_clock::now();
     auto t = std::chrono::system_clock::to_time_t(now);
@@ -123,6 +130,11 @@ static void writeScoreCsv(
         << "memory_limit_mib," << memoryLimitMib << '\n'
         << "read_window_mib," << readWindowMib << '\n'
         << "cache_mode," << cacheMode << '\n'
+        << "requested_io_profile," << requestedIoProfile << '\n'
+        << "resolved_io_profile," << resolvedIoProfile << '\n'
+        << "profile_reason," << profileReason << '\n'
+        << "filesystem_type," << filesystemType << '\n'
+        << "wsl_detected," << (wslDetected ? "true" : "false") << '\n'
         << "positions_hash,0x" << std::hex << erwt3d::computePositionsHash(positions) << std::dec << '\n'
         << "x_random_time_ms," << std::fixed << std::setprecision(3) << profile.x_random.time_ms << '\n'
         << "x_random_read_ms," << profile.x_random.read_ms << '\n'
@@ -166,6 +178,7 @@ int main(int argc, char* argv[]) {
     uint64_t seed = 20260511;
     std::string memoryLimit = "auto";
     uint64_t readWindowMb = 0;
+    std::string ioProfileStr = "auto";
 
     for (int i = 1; i < argc; ++i) {
         const auto next = [&]() -> const char* {
@@ -189,6 +202,8 @@ int main(int argc, char* argv[]) {
             const char* v = next(); if (!v) return 1; memoryLimit = v;
         } else if (std::strcmp(argv[i], "--read-window-mb") == 0) {
             const char* v = next(); if (!v) return 1; readWindowMb = std::stoull(v);
+        } else if (std::strcmp(argv[i], "--io-profile") == 0) {
+            const char* v = next(); if (!v) return 1; ioProfileStr = v;
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             std::cerr
                 << "Usage: erwt3d_contest --input DATA.erwt3d --output-dir DIR [options]\n\n"
@@ -199,7 +214,8 @@ int main(int argc, char* argv[]) {
                 << "  --seed N               Random seed for test mode (default: 20260511)\n"
                 << "  --threads N            Thread count (default: 8)\n"
                 << "  --memory-limit-mb auto|N    Memory limit MB (default: auto=70% MemAvailable)\n"
-                << "  --read-window-mb N          Max read window MB (0=auto, max 128, default: 0)\n\n"
+                << "  --read-window-mb N          Max read window MB (0=auto, max 128, default: 0)\n"
+                << "  --io-profile auto|hdd|ssd|wsl-ssd   IO profile (default: auto=HDD)\n\n"
                 << "Official mode (--positions-file):\n"
                 << "  X/Y/Z random: 100 each, no duplicates\n"
                 << "  X/Y/Z continuous: 10 each, strictly consecutive\n\n"
@@ -322,6 +338,16 @@ int main(int argc, char* argv[]) {
     erwt3d::ContestReadBatchFunction readFn;
     uint64_t actualMemoryLimitMib = resolvedMem.mib;
 
+    erwt3d::IOProfileType requestedProfile = erwt3d::parseIOProfileType(ioProfileStr);
+    erwt3d::UnifiedReadConfig unifiedCfg = erwt3d::makeUnifiedConfig(
+        requestedProfile, inputPath, threads, actualMemoryLimitMib, readWindowMb);
+
+    std::cout << "IO profile: " << ioProfileStr
+              << " -> " << erwt3d::ioProfileTypeName(unifiedCfg.io_profile)
+              << " (" << unifiedCfg.resolved_profile_reason << ")\n";
+    if (unifiedCfg.wsl_detected) std::cout << "WSL detected: yes\n";
+    std::cout << "Filesystem: " << unifiedCfg.filesystem_type << "\n\n";
+
     if (fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D) {
         auto reader = std::make_shared<erwt3d::ERWT3DReader>(inputPath);
 
@@ -330,26 +356,18 @@ int main(int argc, char* argv[]) {
         reader->setIOBackend(erwt3d::IOBackend::Superblock);
         reader->setSBReadMode(erwt3d::SBReadMode::HDDReadWindow);
         reader->setSBTaskOrder(erwt3d::SBTaskOrder::FileOffset);
-        reader->setHDDReadWindowConfig({
-            readWindowMb > 0 ? std::min<uint64_t>(readWindowMb * MiB, 128ULL * MiB) : 128ULL * MiB,
-            8ULL * MiB
-        });
+        reader->setHDDReadWindowConfig(unifiedCfg.hdd);
 
-        readFn = [reader, threads, memoryLimitMB, readWindowMb](
+        readFn = [reader, threads, memoryLimitMB, hddCfg = unifiedCfg.hdd](
             erwt3d::SliceAxis axis,
             const std::vector<uint64_t>& indices,
             std::vector<std::vector<float>>& outputs
         ) -> bool {
-            erwt3d::HDDReadWindowConfig wcfg{
-                readWindowMb > 0 ? std::min<uint64_t>(readWindowMb * MiB, 128ULL * MiB) : 128ULL * MiB,
-                8ULL * MiB
-            };
-
             std::vector<erwt3d::ERWT3DReader::SliceBatchRequest> reqs;
             for (size_t i = 0; i < indices.size(); ++i) {
                 reqs.push_back({axis, indices[i], outputs[i].data()});
             }
-            return reader->readSlicesBatch(reqs, threads, memoryLimitMB, wcfg);
+            return reader->readSlicesBatch(reqs, threads, memoryLimitMB, hddCfg);
         };
 
     } else {
@@ -390,6 +408,7 @@ int main(int argc, char* argv[]) {
         auto windowCache = std::make_shared<erwt3d::BoundedWindowCache>(budget.window_cache_bytes);
 
         erwt3d::RzfpReaderConfig rzfpConfig;
+        rzfpConfig.io_profile = unifiedCfg.io_profile;
         rzfpConfig.strategy = erwt3d::RzfpReadStrategy::Auto;
         rzfpConfig.decode_threads = threads;
         rzfpConfig.window_cache = windowCache;
@@ -467,7 +486,12 @@ int main(int argc, char* argv[]) {
     const std::string scorePath = outputDir + "/contest_score.csv";
     writeScoreCsv(scorePath, inputPath, fmtName, nx, ny, nz, storageRatio,
                   threads, resolvedMem.mode, actualMemoryLimitMib, readWindowMb,
-                  "eab46cd", positions, profile);
+                  "eab46cd", positions, profile,
+                  ioProfileStr,
+                  erwt3d::ioProfileTypeName(unifiedCfg.io_profile),
+                  unifiedCfg.resolved_profile_reason,
+                  unifiedCfg.filesystem_type,
+                  unifiedCfg.wsl_detected);
 
     std::cout << "\nScore written to " << scorePath << "\n";
     return 0;
