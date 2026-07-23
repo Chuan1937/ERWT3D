@@ -207,8 +207,8 @@ static_assert(sizeof(CompressedBlockIndex) == 16);
 inline bool hasXPSidecar(const ERWT3DHeader& h) { return (h.flags & FLAG_HAS_XP_SIDECAR) != 0; }
 inline bool hasXPEmbedded(const ERWT3DHeader& h) { return (h.flags & FLAG_HAS_XP_EMBEDDED) != 0; }
 inline bool hasXP(const ERWT3DHeader& h) { return hasXPSidecar(h) || hasXPEmbedded(h); }
-inline uint64_t getXPEmbeddedOffset(const ERWT3DHeader& h) { return h.reserved[22]; }
-inline uint64_t getXPEmbeddedBytes(const ERWT3DHeader& h) { return h.reserved[23]; }
+inline uint64_t getXPEmbeddedOffset(const ERWT3DHeader& h) { return h.reserved[6]; }
+inline uint64_t getXPEmbeddedBytes(const ERWT3DHeader& h) { return h.reserved[21]; }
 
 constexpr char XPSIDECAR_MAGIC[8] = {'E', 'R', 'W', 'T', '3', 'D', 'X', 'P'};
 constexpr uint32_t XPSIDECAR_VERSION = 1;

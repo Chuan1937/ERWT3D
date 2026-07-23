@@ -194,8 +194,8 @@ bool writeLz4XpSidecar(
     if (embed) {
         header.flags |= FLAG_HAS_XP_SIDECAR | FLAG_HAS_XP_EMBEDDED;
         header.reserved[21] = 1;
-        header.reserved[22] = xpDataStart;
-        header.reserved[23] = sizeof(xpHdr) + totalStorageBytes + idxBytes;
+        header.reserved[6] = xpDataStart;
+        header.reserved[21] = sizeof(xpHdr) + totalStorageBytes + idxBytes;
         pwrite(fdErwt, &header, sizeof(header), 0);
     } else {
         header.flags |= FLAG_HAS_XP_SIDECAR;
