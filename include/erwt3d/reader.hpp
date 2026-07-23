@@ -6,6 +6,7 @@
 #include "sb_plan.hpp"
 #include "sb_hdd.hpp"
 #include "sb_panel.hpp"
+#include "ssd/ssd_config.hpp"
 #include <cstdint>
 #include <string>
 #include <memory>
@@ -72,10 +73,16 @@ public:
     const HDDReadWindowConfig& hddReadWindowConfig() const { return hddReadWindowCfg_; }
     void setHDDContiguousConfig(const HDDContiguousConfig& c) { hddContigCfg_ = c; }
     const HDDContiguousConfig& hddContiguousConfig() const { return hddContigCfg_; }
+    void setSSDReadConfig(const SSDReadConfig& cfg) { ssdReadCfg_ = cfg; }
+    const SSDReadConfig& ssdReadConfig() const { return ssdReadCfg_; }
     struct SliceBatchRequest { SliceAxis axis; uint64_t index; float* output; };
     bool readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
                          int numThreads, size_t memoryLimitMB,
                          const HDDReadWindowConfig& wcfg);
+
+    // SSD-mode batch read
+    bool readSlicesBatchSSD(const std::vector<SliceBatchRequest>& requests,
+                            int numThreads, size_t memoryLimitMB);
 
     // 一键配置
     void setHDDMode();
@@ -102,6 +109,7 @@ private:
     SBTaskOrder sbTaskOrder_ = SBTaskOrder::FileOffset;
     HDDReadWindowConfig hddReadWindowCfg_;
     HDDContiguousConfig hddContigCfg_;
+    SSDReadConfig ssdReadCfg_;
     bool profileIO_ = false;
     IOProfile lastProfile_;
     bool compressed_ = false;

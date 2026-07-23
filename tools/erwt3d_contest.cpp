@@ -353,22 +353,44 @@ int main(int argc, char* argv[]) {
 
         size_t memoryLimitMB = actualMemoryLimitMib;
 
-        reader->setIOBackend(erwt3d::IOBackend::Superblock);
-        reader->setSBReadMode(erwt3d::SBReadMode::HDDReadWindow);
-        reader->setSBTaskOrder(erwt3d::SBTaskOrder::FileOffset);
-        reader->setHDDReadWindowConfig(unifiedCfg.hdd);
+        const bool isSSD = (unifiedCfg.io_profile == erwt3d::IOProfileType::SSD ||
+                            unifiedCfg.io_profile == erwt3d::IOProfileType::WSL_SSD);
 
-        readFn = [reader, threads, memoryLimitMB, hddCfg = unifiedCfg.hdd](
-            erwt3d::SliceAxis axis,
-            const std::vector<uint64_t>& indices,
-            std::vector<std::vector<float>>& outputs
-        ) -> bool {
-            std::vector<erwt3d::ERWT3DReader::SliceBatchRequest> reqs;
-            for (size_t i = 0; i < indices.size(); ++i) {
-                reqs.push_back({axis, indices[i], outputs[i].data()});
-            }
-            return reader->readSlicesBatch(reqs, threads, memoryLimitMB, hddCfg);
-        };
+        if (isSSD) {
+            reader->setIOBackend(erwt3d::IOBackend::Superblock);
+            reader->setSBReadMode(erwt3d::SBReadMode::SSDConcurrentExtent);
+            reader->setSBTaskOrder(erwt3d::SBTaskOrder::FileOffset);
+            reader->setSSDReadConfig(unifiedCfg.ssd);
+
+            readFn = [reader, threads, memoryLimitMB](
+                erwt3d::SliceAxis axis,
+                const std::vector<uint64_t>& indices,
+                std::vector<std::vector<float>>& outputs
+            ) -> bool {
+                std::vector<erwt3d::ERWT3DReader::SliceBatchRequest> reqs;
+                for (size_t i = 0; i < indices.size(); ++i) {
+                    reqs.push_back({axis, indices[i], outputs[i].data()});
+                }
+                return reader->readSlicesBatchSSD(reqs, threads, memoryLimitMB);
+            };
+        } else {
+            reader->setIOBackend(erwt3d::IOBackend::Superblock);
+            reader->setSBReadMode(erwt3d::SBReadMode::HDDReadWindow);
+            reader->setSBTaskOrder(erwt3d::SBTaskOrder::FileOffset);
+            reader->setHDDReadWindowConfig(unifiedCfg.hdd);
+
+            readFn = [reader, threads, memoryLimitMB, hddCfg = unifiedCfg.hdd](
+                erwt3d::SliceAxis axis,
+                const std::vector<uint64_t>& indices,
+                std::vector<std::vector<float>>& outputs
+            ) -> bool {
+                std::vector<erwt3d::ERWT3DReader::SliceBatchRequest> reqs;
+                for (size_t i = 0; i < indices.size(); ++i) {
+                    reqs.push_back({axis, indices[i], outputs[i].data()});
+                }
+                return reader->readSlicesBatch(reqs, threads, memoryLimitMB, hddCfg);
+            };
+        }
 
     } else {
         // RZFP path: dummy readFn since executeContestGroupsMerged is used

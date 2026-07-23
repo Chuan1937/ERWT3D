@@ -113,6 +113,7 @@ if(ERWT3D_ENABLE_RZFP)
         src/rzfp_xplane_writer.cpp
         src/rzfp_raw_sampler.cpp
         src/rzfp_auto_plan.cpp
+        src/ssd/ssd_rzfp_executor.cpp
     )
 endif()
 
@@ -162,6 +163,9 @@ add_executable(erwt3d_layout_sim tools/erwt3d_layout_sim.cpp)
 
 add_executable(erwt3d_bench_contest tools/erwt3d_bench_contest.cpp)
 target_link_libraries(erwt3d_bench_contest PRIVATE erwt3d)
+
+add_executable(erwt3d_bench_ssd tools/erwt3d_bench_ssd.cpp)
+target_link_libraries(erwt3d_bench_ssd PRIVATE erwt3d)
 
 add_executable(erwt3d_precompute_x tools/erwt3d_precompute_x.cpp)
 target_link_libraries(erwt3d_precompute_x PRIVATE erwt3d)

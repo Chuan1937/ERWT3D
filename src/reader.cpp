@@ -4,6 +4,7 @@
 #include "erwt3d/raw_x_aux.hpp"
 #include "erwt3d/thread_pool.hpp"
 #include "erwt3d/sb_task.hpp"
+#include "erwt3d/ssd/ssd_executor.hpp"
 #include <algorithm>
 #include <fstream>
 #include <iostream>
@@ -1156,6 +1157,14 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
                                         memoryLimitMB, hddReadWindowCfg_,
                                         profileIO_ ? &lastProfile_ : nullptr,
                                         pinThreads_);
+    } else if (sbReadMode_ == SBReadMode::SSDConcurrentExtent) {
+        std::vector<const SBTaskPlan*> plans = {&plan};
+        auto batch = buildSBBatchPlan(plans);
+        float* outputs[] = {output};
+        SBBatchProfile bp;
+        ok = executeSBBatchSSD(fd_, batch, header_, outputs,
+                               ssdReadCfg_.read_threads, ssdReadCfg_.decode_threads,
+                               ssdReadCfg_, &bp);
     } else if (sbReadMode_ == SBReadMode::RunBatch) {
         ok = executeSBPlanRunBatch(fd_, plan, header_, output, numThreads,
                                     memoryLimitMB, profileIO_ ? &lastProfile_ : nullptr,
@@ -1409,8 +1418,84 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
         return true;
     }
 
+    if (sbReadMode_ == SBReadMode::SSDConcurrentExtent) {
+        auto batch = buildSBBatchPlan(pp);
+        SBBatchProfile bp;
+        return executeSBBatchSSD(fd_, batch, header_, outputs.data(),
+                                 ssdReadCfg_.read_threads, ssdReadCfg_.decode_threads,
+                                 ssdReadCfg_, &bp);
+    }
+
     return executeSBBatchHDD(fd_, buildSBBatchPlan(pp), header_, outputs.data(),
                               numThreads, memoryLimitMB, wcfg, pinThreads_, nullptr);
+}
+
+bool ERWT3DReader::readSlicesBatchSSD(const std::vector<SliceBatchRequest>& requests,
+                                       int numThreads, size_t memoryLimitMB) {
+    if (fd_ < 0 || requests.empty()) return false;
+
+    std::vector<bool> rawXAuxHandled(requests.size(), false);
+    if (rawXAuxAvailable_) {
+        tryReadBatchRawXAux_(requests, rawXAuxHandled);
+    }
+
+    std::vector<bool> xpHandled(requests.size(), false);
+    if (xpAvailable_) {
+        tryReadBatchXPSidecar_(requests, xpHandled);
+    }
+
+    std::vector<SBTaskPlan> plans;
+    std::vector<float*> outputs;
+    std::vector<const SBTaskPlan*> pp;
+    for (size_t i = 0; i < requests.size(); ++i) {
+        const auto& r = requests[i];
+        if (rawXAuxHandled[i] || xpHandled[i]) continue;
+
+        if (r.axis == SliceAxis::X && hasXPlanes(header_)) {
+            uint32_t stride = getXPlaneStride(header_);
+            if (r.index % stride == 0) {
+                uint64_t planeIdx = r.index / stride;
+                uint64_t planeCount = getXPlaneCount(header_);
+                if (planeIdx < planeCount) {
+                    uint64_t planeBytes = header_.ny * header_.nz * sizeof(float);
+                    uint64_t off = getXPlaneOffset(header_) + planeIdx * planeBytes;
+                    xPlaneRawBuf_.resize(header_.ny * header_.nz);
+                    ssize_t n = pread(fd_, xPlaneRawBuf_.data(), planeBytes, off);
+                    if (n == static_cast<ssize_t>(planeBytes)) {
+                        transposeZYToYZ(xPlaneRawBuf_.data(), r.output, header_.nz, header_.ny, header_.nz);
+                        continue;
+                    }
+                }
+            }
+        }
+        if (r.axis == SliceAxis::X && hasXPanels(header_)) {
+            if (tryReadSliceXPanels(fd_, header_, r.index, r.output, nullptr))
+                continue;
+        }
+
+        SBTaskPlan p;
+        switch (r.axis) {
+            case SliceAxis::Z: p = buildSBPlanZ(header_, r.index); break;
+            case SliceAxis::Y: p = buildSBPlanY(header_, r.index); break;
+            case SliceAxis::X: p = buildSBPlanX(header_, r.index); break;
+        }
+        if (sbTaskOrder_ == SBTaskOrder::FileOffset) sortTasksByFileOffset(p);
+        plans.push_back(std::move(p));
+        outputs.push_back(r.output);
+    }
+
+    if (plans.empty()) return true;
+    for (auto& p : plans) pp.push_back(&p);
+
+    auto batch = buildSBBatchPlan(pp);
+    int rdt = ssdReadCfg_.read_threads;
+    int dct = std::min(static_cast<int>(numThreads), ssdReadCfg_.decode_threads);
+    if (dct < 1) dct = 1;
+    if (rdt < 1) rdt = 1;
+
+    SBBatchProfile bp;
+    return executeSBBatchSSD(fd_, batch, header_, outputs.data(),
+                             rdt, dct, ssdReadCfg_, &bp);
 }
 
 bool ERWT3DReader::readExtents(const std::vector<Extent>& extents, void* buffer) {

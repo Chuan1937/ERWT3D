@@ -1,10 +1,11 @@
 #include "erwt3d/io_profile.hpp"
 
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <string>
 #include <sys/stat.h>
-#include <sys/vfs.h>
+#include <sys/sysmacros.h>
 
 namespace erwt3d {
 
@@ -28,7 +29,10 @@ IOProfileType parseIOProfileType(const std::string& s) {
 
 bool detectWSL() {
     std::ifstream osRelease("/proc/sys/kernel/osrelease");
-    if (!osRelease) return false;
+    if (!osRelease) {
+        osRelease.open("/proc/version");
+        if (!osRelease) return false;
+    }
     std::string line;
     std::getline(osRelease, line);
     return line.find("microsoft") != std::string::npos ||
@@ -38,7 +42,24 @@ bool detectWSL() {
 bool detectRotationalFromPath(const std::string& path) {
     struct stat st{};
     if (stat(path.c_str(), &st) != 0) return true;
-    return false;
+
+    char devPath[256];
+    snprintf(devPath, sizeof(devPath),
+             "/sys/dev/block/%u:%u/queue/rotational",
+             major(st.st_dev), minor(st.st_dev));
+
+    std::ifstream f(devPath);
+    if (!f) {
+        snprintf(devPath, sizeof(devPath),
+                 "/sys/dev/block/%u:0/queue/rotational",
+                 major(st.st_dev));
+        f.open(devPath);
+        if (!f) return true;
+    }
+
+    std::string val;
+    std::getline(f, val);
+    return val != "0";
 }
 
 } // namespace erwt3d
