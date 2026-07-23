@@ -42,13 +42,12 @@ ctest --test-dir build --output-on-failure
 
 | 二进制 | 用途 |
 |--------|------|
-| `erwt3d_convert` | Raw ↔ ERWT3D 格式转换 |
-| `erwt3d_bench_contest` | 赛题标准基准测试（赛题2 评分） |
-| `erwt3d_bench` | 通用基准测试，支持全部参数 |
-| `erwt3d_slice` | 单切片/单线读取 |
+| `erwt3d_convert` | **统一自动转换**（Raw↔LZ4+embedded XP / RZFP） |
+| `erwt3d_contest` | **统一比赛切片**（自动识别LZ4/RZFP，330个.dat） |
 | `erwt3d_verify` | 正确性验证 |
 | `erwt3d_info` | 文件信息查看 |
-| `erwt3d_precompute_x` | X-plane 预计算（可选，存储比 >1.5x） |
+| ~~`erwt3d_bench_contest`~~ | Historical / superseded — 请用 `erwt3d_contest` |
+| ~~`erwt3d_precompute_x`~~ | Historical / superseded — XP 已内嵌 |
 | `erwt3d_convert_rzfp` | Raw ↔ RZFP 格式转换 |
 | `erwt3d_verify_rzfp` | RZFP 正确性验证 |
 | `erwt3d_bench_rzfp` | RZFP 基准测试 |

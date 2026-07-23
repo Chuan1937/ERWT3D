@@ -45,15 +45,14 @@ T_composite = (T_x_random + T_y_random + T_z_random + T_x_continuous + T_y_conti
 
 | 二进制 | 用途 |
 |--------|------|
-| `erwt3d_convert` | Raw ↔ ERWT3D 转换 |
-| `erwt3d_bench_contest` | 赛题2 六组 benchmark |
-| `erwt3d_bench` | 通用 benchmark |
-| `erwt3d_verify` | 正确性验证，默认按相对误差判定 |
+| **`erwt3d_contest`** | **统一比赛切片**（自动识别LZ4/RZFP，330个.dat） |
+| **`erwt3d_convert`** | **统一自动转换**（Raw↔LZ4+XP/RZFP） |
+| `erwt3d_verify` | 正确性验证 |
 | `erwt3d_slice` | 单切片读取 |
 | `erwt3d_line` | 主维度单列读取 |
-| `erwt3d_bench_line` | 主维度单列 benchmark，不计入 60 分公式 |
 | `erwt3d_info` | 文件信息查看 |
-| `erwt3d_precompute_x` | 可选 X-plane 预计算 |
+| ~~`erwt3d_bench_contest`~~ | Historical / superseded — 请用 `erwt3d_contest` |
+| ~~`erwt3d_precompute_x`~~ | Historical / superseded — XP 已内嵌 |
 
 ## 验证与计时说明
 

@@ -34,6 +34,62 @@
   - CentOS 7 移植（portable x86-64，`-DERWT3D_NATIVE_OPT=OFF`）
   - 50GB RZFP cold-group 43.06s, 2GB 不 OOM
 
+## [0.8.0] - unreleased
+
+### Added
+
+- **P6: 统一自动格式、反向恢复和比赛入口**（PR #58, branch: `bench/cup-large-scale-first`）：
+  - **`erwt3d_convert`**：统一自动转换工具，自动选择 LZ4+嵌入式XP 或 RZFP
+  - **`erwt3d_contest`**：统一比赛入口，自动识别 LZ4/RZFP 格式并分派对应 Reader
+  - **`detectOptimizedFileFormat()`**：公用 Magic 检测（`file_format_detect.hpp/cpp`）
+  - **`RzfpReader::readFullToFile()`**：RZFP 反向恢复为 Raw float32（mmap 优先，pwrite 回退，O(1)前缀偏移）
+  - **`RzfpReader::readLine/readLineX/readLineY/readLineZ()`**：RZFP 高效单列读取，直接计算相交超块范围
+  - **`--memory-limit-mb auto|N`**：转换器和 Contest 均支持内存限制（auto=70% MemAvailable, ≥512MiB）
+  - **`pathsReferToSameFile()`**：输入输出同路径保护（canonical + weakly_canonical）
+  - **`ResolvedMemoryLimit`**：统一内存解析结构，一次解析全链路复用
+  - **`GroupReadEntry::original_group_id`**：空组安全映射
+  - **`contest_score.csv` 增加字段**：timestamp, hostname, kernel, git_commit, read_window_mib, cache_mode, timing_mode, group_read_times_estimated
+  - **输出目录保护**：已有 contest 结果时拒绝覆盖
+  - **`resolveMemoryLimit()`**：公用内存解析（512MiB 下限，无效参数报错）
+  - **`getTotalOptimizedStorageBytes()`**：统一存储比计算（嵌入式XP不重复计外部.xp）
+  - **`positions_hash`** 增量FNV-1a + 分组标签 + 固定黄金值 test
+
+### Changed
+
+- **CSV 表头识别**：从模糊匹配改为精确匹配 `axis,type,index` / `axis type index`
+- **坐标解析**：新增 `ParseLineResult` 枚举，区分 Skip/Parsed/Error，行号报错
+- **`computePositionsHash()`**：改为真正增量FNV-1a，按小端序写入uint64，加入分组标签和长度
+- **`closeFilesChecked()`**：成功路径 close 失败必须传播错误，清理路径使用 `closeFilesSilent()`
+- **XP 术语**：输出和帮助改为 "embedded LZ4 XP"，存储比不重复计算外部.xp
+- **RZFP 转换**：violation_count>0 或 max_relative_error≥1e-3 时转换失败并删除输出
+- **RZFP Contest**：去除重复 Reader 构造和 MemoryBudget 分配
+- **`readFullToFile()`**：O(n²) 偏移计算改为 O(1) 前缀数组 + 载荷大小校验
+- **内存值记录**：contest_score.csv 记录实际解析值，不再写0
+
+### Fixed
+
+- **ASan stack-buffer-overflow**：`header.reserved[22/23]` 越界 → 移至 `reserved[6]/[21]`
+- **raw 尺寸溢出检查**：`checkedMulU64()` 覆盖 nx×ny×nz×sizeof(float)
+- **raw 文件尺寸校验**：转换前验证 stat 尺寸 == 计算尺寸
+- **MemoryBudget 有效性检查**：RZFP Contest `budget.valid` 失败时立即退出
+- **正向转换**：`resolveMemoryLimit()` 仅调用一次，全链路复用
+
+### Performance (HDD, G→G)
+
+| 数据 | 格式 | 存储比 | Cold T_composite | Warm T_composite |
+|------|------|--------|-------------------|------------------|
+| 20GB | LZ4 + embedded XP | 0.479x | ~24s (guest-cold) | ~4–7s |
+| 50GB | RZFP | 0.421x | **~28s** (CV 1.5%) | — |
+| 5GB | RZFP | 0.589x | **~5s** (CV 1.9%) | — |
+
+### Tests
+
+- **Release**: 29/29 CTest 通过
+- **ASan+UBSan**: 29/29 CTest 通过（零错误）
+- 新增：`test_rzfp_to_raw`, `test_rzfp_line_reader`, `test_embedded_xp`, `test_contest_output_rzfp`
+
+---
+
 - **P5: Round-Level Joint Planning and HDD Pipeline**（branch: `perf/p5-round-planner-hdd-pipeline`, PR #55）：
   #### Added
   - **`readContestRound()`**：Y/Z 四组（random + continuous）联合为一次 `readSlicesBatch`，跨组 Leaf 去重
