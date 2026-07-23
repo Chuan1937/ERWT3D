@@ -6,6 +6,8 @@
 #include "erwt3d/sb_plan.hpp"
 #include "erwt3d/thread_pool.hpp"
 #include "erwt3d/raw_x_aux.hpp"
+#include "erwt3d/ssd/ssd_extent_planner.hpp"
+#include "erwt3d/ssd/ssd_config.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -749,6 +751,139 @@ static bool executeWindowedRead(
         profile.window_cache_resident_bytes =
             config.window_cache->residentBytes();
     }
+    return true;
+}
+
+static bool executeSelectiveLeafSSD(
+    int fd,
+    const std::vector<RzfpLeafTask>& tasks,
+    const ERWT3DHeader& planHeader,
+    const RzfpReaderConfig& config,
+    RzfpReadProfile& profile)
+{
+    if (tasks.empty()) return true;
+
+    std::vector<SSDLeafRequest> leafReqs;
+    leafReqs.reserve(tasks.size());
+    for (size_t i = 0; i < tasks.size(); ++i) {
+        const auto& t = tasks[i];
+        SSDLeafRequest req;
+        req.file_offset = t.file_offset;
+        req.record_size = t.record_size;
+        req.superblock_id = t.physical_sb_id;
+        req.morton = t.morton;
+        req.is_xplane = false;
+        req.leaf_id = (static_cast<uint64_t>(t.physical_sb_id) << 16) | t.morton;
+        profile.requested_record_bytes += t.record_size;
+        leafReqs.push_back(req);
+    }
+
+    SSDExtentPlanConfig planCfg;
+    planCfg.read_window_bytes = config.ssd.read_window_bytes;
+    planCfg.max_gap_bytes = config.ssd.max_gap_bytes;
+    planCfg.queue_depth = config.ssd.queue_depth;
+    planCfg.buffer_pool_bytes = config.ssd.buffer_pool_bytes;
+    planCfg.estimated_bandwidth_mb_s = 2000.0;
+    planCfg.io_submission_cost_us = 5.0;
+
+    auto plan = buildSSDExtentPlan(std::move(leafReqs), planCfg);
+
+    profile.pread_calls = plan.pread_calls;
+    profile.actual_read_bytes = plan.planned_read_bytes;
+
+#if defined(POSIX_FADV_SEQUENTIAL)
+    posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+#endif
+
+    struct ExtBuf {
+        uint64_t offset, size;
+        uint8_t* buf;
+        size_t first_task, task_count;
+    };
+
+    std::vector<ExtBuf> extBufs;
+    extBufs.reserve(plan.extents.size());
+    size_t tc = 0;
+    for (size_t ei = 0; ei < plan.extents.size(); ++ei) {
+        const auto& ext = plan.extents[ei];
+        uint8_t* buf = static_cast<uint8_t*>(std::aligned_alloc(4096,
+            (static_cast<size_t>(ext.size) + 4095) & ~static_cast<size_t>(4095ULL)));
+        size_t first = tc;
+        while (tc < tasks.size() &&
+               tasks[tc].file_offset < ext.offset + ext.size) ++tc;
+        extBufs.push_back({ext.offset, ext.size, buf, first, tc - first});
+    }
+
+    auto doPread = [fd](const ExtBuf& eb) -> bool {
+        ssize_t n = pread(fd, eb.buf, static_cast<size_t>(eb.size),
+                          static_cast<off_t>(eb.offset));
+        return n == static_cast<ssize_t>(eb.size);
+    };
+
+    auto cleanup = [&]() {
+        for (auto& eb : extBufs) if (eb.buf) std::free(eb.buf);
+    };
+
+    int readT = config.ssd.read_threads;
+    if (readT < 1) readT = 1;
+    if (readT <= 1 && extBufs.size() <= 1) {
+        for (const auto& eb : extBufs) {
+            if (!doPread(eb)) { cleanup(); return false; }
+        }
+    } else {
+        ThreadPool rp(static_cast<size_t>(readT));
+        std::vector<std::future<bool>> futs;
+        for (const auto& eb : extBufs) {
+            futs.push_back(rp.submit([&]() -> bool { return doPread(eb); }));
+        }
+        rp.waitAll();
+        for (auto& f : futs) if (!f.get()) { cleanup(); return false; }
+    }
+
+    const auto decodeStart = Clock::now();
+    int decodeT = config.decode_threads;
+    if (decodeT < 1) decodeT = 1;
+
+    {
+        ThreadPool dp(static_cast<size_t>(decodeT));
+        std::vector<std::future<bool>> dfuts;
+        RzfpCodec sharedCodec;
+
+        for (size_t ei = 0; ei < extBufs.size(); ++ei) {
+            const auto& eb = extBufs[ei];
+            dfuts.push_back(dp.submit([&, ei]() -> bool {
+                RzfpCodec codec;
+                for (size_t ti = eb.first_task;
+                     ti < eb.first_task + eb.task_count; ++ti) {
+                    if (ti >= tasks.size()) continue;
+                    const auto& task = tasks[ti];
+                    uint64_t off = task.file_offset - eb.offset;
+                    if (off + task.record_size > eb.size) continue;
+
+                    const uint8_t* data = eb.buf + off;
+                    float leaf[64];
+                    if (!codec.decodeRecord(
+                            task.codec, data, task.record_size, leaf)) {
+                        return false;
+                    }
+
+                    for (const auto& scatter : task.scatters) {
+                        scatterDecodedLeaf(planHeader, scatter.op, leaf,
+                                           scatter.output);
+                    }
+                }
+                return true;
+            }));
+        }
+        dp.waitAll();
+        for (auto& f : dfuts) if (!f.get()) { cleanup(); return false; }
+    }
+
+    const auto decodeEnd = Clock::now();
+    profile.decode_time_ms += msSince(decodeStart);
+    profile.scatter_time_ms += msSince(decodeEnd);
+
+    cleanup();
     return true;
 }
 
@@ -1793,6 +1928,11 @@ bool RzfpReader::readSlicesBatch(
     profile->unique_superblocks += uniqueSuperblocks.size();
     profile->plan_time_ms += planTime;
     profile->prefix_time_ms += prefixTime;
+
+    if (config.io_profile == IOProfileType::SSD ||
+        config.io_profile == IOProfileType::WSL_SSD) {
+        return executeSelectiveLeafSSD(fd_, tasks, planHeader, config, *profile);
+    }
 
     RzfpReadStrategy strategy = config.strategy;
     if (strategy == RzfpReadStrategy::Auto) {
