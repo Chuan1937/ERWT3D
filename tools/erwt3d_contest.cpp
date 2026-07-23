@@ -438,13 +438,15 @@ int main(int argc, char* argv[]) {
         rzfpConfig.use_window_cache = true;
         rzfpConfig.adaptive.auto_calibrate_device = false;
         rzfpConfig.adaptive.cache_policy = erwt3d::CachePolicy::StableAuto;
-        rzfpConfig.hdd.sequential_mb_s = 250.0;
-        rzfpConfig.hdd.seek_ms = 10.0;
-        rzfpConfig.hdd.read_window_bytes = readWindowMb > 0
-            ? std::min<uint64_t>(readWindowMb * MiB, 128ULL * MiB)
-            : std::min<uint64_t>(128ULL * MiB, budget.window_cache_bytes / 2 > 0
-                ? budget.window_cache_bytes / 2 : 64ULL * MiB);
-        rzfpConfig.hdd.max_gap_bytes = 8ULL * MiB;
+        rzfpConfig.hdd = unifiedCfg.hdd;
+        rzfpConfig.ssd = unifiedCfg.ssd;
+
+        if (readWindowMb == 0) {
+            uint64_t budgetClamp = budget.window_cache_bytes / 2 > 0
+                ? budget.window_cache_bytes / 2 : 64ULL * MiB;
+            rzfpConfig.hdd.read_window_bytes = std::min<uint64_t>(
+                rzfpConfig.hdd.read_window_bytes, budgetClamp);
+        }
 
         erwt3d::MultiGroupReadFunction mergedFn =
             [rzfpReader, rzfpConfig](

@@ -17,6 +17,7 @@ IOProfileType resolveIOProfile(
     bool& wslDetected)
 {
     wslDetected = detectWSL();
+    bool rotational = detectRotationalFromPath(inputPath);
 
     {
         struct statfs sfs{};
@@ -51,14 +52,23 @@ IOProfileType resolveIOProfile(
                              filesystemType == "btrfs");
         bool isMntPath = (inputPath.find("/mnt/") == 0);
 
-        if (isNativeExt4 && !isMntPath) {
-            reason = "auto-wsl-native-ext4";
+        if (isNativeExt4 && !isMntPath && !rotational) {
+            reason = "auto-wsl-native-ext4-ssd";
             return IOProfileType::WSL_SSD;
+        }
+        if (isNativeExt4 && !isMntPath && rotational) {
+            reason = "auto-wsl-native-ext4-hdd";
+            return IOProfileType::HDD;
         }
         if (isMntPath) {
             reason = "auto-wsl-mnt-fallback-hdd";
             return IOProfileType::HDD;
         }
+    }
+
+    if (!rotational) {
+        reason = "auto-native-ssd";
+        return IOProfileType::SSD;
     }
 
     reason = "auto-default-hdd";

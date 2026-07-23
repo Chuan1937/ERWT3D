@@ -1296,6 +1296,27 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
                       return a->compressed_offset < b->compressed_offset;
                   });
 
+        if (sbReadMode_ == SBReadMode::SSDConcurrentExtent) {
+            std::vector<CompressedSBInfo> csbInfo;
+            csbInfo.reserve(sortedSBs.size());
+            for (auto* ptr : sortedSBs) {
+                CompressedSBInfo info;
+                info.sb_idx = ptr->sb_idx;
+                info.compressed_offset = ptr->compressed_offset;
+                info.compressed_size = ptr->compressed_size;
+                info.is_compressed = ptr->is_compressed;
+                info.scatter_indices = std::move(ptr->scatter_indices);
+                csbInfo.push_back(std::move(info));
+            }
+            auto batch = buildSBBatchPlan(pp);
+            SBBatchProfile bp;
+            return executeCompressedBatchSSD(fd_, header_, csbInfo, batch,
+                                             outputs.data(),
+                                             ssdReadCfg_.read_threads,
+                                             ssdReadCfg_.decode_threads,
+                                             ssdReadCfg_, &bp);
+        }
+
         const uint64_t WINDOW_SIZE = 256ULL * 1024 * 1024;
         const uint64_t MAX_GAP = 4ULL * 1024 * 1024;
         const int decodeThreads = std::min(8, std::max(1, numThreads));
