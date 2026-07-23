@@ -82,6 +82,15 @@ target_link_libraries(test_embedded_xp PRIVATE erwt3d)
 add_executable(test_contest_output_rzfp test_contest_output_rzfp.cpp)
 target_link_libraries(test_contest_output_rzfp PRIVATE erwt3d)
 
+add_executable(test_ssd_extent_planner ssd/test_ssd_extent_planner.cpp)
+target_link_libraries(test_ssd_extent_planner PRIVATE erwt3d)
+
+add_executable(test_ssd_lz4_batch ssd/test_ssd_lz4_batch.cpp)
+target_link_libraries(test_ssd_lz4_batch PRIVATE erwt3d)
+
+add_executable(test_ssd_memory_limit ssd/test_ssd_memory_limit.cpp)
+target_link_libraries(test_ssd_memory_limit PRIVATE erwt3d)
+
 add_test(NAME relative_error_strict COMMAND test_relative_error strict)
 add_test(NAME relative_error_legacy COMMAND test_relative_error legacy)
 add_test(NAME rzfp_codec COMMAND test_rzfp_codec)
@@ -111,3 +120,6 @@ add_test(NAME rzfp_to_raw COMMAND test_rzfp_to_raw)
 add_test(NAME rzfp_line_reader COMMAND test_rzfp_line_reader)
 add_test(NAME embedded_xp COMMAND test_embedded_xp)
 add_test(NAME contest_output_rzfp COMMAND test_contest_output_rzfp)
+add_test(NAME ssd_extent_planner COMMAND test_ssd_extent_planner)
+add_test(NAME ssd_lz4_batch COMMAND test_ssd_lz4_batch)
+add_test(NAME ssd_memory_limit COMMAND test_ssd_memory_limit)

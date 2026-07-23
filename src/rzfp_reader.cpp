@@ -808,33 +808,41 @@ static bool executeSelectiveLeafSSD(
         const auto& ext = plan.extents[ei];
         uint8_t* buf = static_cast<uint8_t*>(std::aligned_alloc(4096,
             (static_cast<size_t>(ext.size) + 4095) & ~static_cast<size_t>(4095ULL)));
+        if (!buf) {
+            for (auto& eb : extBufs) if (eb.buf) std::free(eb.buf);
+            return false;
+        }
         size_t first = tc;
         while (tc < tasks.size() &&
                tasks[tc].file_offset < ext.offset + ext.size) ++tc;
         extBufs.push_back({ext.offset, ext.size, buf, first, tc - first});
     }
 
-    auto doPread = [fd](const ExtBuf& eb) -> bool {
-        ssize_t n = pread(fd, eb.buf, static_cast<size_t>(eb.size),
-                          static_cast<off_t>(eb.offset));
-        return n == static_cast<ssize_t>(eb.size);
-    };
-
     auto cleanup = [&]() {
-        for (auto& eb : extBufs) if (eb.buf) std::free(eb.buf);
+        for (auto& eb : extBufs) if (eb.buf) { std::free(eb.buf); eb.buf = nullptr; }
     };
 
     int readT = config.ssd.read_threads;
     if (readT < 1) readT = 1;
-    if (readT <= 1 && extBufs.size() <= 1) {
-        for (const auto& eb : extBufs) {
-            if (!doPread(eb)) { cleanup(); return false; }
+    if (readT <= 1 || extBufs.size() <= 1) {
+        for (size_t i = 0; i < extBufs.size(); ++i) {
+            ssize_t n = pread(fd, extBufs[i].buf,
+                              static_cast<size_t>(extBufs[i].size),
+                              static_cast<off_t>(extBufs[i].offset));
+            if (n != static_cast<ssize_t>(extBufs[i].size)) {
+                cleanup(); return false;
+            }
         }
     } else {
         ThreadPool rp(static_cast<size_t>(readT));
         std::vector<std::future<bool>> futs;
-        for (const auto& eb : extBufs) {
-            futs.push_back(rp.submit([&]() -> bool { return doPread(eb); }));
+        for (size_t i = 0; i < extBufs.size(); ++i) {
+            futs.push_back(rp.submit([fd, &extBufs, i]() -> bool {
+                ssize_t n = pread(fd, extBufs[i].buf,
+                                  static_cast<size_t>(extBufs[i].size),
+                                  static_cast<off_t>(extBufs[i].offset));
+                return n == static_cast<ssize_t>(extBufs[i].size);
+            }));
         }
         rp.waitAll();
         for (auto& f : futs) if (!f.get()) { cleanup(); return false; }
@@ -847,32 +855,33 @@ static bool executeSelectiveLeafSSD(
     {
         ThreadPool dp(static_cast<size_t>(decodeT));
         std::vector<std::future<bool>> dfuts;
-        RzfpCodec sharedCodec;
 
-        for (size_t ei = 0; ei < extBufs.size(); ++ei) {
-            const auto& eb = extBufs[ei];
-            dfuts.push_back(dp.submit([&, ei]() -> bool {
-                RzfpCodec codec;
-                for (size_t ti = eb.first_task;
-                     ti < eb.first_task + eb.task_count; ++ti) {
-                    if (ti >= tasks.size()) continue;
-                    const auto& task = tasks[ti];
-                    uint64_t off = task.file_offset - eb.offset;
-                    if (off + task.record_size > eb.size) continue;
+        for (size_t i = 0; i < extBufs.size(); ++i) {
+            dfuts.push_back(dp.submit(
+                [fd, &planHeader, &tasks, &extBufs, i]() -> bool {
+            const auto& eb = extBufs[i];
+            RzfpCodec codec;
+            for (size_t ti = eb.first_task;
+                 ti < eb.first_task + eb.task_count; ++ti) {
+                if (ti >= tasks.size()) continue;
+                const auto& task = tasks[ti];
+                uint64_t off = task.file_offset - eb.offset;
+                if (off + task.record_size > eb.size) continue;
 
-                    const uint8_t* data = eb.buf + off;
-                    float leaf[64];
-                    if (!codec.decodeRecord(
-                            task.codec, data, task.record_size, leaf)) {
-                        return false;
-                    }
-
-                    for (const auto& scatter : task.scatters) {
-                        scatterDecodedLeaf(planHeader, scatter.op, leaf,
-                                           scatter.output);
-                    }
+                const uint8_t* data = eb.buf + off;
+                float leaf[64];
+                if (!codec.decodeRecord(
+                        task.codec, data, task.record_size, leaf)) {
+                    return false;
                 }
-                return true;
+
+                for (const auto& scatter : task.scatters) {
+                    scatterDecodedLeaf(planHeader, scatter.op, leaf,
+                                       scatter.output);
+                }
+            }
+            (void)fd;
+            return true;
             }));
         }
         dp.waitAll();

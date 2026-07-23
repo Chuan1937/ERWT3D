@@ -342,6 +342,16 @@ int main(int argc, char* argv[]) {
     erwt3d::UnifiedReadConfig unifiedCfg = erwt3d::makeUnifiedConfig(
         requestedProfile, inputPath, threads, actualMemoryLimitMib, readWindowMb);
 
+    if (requestedProfile == erwt3d::IOProfileType::Auto) {
+        if (fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D) {
+            unifiedCfg.io_profile = erwt3d::IOProfileType::SSD;
+            unifiedCfg.resolved_profile_reason = "auto-lz4-best-ssd";
+        } else {
+            unifiedCfg.io_profile = erwt3d::IOProfileType::HDD;
+            unifiedCfg.resolved_profile_reason = "auto-rzfp-best-hdd-windowcache";
+        }
+    }
+
     std::cout << "IO profile: " << ioProfileStr
               << " -> " << erwt3d::ioProfileTypeName(unifiedCfg.io_profile)
               << " (" << unifiedCfg.resolved_profile_reason << ")\n";
