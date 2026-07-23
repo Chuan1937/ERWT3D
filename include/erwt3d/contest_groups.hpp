@@ -18,6 +18,9 @@ using ContestReadBatchFunction = std::function<bool(
 
 struct ContestGroupTiming {
     double time_ms = 0.0;
+    double read_ms = 0.0;
+    double write_ms = 0.0;
+    double create_files_ms = 0.0;
     uint64_t slice_count = 0;
     uint64_t total_bytes = 0;
 };
@@ -35,6 +38,9 @@ struct ContestUnifiedProfile {
     double t_z_ms = 0.0;
     double t_composite_ms = 0.0;
     double process_e2e_ms = 0.0;
+    double merged_read_ms = 0.0;
+    double total_write_ms = 0.0;
+    double total_create_files_ms = 0.0;
 
     uint64_t output_file_count = 0;
     uint64_t output_total_bytes = 0;
@@ -47,6 +53,28 @@ bool executeContestGroups(
     uint64_t ny,
     uint64_t nz,
     const ContestReadBatchFunction& reader,
+    ContestUnifiedProfile* profile
+);
+
+struct GroupReadEntry {
+    SliceAxis axis;
+    bool isRandom;
+    std::string name;
+    std::vector<uint64_t> indices;
+};
+
+using MultiGroupReadFunction = std::function<bool(
+    const std::vector<GroupReadEntry>& groups,
+    std::vector<std::vector<std::vector<float>>>& allOutputs
+)>;
+
+bool executeContestGroupsMerged(
+    const ContestPositions& positions,
+    const std::string& outputDir,
+    uint64_t nx,
+    uint64_t ny,
+    uint64_t nz,
+    const MultiGroupReadFunction& mergedReader,
     ContestUnifiedProfile* profile
 );
 

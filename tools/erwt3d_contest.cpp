@@ -106,16 +106,31 @@ static void writeScoreCsv(
         << "memory_limit_mib," << memoryLimitMib << '\n'
         << "positions_hash,0x" << std::hex << erwt3d::computePositionsHash(positions) << std::dec << '\n'
         << "x_random_time_ms," << std::fixed << std::setprecision(3) << profile.x_random.time_ms << '\n'
+        << "x_random_read_ms," << profile.x_random.read_ms << '\n'
+        << "x_random_write_ms," << profile.x_random.write_ms << '\n'
         << "y_random_time_ms," << profile.y_random.time_ms << '\n'
+        << "y_random_read_ms," << profile.y_random.read_ms << '\n'
+        << "y_random_write_ms," << profile.y_random.write_ms << '\n'
         << "z_random_time_ms," << profile.z_random.time_ms << '\n'
+        << "z_random_read_ms," << profile.z_random.read_ms << '\n'
+        << "z_random_write_ms," << profile.z_random.write_ms << '\n'
         << "x_continuous_time_ms," << profile.x_continuous.time_ms << '\n'
+        << "x_continuous_read_ms," << profile.x_continuous.read_ms << '\n'
+        << "x_continuous_write_ms," << profile.x_continuous.write_ms << '\n'
         << "y_continuous_time_ms," << profile.y_continuous.time_ms << '\n'
+        << "y_continuous_read_ms," << profile.y_continuous.read_ms << '\n'
+        << "y_continuous_write_ms," << profile.y_continuous.write_ms << '\n'
         << "z_continuous_time_ms," << profile.z_continuous.time_ms << '\n'
+        << "z_continuous_read_ms," << profile.z_continuous.read_ms << '\n'
+        << "z_continuous_write_ms," << profile.z_continuous.write_ms << '\n'
         << "x_axis_time_ms," << profile.t_x_ms << '\n'
         << "y_axis_time_ms," << profile.t_y_ms << '\n'
         << "z_axis_time_ms," << profile.t_z_ms << '\n'
         << "T_composite_ms," << profile.t_composite_ms << '\n'
         << "process_e2e_ms," << profile.process_e2e_ms << '\n'
+        << "merged_read_ms," << profile.merged_read_ms << '\n'
+        << "total_write_ms," << profile.total_write_ms << '\n'
+        << "total_create_files_ms," << profile.total_create_files_ms << '\n'
         << "output_file_count," << profile.output_file_count << '\n'
         << "output_total_bytes," << profile.output_total_bytes << '\n';
 }
@@ -194,7 +209,6 @@ int main(int argc, char* argv[]) {
 
     const char* fmtName = (fmt == FileFormat::LZ4) ? "LZ4" : "RZFP";
 
-    // Determine dimensions and storage ratio
     uint64_t nx = 0, ny = 0, nz = 0;
     double storageRatio = 0.0;
 
@@ -226,7 +240,6 @@ int main(int argc, char* argv[]) {
         storageRatio = rawBytes > 0 ? static_cast<double>(fileBytes) / rawBytes : 0.0;
     }
 
-    // Resolve positions
     const uint32_t randomCount = 100;
     const uint32_t continuousCount = 10;
     erwt3d::ContestPositions positions;
@@ -246,7 +259,6 @@ int main(int argc, char* argv[]) {
             std::cerr << "Error: " << posError << "\n";
             return 1;
         }
-        // Export generated positions to CSV
         const std::string posCsvPath = outputDir + "/contest_positions.csv";
         std::ofstream posOut(posCsvPath);
         posOut << "axis,type,index\n";
@@ -258,7 +270,6 @@ int main(int argc, char* argv[]) {
         for (auto z : positions.z_continuous) posOut << "z,continuous," << z << "\n";
     }
 
-    // Print header
     std::cout << "============================================================\n"
               << "  ERWT3D Contest Entry (" << fmtName << " path)\n"
               << "============================================================\n"
@@ -272,7 +283,6 @@ int main(int argc, char* argv[]) {
     printPositions(positions);
     std::cout << "\n";
 
-    // Build reader callback
     erwt3d::ContestReadBatchFunction readFn;
 
     if (fmt == FileFormat::LZ4) {
@@ -301,7 +311,6 @@ int main(int argc, char* argv[]) {
             const std::vector<uint64_t>& indices,
             std::vector<std::vector<float>>& outputs
         ) -> bool {
-            uint64_t elem = outputs.empty() ? 0 : outputs[0].size();
             erwt3d::HDDReadWindowConfig wcfg{
                 readWindowMb > 0 ? std::min<uint64_t>(readWindowMb * MiB, 128ULL * MiB) : 128ULL * MiB,
                 8ULL * MiB
@@ -353,45 +362,108 @@ int main(int argc, char* argv[]) {
             std::vector<std::vector<float>>& outputs
         ) -> bool {
             if (indices.empty()) return true;
-            uint64_t elem = outputs.empty() ? 0 : outputs[0].size();
 
-            std::vector<erwt3d::RzfpReader::ContestRoundGroup> cgroups(1);
-            cgroups[0].axis = axis;
-            const std::string name = (axis == erwt3d::SliceAxis::X) ? "x" :
-                                     (axis == erwt3d::SliceAxis::Y) ? "y" : "z";
-            cgroups[0].name = name;
-            cgroups[0].indices = indices;
-            cgroups[0].outputs.clear();
-            for (auto& o : outputs) cgroups[0].outputs.push_back(o.data());
-
-            std::vector<erwt3d::RzfpReader::RzfpRoundReadResult> results;
-            return reader->readContestRound(cgroups, config, &results);
+            std::vector<erwt3d::RzfpReader::SliceBatchRequest> reqs;
+            for (size_t i = 0; i < indices.size(); ++i) {
+                reqs.push_back({axis, indices[i], outputs[i].data()});
+            }
+            return reader->readSlicesBatch(reqs, config);
         };
     }
 
-    // Execute unified contest groups
     erwt3d::ContestUnifiedProfile profile;
-    if (!erwt3d::executeContestGroups(positions, outputDir, nx, ny, nz, readFn, &profile)) {
-        std::cerr << "Error: contest execution failed\n";
-        return 1;
+
+    if (fmt == FileFormat::LZ4) {
+        if (!erwt3d::executeContestGroups(positions, outputDir, nx, ny, nz, readFn, &profile)) {
+            std::cerr << "Error: contest execution failed\n";
+            return 1;
+        }
+    } else {
+        auto rzfpReader = std::make_shared<erwt3d::RzfpReader>(inputPath);
+        if (!rzfpReader->ok()) {
+            std::cerr << "Error: cannot open RZFP file\n";
+            return 1;
+        }
+
+        const auto& rzfpHeader = rzfpReader->header();
+        uint64_t largestOutputBytes = std::max({rzfpHeader.ny * rzfpHeader.nz * sizeof(float),
+                                                 rzfpHeader.nx * rzfpHeader.nz * sizeof(float),
+                                                 rzfpHeader.nx * rzfpHeader.ny * sizeof(float)});
+
+        erwt3d::MemoryBudget budget = erwt3d::makeMemoryBudget(
+            memoryLimit, rzfpReader->payloadBytes(), largestOutputBytes, 100);
+
+        auto windowCache = std::make_shared<erwt3d::BoundedWindowCache>(budget.window_cache_bytes);
+
+        erwt3d::RzfpReaderConfig rzfpConfig;
+        rzfpConfig.strategy = erwt3d::RzfpReadStrategy::Auto;
+        rzfpConfig.decode_threads = threads;
+        rzfpConfig.window_cache = windowCache;
+        rzfpConfig.window_cache_file_identity = rzfpReader->fileIdentity();
+        rzfpConfig.use_window_cache = true;
+        rzfpConfig.adaptive.auto_calibrate_device = false;
+        rzfpConfig.adaptive.cache_policy = erwt3d::CachePolicy::StableAuto;
+        rzfpConfig.hdd.sequential_mb_s = 250.0;
+        rzfpConfig.hdd.seek_ms = 10.0;
+        rzfpConfig.hdd.read_window_bytes = readWindowMb > 0
+            ? std::min<uint64_t>(readWindowMb * MiB, 128ULL * MiB)
+            : std::min<uint64_t>(128ULL * MiB, budget.window_cache_bytes / 2 > 0
+                ? budget.window_cache_bytes / 2 : 64ULL * MiB);
+        rzfpConfig.hdd.max_gap_bytes = 8ULL * MiB;
+
+        erwt3d::MultiGroupReadFunction mergedFn =
+            [rzfpReader, rzfpConfig](
+                const std::vector<erwt3d::GroupReadEntry>& groups,
+                std::vector<std::vector<std::vector<float>>>& allOutputs
+            ) -> bool {
+            if (groups.empty()) return true;
+
+            std::vector<erwt3d::RzfpReader::ContestRoundGroup> cgroups(groups.size());
+            for (size_t g = 0; g < groups.size(); ++g) {
+                cgroups[g].axis = groups[g].axis;
+                cgroups[g].name = groups[g].name;
+                cgroups[g].indices = groups[g].indices;
+                cgroups[g].outputs.clear();
+                for (auto& o : allOutputs[g]) cgroups[g].outputs.push_back(o.data());
+            }
+
+            std::vector<erwt3d::RzfpReader::RzfpRoundReadResult> results;
+            return rzfpReader->readContestRound(cgroups, rzfpConfig, &results);
+        };
+
+        if (!erwt3d::executeContestGroupsMerged(positions, outputDir, nx, ny, nz, mergedFn, &profile)) {
+            std::cerr << "Error: contest execution failed\n";
+            return 1;
+        }
     }
 
-    // Print results
     std::cout << std::fixed << std::setprecision(3);
-    std::cout << "X random:       " << profile.x_random.time_ms / 1000.0 << " s\n";
-    std::cout << "Y random:       " << profile.y_random.time_ms / 1000.0 << " s\n";
-    std::cout << "Z random:       " << profile.z_random.time_ms / 1000.0 << " s\n";
-    std::cout << "X continuous:   " << profile.x_continuous.time_ms / 1000.0 << " s\n";
-    std::cout << "Y continuous:   " << profile.y_continuous.time_ms / 1000.0 << " s\n";
-    std::cout << "Z continuous:   " << profile.z_continuous.time_ms / 1000.0 << " s\n";
+
+    auto printGroup = [](const char* label, const erwt3d::ContestGroupTiming& t) {
+        std::cout << label << ":     " << t.time_ms / 1000.0 << " s"
+                  << "  (read=" << t.read_ms / 1000.0
+                  << "s write=" << t.write_ms / 1000.0
+                  << "s create=" << t.create_files_ms / 1000.0 << "s)\n";
+    };
+
+    printGroup("X random     ", profile.x_random);
+    printGroup("Y random     ", profile.y_random);
+    printGroup("Z random     ", profile.z_random);
+    printGroup("X continuous ", profile.x_continuous);
+    printGroup("Y continuous ", profile.y_continuous);
+    printGroup("Z continuous ", profile.z_continuous);
     std::cout << "T_X:            " << profile.t_x_ms / 1000.0 << " s\n";
     std::cout << "T_Y:            " << profile.t_y_ms / 1000.0 << " s\n";
     std::cout << "T_Z:            " << profile.t_z_ms / 1000.0 << " s\n";
     std::cout << "T_composite:    " << profile.t_composite_ms / 1000.0 << " s\n";
     std::cout << "Process e2e:    " << profile.process_e2e_ms / 1000.0 << " s\n";
+    if (profile.merged_read_ms > 0.0) {
+        std::cout << "  merged_read:  " << profile.merged_read_ms / 1000.0 << " s\n";
+        std::cout << "  total_write:  " << profile.total_write_ms / 1000.0 << " s\n";
+        std::cout << "  total_create: " << profile.total_create_files_ms / 1000.0 << " s\n";
+    }
     std::cout << "Output files:   " << profile.output_file_count << "\n";
 
-    // Write score CSV
     const std::string scorePath = outputDir + "/contest_score.csv";
     writeScoreCsv(scorePath, inputPath, fmtName, nx, ny, nz, storageRatio,
                   threads, memoryLimit, 0, positions, profile);

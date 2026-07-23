@@ -51,37 +51,24 @@ bool writeFullyAt(int fd, const void* buf, size_t len, off_t offset) {
     return true;
 }
 
-struct GroupDef {
+struct InternalGroup {
     SliceAxis axis;
     bool isRandom;
+    std::string name;
     const std::vector<uint64_t>* indices;
+    int timingIndex;
 };
 
-bool executeOneGroup(
-    const GroupDef& group,
+static bool createOutputFiles(
+    const InternalGroup& group,
     const std::string& outputDir,
-    uint64_t nx, uint64_t ny, uint64_t nz,
-    const ContestReadBatchFunction& reader,
-    ContestGroupTiming& timing
+    uint64_t outBytes,
+    std::vector<int>& fds
 ) {
-    const auto& indices = *group.indices;
-    if (indices.empty()) {
-        timing = {};
-        return true;
-    }
-
-    const uint64_t elements = sliceElements(nx, ny, nz, group.axis);
-    const uint64_t outBytes = elements * sizeof(float);
-    const std::string name = groupName(group.axis, group.isRandom);
-
-    // Timing starts: before creating first output file
-    const auto groupStart = Clock::now();
-
-    // Create and pre-allocate all output files
-    std::vector<int> fds(indices.size(), -1);
-    for (size_t i = 0; i < indices.size(); ++i) {
+    fds.resize(group.indices->size(), -1);
+    for (size_t i = 0; i < group.indices->size(); ++i) {
         std::ostringstream oss;
-        oss << outputDir << "/contest_" << name << "_"
+        oss << outputDir << "/contest_" << group.name << "_"
             << std::setfill('0') << std::setw(3) << i << ".dat";
         int fd = open(oss.str().c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
         if (fd < 0) {
@@ -95,36 +82,28 @@ bool executeOneGroup(
         }
         fds[i] = fd;
     }
-
-    // Read all slices via the reader callback (single batch for optimal cross-group dedup)
-    std::vector<std::vector<float>> outputs(indices.size());
-    for (auto& o : outputs) o.resize(elements);
-
-    if (!reader(group.axis, indices, outputs)) {
-        for (int f : fds) if (f >= 0) close(f);
-        return false;
-    }
-
-    // Write all slices
-    for (size_t i = 0; i < indices.size(); ++i) {
-        if (!writeFullyAt(fds[i], outputs[i].data(), outBytes, 0)) {
-            for (int f : fds) if (f >= 0) close(f);
-            return false;
-        }
-    }
-
-    // Close all files
-    for (int f : fds) if (f >= 0) close(f);
-
-    // Timing ends: after all files closed
-    timing.time_ms = msSince(groupStart);
-    timing.slice_count = indices.size();
-    timing.total_bytes = indices.size() * outBytes;
-
     return true;
 }
 
-} // namespace
+static void closeFiles(std::vector<int>& fds) {
+    for (int& f : fds) if (f >= 0) close(f);
+    fds.clear();
+}
+
+static void finishProfile(ContestUnifiedProfile& p) {
+    p.t_x_ms = (p.x_random.time_ms + p.x_continuous.time_ms) / 2.0;
+    p.t_y_ms = (p.y_random.time_ms + p.y_continuous.time_ms) / 2.0;
+    p.t_z_ms = (p.z_random.time_ms + p.z_continuous.time_ms) / 2.0;
+    p.t_composite_ms = (p.t_x_ms + p.t_y_ms + p.t_z_ms) / 3.0;
+    p.output_file_count = p.x_random.slice_count + p.y_random.slice_count +
+        p.z_random.slice_count + p.x_continuous.slice_count +
+        p.y_continuous.slice_count + p.z_continuous.slice_count;
+    p.output_total_bytes = p.x_random.total_bytes + p.y_random.total_bytes +
+        p.z_random.total_bytes + p.x_continuous.total_bytes +
+        p.y_continuous.total_bytes + p.z_continuous.total_bytes;
+}
+
+}
 
 bool executeContestGroups(
     const ContestPositions& positions,
@@ -134,6 +113,12 @@ bool executeContestGroups(
     ContestUnifiedProfile* profile
 ) {
     ContestUnifiedProfile p;
+
+    struct GroupDef {
+        SliceAxis axis;
+        bool isRandom;
+        const std::vector<uint64_t>* indices;
+    };
 
     GroupDef groups[6] = {
         {SliceAxis::X, true,  &positions.x_random},
@@ -152,22 +137,180 @@ bool executeContestGroups(
     const auto e2eStart = Clock::now();
 
     for (int g = 0; g < 6; ++g) {
-        if (!executeOneGroup(groups[g], outputDir, nx, ny, nz, reader, *timings[g])) {
+        const auto& indices = *groups[g].indices;
+        if (indices.empty()) {
+            *timings[g] = {};
+            continue;
+        }
+
+        const uint64_t elements = sliceElements(nx, ny, nz, groups[g].axis);
+        const uint64_t outBytes = elements * sizeof(float);
+        const std::string name = groupName(groups[g].axis, groups[g].isRandom);
+
+        const auto groupStart = Clock::now();
+
+        std::vector<int> fds;
+        if (!createOutputFiles({groups[g].axis, groups[g].isRandom, name, &indices, g},
+                               outputDir, outBytes, fds)) {
             return false;
         }
-        p.output_file_count += timings[g]->slice_count;
-        p.output_total_bytes += timings[g]->total_bytes;
+        const double createMs = msSince(groupStart);
+
+        std::vector<std::vector<float>> outputs(indices.size());
+        for (auto& o : outputs) o.resize(elements);
+
+        const auto readStart = Clock::now();
+        if (!reader(groups[g].axis, indices, outputs)) {
+            closeFiles(fds);
+            return false;
+        }
+        const double readMs = msSince(readStart);
+
+        const auto writeStart = Clock::now();
+        for (size_t i = 0; i < indices.size(); ++i) {
+            if (!writeFullyAt(fds[i], outputs[i].data(), outBytes, 0)) {
+                closeFiles(fds);
+                return false;
+            }
+        }
+        closeFiles(fds);
+        const double writeMs = msSince(writeStart);
+
+        timings[g]->time_ms = msSince(groupStart);
+        timings[g]->read_ms = readMs;
+        timings[g]->write_ms = writeMs;
+        timings[g]->create_files_ms = createMs;
+        timings[g]->slice_count = indices.size();
+        timings[g]->total_bytes = indices.size() * outBytes;
     }
 
     p.process_e2e_ms = msSince(e2eStart);
+    finishProfile(p);
 
+    if (profile) *profile = p;
+    return true;
+}
+
+bool executeContestGroupsMerged(
+    const ContestPositions& positions,
+    const std::string& outputDir,
+    uint64_t nx, uint64_t ny, uint64_t nz,
+    const MultiGroupReadFunction& mergedReader,
+    ContestUnifiedProfile* profile
+) {
+    ContestUnifiedProfile p;
+
+    InternalGroup groups[6] = {
+        {SliceAxis::X, true,  "x_random",      &positions.x_random,      0},
+        {SliceAxis::Y, true,  "y_random",      &positions.y_random,      1},
+        {SliceAxis::Z, true,  "z_random",      &positions.z_random,      2},
+        {SliceAxis::X, false, "x_continuous",  &positions.x_continuous,  3},
+        {SliceAxis::Y, false, "y_continuous",  &positions.y_continuous,  4},
+        {SliceAxis::Z, false, "z_continuous",  &positions.z_continuous,  5},
+    };
+
+    ContestGroupTiming* timings[6] = {
+        &p.x_random, &p.y_random, &p.z_random,
+        &p.x_continuous, &p.y_continuous, &p.z_continuous,
+    };
+
+    const auto e2eStart = Clock::now();
+
+    // Phase 1: Create all output files and pre-0allocate
+    const auto createStart = Clock::now();
+    std::vector<std::vector<int>> allFds(6);
+    std::vector<uint64_t> outBytesPerGroup(6, 0);
+
+    for (int g = 0; g < 6; ++g) {
+        if (groups[g].indices->empty()) {
+            *timings[g] = {};
+            continue;
+        }
+        const uint64_t elements = sliceElements(nx, ny, nz, groups[g].axis);
+        outBytesPerGroup[g] = elements * sizeof(float);
+        if (!createOutputFiles(groups[g], outputDir, outBytesPerGroup[g], allFds[g])) {
+            for (auto& fds : allFds) closeFiles(fds);
+            return false;
+        }
+    }
+    const double totalCreateMs = msSince(createStart);
+
+    // Phase 2: Merge-read all groups at once (cross-group dedup)
+    const auto readStart = Clock::now();
+    std::vector<GroupReadEntry> readEntries;
+    std::vector<std::vector<std::vector<float>>> allOutputs(6);
+    for (int g = 0; g < 6; ++g) {
+        if (groups[g].indices->empty()) continue;
+        const uint64_t elements = sliceElements(nx, ny, nz, groups[g].axis);
+        allOutputs[g].resize(groups[g].indices->size());
+        for (auto& o : allOutputs[g]) o.resize(elements);
+
+        GroupReadEntry entry;
+        entry.axis = groups[g].axis;
+        entry.isRandom = groups[g].isRandom;
+        entry.name = groups[g].name;
+        entry.indices = *groups[g].indices;
+        readEntries.push_back(std::move(entry));
+    }
+
+    if (!mergedReader(readEntries, allOutputs)) {
+        for (auto& fds : allFds) closeFiles(fds);
+        return false;
+    }
+    const double readMs = msSince(readStart);
+
+    uint64_t totalSlices = 0;
+    for (int g = 0; g < 6; ++g) totalSlices += groups[g].indices->size();
+
+    // Phase 3: Write each group's output and close files
+    const auto writeStartAll = Clock::now();
+    for (int g = 0; g < 6; ++g) {
+        if (groups[g].indices->empty()) continue;
+
+        const auto writeStart = Clock::now();
+
+        const uint64_t outBytes = outBytesPerGroup[g];
+        for (size_t i = 0; i < groups[g].indices->size(); ++i) {
+            if (!writeFullyAt(allFds[g][i], allOutputs[g][i].data(), outBytes, 0)) {
+                for (auto& fds : allFds) closeFiles(fds);
+                return false;
+            }
+        }
+
+        closeFiles(allFds[g]);
+
+        double writeCloseMs = msSince(writeStart);
+        double groupReadMs = (totalSlices > 0)
+            ? readMs * static_cast<double>(groups[g].indices->size()) / static_cast<double>(totalSlices)
+            : 0.0;
+
+        timings[g]->time_ms = groupReadMs + writeCloseMs;
+        timings[g]->read_ms = groupReadMs;
+        timings[g]->write_ms = writeCloseMs;
+        timings[g]->create_files_ms = 0.0;
+        timings[g]->slice_count = groups[g].indices->size();
+        timings[g]->total_bytes = groups[g].indices->size() * outBytes;
+    }
+    const double totalWriteMs = msSince(writeStartAll);
+
+    p.process_e2e_ms = msSince(e2eStart);
+    p.merged_read_ms = readMs;
+    p.total_write_ms = totalWriteMs;
+    p.total_create_files_ms = totalCreateMs;
+
+    p.t_composite_ms = p.process_e2e_ms / 6.0;
     p.t_x_ms = (p.x_random.time_ms + p.x_continuous.time_ms) / 2.0;
     p.t_y_ms = (p.y_random.time_ms + p.y_continuous.time_ms) / 2.0;
     p.t_z_ms = (p.z_random.time_ms + p.z_continuous.time_ms) / 2.0;
-    p.t_composite_ms = (p.t_x_ms + p.t_y_ms + p.t_z_ms) / 3.0;
+
+    p.output_file_count = p.x_random.slice_count + p.y_random.slice_count +
+        p.z_random.slice_count + p.x_continuous.slice_count +
+        p.y_continuous.slice_count + p.z_continuous.slice_count;
+    p.output_total_bytes = p.x_random.total_bytes + p.y_random.total_bytes +
+        p.z_random.total_bytes + p.x_continuous.total_bytes +
+        p.y_continuous.total_bytes + p.z_continuous.total_bytes;
 
     if (profile) *profile = p;
-
     return true;
 }
 
