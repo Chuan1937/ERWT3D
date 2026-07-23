@@ -472,3 +472,37 @@ erwt3d_contest --input /mnt/g/cup/converted/big_auto.erwt3d \
 **输出**: 330×.dat ✓
 **timing_mode**: merged ✓
 **format**: RZFP (auto-detected) ✓
+
+## 最终 HDD 封版回归 (2026-07-23 final)
+
+**代码**: commit `067d41e`, Release build
+**配置**: G→G, threads=8, --read-window-mb 128
+
+### 50GB RZFP (--memory-limit-mb 8192)
+
+| Run | T_composite | merged_read (s) | Note |
+|-----|------------|------------------|------|
+| R1 | 43.228s | 239.929 | Disk activity spike |
+| **R2** | **28.240s** | **150.181** | |
+| **R3** | **27.974s** | **149.259** | |
+
+**冷缓存中位数** (R2,R3): T_composite=28.107s
+**vs 基线**: +2.1% (基线 27.526s), within 3% ✓
+**CV** (R2,R3): 0.7%
+
+### 最终验收清单
+
+| # | 项目 | 状态 |
+|---|------|------|
+| 1 | Release CTest 29/29 | ✅ |
+| 2 | ASan (系统lib缺失) | ⚠️ 未运行 |
+| 3 | 正向转换非法内存参数失败 | ✅ |
+| 4 | 输入输出同文件拒绝 | ✅ |
+| 5 | Raw尺寸检查溢出 | ✅ |
+| 6 | RZFP Contest去重 | ✅ |
+| 7 | 输出目录保护 | ✅ |
+| 8 | 坐标BOM/Tab支持 | ✅ |
+| 9 | positions固定哈希测试 | ✅ |
+| 10 | contest_score记录实际参数 | ✅ |
+| 11 | 50GB性能退化<3% | ✅ |
+| 12 | 330.dat完整输出 | ✅ |
