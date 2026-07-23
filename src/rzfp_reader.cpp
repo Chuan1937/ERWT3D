@@ -1959,10 +1959,15 @@ bool RzfpReader::readFullToFile(
 {
     if (fd_ < 0) return false;
 
-    const uint64_t rawBytes = header_.nx * header_.ny * header_.nz * sizeof(float);
+    uint64_t rawBytes = 0;
+    if (!checkedMulU64(header_.nx, header_.ny, rawBytes) ||
+        !checkedMulU64(rawBytes, header_.nz, rawBytes) ||
+        !checkedMulU64(rawBytes, sizeof(float), rawBytes)) {
+        std::cerr << "Error: raw size overflow\n";
+        return false;
+    }
     const uint64_t totalSB = rzfpTotalSuperblocks(header_);
     const uint64_t leavesPerSB = rzfpTotalLeafsPerSuper(header_);
-    const uint64_t totalLeaves = totalSB * leavesPerSB;
 
     int outFd = open(outputPath.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
     if (outFd < 0) {
@@ -2007,6 +2012,19 @@ bool RzfpReader::readFullToFile(
             break;
         }
 
+        std::vector<uint32_t> leafOffsets(leavesPerSB + 1, 0);
+        for (uint64_t i = 0; i < leavesPerSB; ++i) {
+            leafOffsets[i + 1] = leafOffsets[i] +
+                descriptorSize(descriptors_[descriptorBase + i]);
+        }
+        if (leafOffsets.back() != payloadSize) {
+            std::cerr << "Error: superblock " << sb
+                      << " descriptor size mismatch: prefix="
+                      << leafOffsets.back() << " payload=" << payloadSize << "\n";
+            ok = false;
+            break;
+        }
+
         const uint64_t sgY = rzfpSuperGridY(header_);
         const uint64_t sgZ = rzfpSuperGridZ(header_);
         const uint64_t rem = sb / sgX;
@@ -2038,10 +2056,7 @@ bool RzfpReader::readFullToFile(
             const uint64_t copyY = std::min<uint64_t>(header_.leaf_y, validY - by);
             const uint64_t copyZ = std::min<uint64_t>(header_.leaf_z, validZ - bz);
 
-            uint32_t offset = 0;
-            for (uint64_t j = 0; j < leafIdx; ++j) {
-                offset += descriptorSize(descriptors_[descriptorBase + j]);
-            }
+            const uint32_t offset = leafOffsets[leafIdx];
 
             const RzfpLeafCodec leafCodec = descriptorCodec(desc);
             float leaf[64];
@@ -2149,102 +2164,57 @@ static std::vector<RzfpLeafTask> buildLineTasks(
 
     std::memset(output, 0, numOutput * sizeof(float));
 
-    const uint64_t leafCount = (header.super_x / header.leaf_x) *
-                                (header.super_y / header.leaf_y) *
-                                (header.super_z / header.leaf_z);
+    const uint64_t leafsPerX = header.super_x / header.leaf_x;
+    const uint64_t leafsPerY = header.super_y / header.leaf_y;
+    const uint64_t leafsPerZ = header.super_z / header.leaf_z;
 
     uint64_t fixed_x = 0, fixed_y = 0, fixed_z = 0;
     if (axis == SliceAxis::X)      { fixed_y = fixed1; fixed_z = fixed2; }
     else if (axis == SliceAxis::Y) { fixed_x = fixed1; fixed_z = fixed2; }
     else                           { fixed_x = fixed1; fixed_y = fixed2; }
 
-    for (uint64_t sb = 0; sb < rzfpTotalSuperblocks(header); ++sb) {
-        const uint64_t szCoord = sb / (sgX * sgY);
-        const uint64_t rem_xy = sb % (sgX * sgY);
-        const uint64_t syCoord = rem_xy / sgX;
-        const uint64_t sxCoord = rem_xy % sgX;
+    if (axis == SliceAxis::X) {
+        uint64_t syCoord = fixed_y / header.super_y;
+        uint64_t szCoord = fixed_z / header.super_z;
+        const uint64_t syStart0 = syCoord * header.super_y;
+        const uint64_t szStart0 = szCoord * header.super_z;
+        const uint64_t local_y = fixed_y - syStart0;
+        const uint64_t local_z = fixed_z - szStart0;
+        const uint64_t fixedLy = local_y / header.leaf_y;
+        const uint64_t fixedLz = local_z / header.leaf_z;
+        const uint8_t vz = static_cast<uint8_t>(local_z % header.leaf_z);
+        const uint8_t vy = static_cast<uint8_t>(local_y % header.leaf_y);
 
-        const uint64_t sxStart = sxCoord * header.super_x;
-        const uint64_t syStart = syCoord * header.super_y;
-        const uint64_t szStart = szCoord * header.super_z;
-        const uint64_t sxEnd = sxStart + header.super_x;
-        const uint64_t syEnd = syStart + header.super_y;
-        const uint64_t szEnd = szStart + header.super_z;
+        for (uint64_t sxCoord = 0; sxCoord < sgX; ++sxCoord) {
+            if (sxCoord * header.super_x >= header.nx) break;
+            uint64_t sb = (szCoord * sgY + syCoord) * sgX + sxCoord;
+            const uint64_t physicalSb = physicalSuperblockId(header, sb);
+            const uint64_t sxStart = sxCoord * header.super_x;
 
-        bool sbTouched = false;
-        if (axis == SliceAxis::X) {
-            sbTouched = (fixed_y >= syStart && fixed_y < syEnd && fixed_y < header.ny) &&
-                        (fixed_z >= szStart && fixed_z < szEnd && fixed_z < header.nz);
-        } else if (axis == SliceAxis::Y) {
-            sbTouched = (fixed_x >= sxStart && fixed_x < sxEnd && fixed_x < header.nx) &&
-                        (fixed_z >= szStart && fixed_z < szEnd && fixed_z < header.nz);
-        } else {
-            sbTouched = (fixed_x >= sxStart && fixed_x < sxEnd && fixed_x < header.nx) &&
-                        (fixed_y >= syStart && fixed_y < syEnd && fixed_y < header.ny);
-        }
-        if (!sbTouched) continue;
+            for (uint64_t lx = 0; lx < leafsPerX; ++lx) {
+                uint32_t li = morton3D(static_cast<uint32_t>(lx),
+                                        static_cast<uint32_t>(fixedLy),
+                                        static_cast<uint32_t>(fixedLz));
+                const uint64_t bx = static_cast<uint64_t>(lx) * header.leaf_x;
+                if (sxStart + bx >= header.nx) break;
 
-        const uint64_t physicalSb = physicalSuperblockId(header, sb);
-        const uint64_t local_x = (axis != SliceAxis::X) ? (fixed_x >= sxStart ? fixed_x - sxStart : 0) : 0;
-        const uint64_t local_y = (axis != SliceAxis::Y) ? (fixed_y >= syStart ? fixed_y - syStart : 0) : 0;
-        const uint64_t local_z = (axis != SliceAxis::Z) ? (fixed_z >= szStart ? fixed_z - szStart : 0) : 0;
+                const uint64_t descriptorIdx = sb * leavesPerSB + li;
+                const auto desc = descriptors[descriptorIdx];
+                const uint16_t recordSize = descriptorSize(desc);
+                if (recordSize == 0) continue;
 
-        for (uint64_t li = 0; li < leafCount; ++li) {
-            uint32_t lx, ly, lz;
-            unmorton3D(static_cast<uint32_t>(li), lx, ly, lz);
-            const uint64_t bx = static_cast<uint64_t>(lx) * header.leaf_x;
-            const uint64_t by = static_cast<uint64_t>(ly) * header.leaf_y;
-            const uint64_t bz = static_cast<uint64_t>(lz) * header.leaf_z;
+                RzfpLeafTask task;
+                task.physical_sb_id = physicalSb;
+                task.morton = static_cast<uint16_t>(li);
+                task.codec = descriptorCodec(desc);
+                task.record_size = recordSize;
 
-            bool leafTouched = false;
-            if (axis == SliceAxis::X) {
-                leafTouched = (local_y >= by && local_y < by + header.leaf_y) &&
-                               (local_z >= bz && local_z < bz + header.leaf_z);
-            } else if (axis == SliceAxis::Y) {
-                leafTouched = (local_x >= bx && local_x < bx + header.leaf_x) &&
-                               (local_z >= bz && local_z < bz + header.leaf_z);
-            } else {
-                leafTouched = (local_x >= bx && local_x < bx + header.leaf_x) &&
-                               (local_y >= by && local_y < by + header.leaf_y);
-            }
-            if (!leafTouched) continue;
-
-            const uint64_t descriptorIdx = sb * leavesPerSB + li;
-            const auto desc = descriptors[descriptorIdx];
-            const uint16_t recordSize = descriptorSize(desc);
-            if (recordSize == 0) continue;
-
-            RzfpLeafTask task;
-            task.physical_sb_id = physicalSb;
-            task.morton = static_cast<uint16_t>(li);
-            task.codec = descriptorCodec(desc);
-            task.record_size = recordSize;
-
-            uint64_t count = 0;
-            if (axis == SliceAxis::X) {
+                uint64_t count = 0;
                 for (uint64_t off = 0; off < header.leaf_x; ++off) {
-                    uint64_t gx = sxStart + bx + off;
-                    if (gx >= header.nx) break;
+                    if (sxStart + bx + off >= header.nx) break;
                     ++count;
                 }
-            } else if (axis == SliceAxis::Y) {
-                for (uint64_t off = 0; off < header.leaf_y; ++off) {
-                    uint64_t gy = syStart + by + off;
-                    if (gy >= header.ny) break;
-                    ++count;
-                }
-            } else {
-                for (uint64_t off = 0; off < header.leaf_z; ++off) {
-                    uint64_t gz = szStart + bz + off;
-                    if (gz >= header.nz) break;
-                    ++count;
-                }
-            }
-
-            task.scatters.reserve(count);
-            if (axis == SliceAxis::X) {
-                const uint8_t vz = static_cast<uint8_t>(local_z % header.leaf_z);
-                const uint8_t vy = static_cast<uint8_t>(local_y % header.leaf_y);
+                task.scatters.reserve(count);
                 for (uint64_t off = 0; off < header.leaf_x; ++off) {
                     uint64_t gx = sxStart + bx + off;
                     if (gx >= header.nx) break;
@@ -2254,12 +2224,55 @@ static std::vector<RzfpLeafTask> buildLineTasks(
                     voxOp.param = static_cast<uint8_t>(off);
                     voxOp.v_inner = vy;
                     voxOp.v_outer = vz;
-                    voxOp.pad[0] = 0; // axis X
+                    voxOp.pad[0] = 0;
                     task.scatters.push_back({voxOp, output});
                 }
-            } else if (axis == SliceAxis::Y) {
-                const uint8_t vx = static_cast<uint8_t>(local_x % header.leaf_x);
-                const uint8_t vz = static_cast<uint8_t>(local_z % header.leaf_z);
+                tasks.push_back(std::move(task));
+            }
+        }
+    } else if (axis == SliceAxis::Y) {
+        uint64_t sxCoord = fixed_x / header.super_x;
+        uint64_t szCoord = fixed_z / header.super_z;
+        if (sxCoord >= sgX || szCoord >= rzfpSuperGridZ(header)) return tasks;
+        const uint64_t sxStart0 = sxCoord * header.super_x;
+        const uint64_t szStart0 = szCoord * header.super_z;
+        const uint64_t local_x = fixed_x - sxStart0;
+        const uint64_t local_z = fixed_z - szStart0;
+        const uint64_t fixedLx = local_x / header.leaf_x;
+        const uint64_t fixedLz = local_z / header.leaf_z;
+        const uint8_t vx = static_cast<uint8_t>(local_x % header.leaf_x);
+        const uint8_t vz = static_cast<uint8_t>(local_z % header.leaf_z);
+
+        for (uint64_t syCoord = 0; syCoord < sgY; ++syCoord) {
+            if (syCoord * header.super_y >= header.ny) break;
+            uint64_t sb = (szCoord * sgY + syCoord) * sgX + sxCoord;
+            const uint64_t physicalSb = physicalSuperblockId(header, sb);
+            const uint64_t syStart = syCoord * header.super_y;
+
+            for (uint64_t ly = 0; ly < leafsPerY; ++ly) {
+                uint32_t li = morton3D(static_cast<uint32_t>(fixedLx),
+                                        static_cast<uint32_t>(ly),
+                                        static_cast<uint32_t>(fixedLz));
+                const uint64_t by = static_cast<uint64_t>(ly) * header.leaf_y;
+                if (syStart + by >= header.ny) break;
+
+                const uint64_t descriptorIdx = sb * leavesPerSB + li;
+                const auto desc = descriptors[descriptorIdx];
+                const uint16_t recordSize = descriptorSize(desc);
+                if (recordSize == 0) continue;
+
+                RzfpLeafTask task;
+                task.physical_sb_id = physicalSb;
+                task.morton = static_cast<uint16_t>(li);
+                task.codec = descriptorCodec(desc);
+                task.record_size = recordSize;
+
+                uint64_t count = 0;
+                for (uint64_t off = 0; off < header.leaf_y; ++off) {
+                    if (syStart + by + off >= header.ny) break;
+                    ++count;
+                }
+                task.scatters.reserve(count);
                 for (uint64_t off = 0; off < header.leaf_y; ++off) {
                     uint64_t gy = syStart + by + off;
                     if (gy >= header.ny) break;
@@ -2269,12 +2282,55 @@ static std::vector<RzfpLeafTask> buildLineTasks(
                     voxOp.param = static_cast<uint8_t>(off);
                     voxOp.v_inner = vx;
                     voxOp.v_outer = vz;
-                    voxOp.pad[0] = 1; // axis Y
+                    voxOp.pad[0] = 1;
                     task.scatters.push_back({voxOp, output});
                 }
-            } else {
-                const uint8_t vx = static_cast<uint8_t>(local_x % header.leaf_x);
-                const uint8_t vy = static_cast<uint8_t>(local_y % header.leaf_y);
+                tasks.push_back(std::move(task));
+            }
+        }
+    } else {
+        uint64_t sxCoord = fixed_x / header.super_x;
+        uint64_t syCoord = fixed_y / header.super_y;
+        if (sxCoord >= sgX || syCoord >= sgY) return tasks;
+        const uint64_t sxStart0 = sxCoord * header.super_x;
+        const uint64_t syStart0 = syCoord * header.super_y;
+        const uint64_t local_x = fixed_x - sxStart0;
+        const uint64_t local_y = fixed_y - syStart0;
+        const uint64_t fixedLx = local_x / header.leaf_x;
+        const uint64_t fixedLy = local_y / header.leaf_y;
+        const uint8_t vx = static_cast<uint8_t>(local_x % header.leaf_x);
+        const uint8_t vy = static_cast<uint8_t>(local_y % header.leaf_y);
+
+        for (uint64_t szCoord = 0; szCoord < rzfpSuperGridZ(header); ++szCoord) {
+            if (szCoord * header.super_z >= header.nz) break;
+            uint64_t sb = (szCoord * sgY + syCoord) * sgX + sxCoord;
+            const uint64_t physicalSb = physicalSuperblockId(header, sb);
+            const uint64_t szStart = szCoord * header.super_z;
+
+            for (uint64_t lz = 0; lz < leafsPerZ; ++lz) {
+                uint32_t li = morton3D(static_cast<uint32_t>(fixedLx),
+                                        static_cast<uint32_t>(fixedLy),
+                                        static_cast<uint32_t>(lz));
+                const uint64_t bz = static_cast<uint64_t>(lz) * header.leaf_z;
+                if (szStart + bz >= header.nz) break;
+
+                const uint64_t descriptorIdx = sb * leavesPerSB + li;
+                const auto desc = descriptors[descriptorIdx];
+                const uint16_t recordSize = descriptorSize(desc);
+                if (recordSize == 0) continue;
+
+                RzfpLeafTask task;
+                task.physical_sb_id = physicalSb;
+                task.morton = static_cast<uint16_t>(li);
+                task.codec = descriptorCodec(desc);
+                task.record_size = recordSize;
+
+                uint64_t count = 0;
+                for (uint64_t off = 0; off < header.leaf_z; ++off) {
+                    if (szStart + bz + off >= header.nz) break;
+                    ++count;
+                }
+                task.scatters.reserve(count);
                 for (uint64_t off = 0; off < header.leaf_z; ++off) {
                     uint64_t gz = szStart + bz + off;
                     if (gz >= header.nz) break;
@@ -2284,11 +2340,11 @@ static std::vector<RzfpLeafTask> buildLineTasks(
                     voxOp.param = static_cast<uint8_t>(off);
                     voxOp.v_inner = vx;
                     voxOp.v_outer = vy;
-                    voxOp.pad[0] = 2; // axis Z
+                    voxOp.pad[0] = 2;
                     task.scatters.push_back({voxOp, output});
                 }
+                tasks.push_back(std::move(task));
             }
-            tasks.push_back(std::move(task));
         }
     }
 

@@ -22,4 +22,17 @@ uint64_t getTotalOptimizedStorageBytes(
     uint64_t mainFileBytes,
     const ERWT3DHeader& header);
 
+bool pathsReferToSameFile(
+    const std::string& input,
+    const std::string& output);
+
+struct ResolvedMemoryLimit {
+    std::string mode;
+    uint64_t mib = 0;
+    bool valid = true;
+    std::string error;
+};
+
+ResolvedMemoryLimit resolveMemoryLimit(const std::string& value);
+
 }

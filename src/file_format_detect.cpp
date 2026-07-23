@@ -1,7 +1,9 @@
 #include "erwt3d/file_format_detect.hpp"
 #include "erwt3d/rzfp_format.hpp"
+#include "erwt3d/memory_budget.hpp"
 
 #include <cstring>
+#include <filesystem>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -62,6 +64,69 @@ uint64_t getTotalOptimizedStorageBytes(
     }
 
     return mainFileBytes;
+}
+
+bool pathsReferToSameFile(
+    const std::string& input,
+    const std::string& output)
+{
+    std::error_code ec;
+
+    if (std::filesystem::exists(input, ec) && std::filesystem::exists(output, ec)) {
+        return std::filesystem::equivalent(input, output, ec);
+    }
+
+    auto weakInput = std::filesystem::weakly_canonical(input, ec);
+    if (ec) return false;
+
+    auto outputAbs = std::filesystem::absolute(output, ec);
+    if (ec) return false;
+
+    auto weakOutput = std::filesystem::weakly_canonical(outputAbs, ec);
+    if (ec) return false;
+
+    return weakInput == weakOutput;
+}
+
+static constexpr size_t MIN_MEMORY_MB = 512;
+
+ResolvedMemoryLimit resolveMemoryLimit(const std::string& value)
+{
+    if (value == "auto" || value == "0") {
+        ResolvedMemoryLimit r;
+        r.mode = "auto";
+        uint64_t memAvail = readLinuxMemAvailableBytes();
+        r.mib = static_cast<size_t>(memAvail * 0.70 / (1024 * 1024));
+        if (r.mib < MIN_MEMORY_MB) {
+            size_t conservative = static_cast<size_t>(memAvail / 2 / (1024 * 1024));
+            r.mib = std::max(conservative, MIN_MEMORY_MB);
+        }
+        return r;
+    }
+
+    char* end = nullptr;
+    long long parsed = std::strtoll(value.c_str(), &end, 10);
+    if (end != value.c_str() + value.size() || parsed <= 0) {
+        ResolvedMemoryLimit r;
+        r.mode = "explicit";
+        r.valid = false;
+        r.error = "invalid --memory-limit-mb value: " + value;
+        return r;
+    }
+    size_t mib = static_cast<size_t>(parsed);
+    if (mib < MIN_MEMORY_MB) {
+        ResolvedMemoryLimit r;
+        r.mode = "explicit";
+        r.valid = false;
+        r.error = "--memory-limit-mb must be at least " +
+                  std::to_string(MIN_MEMORY_MB) + " MiB, got " + std::to_string(mib);
+        return r;
+    }
+
+    ResolvedMemoryLimit r;
+    r.mode = "explicit";
+    r.mib = mib;
+    return r;
 }
 
 } // namespace erwt3d

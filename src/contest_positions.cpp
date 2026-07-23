@@ -33,10 +33,14 @@ static ParseLineResult parseLine(const std::string& line, int lineNum,
 
     {
         std::string lower;
-        for (char c : l) lower.push_back(static_cast<char>(std::tolower(c)));
-        if (lower.find("axis") != std::string::npos &&
-            lower.find("type") != std::string::npos &&
-            lower.find("index") != std::string::npos) {
+        for (char c : l) {
+            if (c != ' ') lower.push_back(static_cast<char>(std::tolower(c)));
+        }
+        std::string lowerWithSpaces = l;
+        for (auto& c : lowerWithSpaces) c = static_cast<char>(std::tolower(c));
+
+        if (lower == "axistypeindex" ||
+            lowerWithSpaces == "axis type index") {
             return ParseLineResult::Skip;
         }
     }

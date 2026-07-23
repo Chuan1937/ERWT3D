@@ -270,20 +270,21 @@ int main(int argc, char* argv[]) {
     printPositions(positions);
     std::cout << "\n";
 
+    erwt3d::ResolvedMemoryLimit resolvedMem = erwt3d::resolveMemoryLimit(memoryLimit);
+    if (!resolvedMem.valid) {
+        std::cerr << "Error: " << resolvedMem.error << "\n";
+        return 1;
+    }
+    std::cout << "Memory mode: " << resolvedMem.mode
+              << "\nResolved memory limit: " << resolvedMem.mib << " MiB\n\n";
+
     erwt3d::ContestReadBatchFunction readFn;
+    uint64_t actualMemoryLimitMib = resolvedMem.mib;
 
     if (fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D) {
         auto reader = std::make_shared<erwt3d::ERWT3DReader>(inputPath);
 
-        size_t memoryLimitMB = 4096;
-        if (memoryLimit == "auto" || memoryLimit == "0") {
-            uint64_t memAvail = erwt3d::readLinuxMemAvailableBytes();
-            memoryLimitMB = memAvail > 4ULL * 1024 * 1024 * 1024
-                ? static_cast<size_t>(memAvail * 0.70 / (1024 * 1024))
-                : static_cast<size_t>(memAvail / 2 / (1024 * 1024));
-        } else {
-            memoryLimitMB = std::stoull(memoryLimit);
-        }
+        size_t memoryLimitMB = actualMemoryLimitMib;
 
         reader->setIOBackend(erwt3d::IOBackend::Superblock);
         reader->setSBReadMode(erwt3d::SBReadMode::HDDReadWindow);
@@ -324,6 +325,11 @@ int main(int argc, char* argv[]) {
 
         erwt3d::MemoryBudget budget = erwt3d::makeMemoryBudget(
             memoryLimit, reader->payloadBytes(), largestOutputBytes, 100);
+
+        if (!budget.valid) {
+            std::cerr << "Error: invalid memory budget: " << budget.error << "\n";
+            return 1;
+        }
 
         auto windowCache = std::make_shared<erwt3d::BoundedWindowCache>(budget.window_cache_bytes);
 
@@ -459,7 +465,7 @@ int main(int argc, char* argv[]) {
 
     const std::string scorePath = outputDir + "/contest_score.csv";
     writeScoreCsv(scorePath, inputPath, fmtName, nx, ny, nz, storageRatio,
-                  threads, memoryLimit, 0, positions, profile);
+                  threads, resolvedMem.mode, actualMemoryLimitMib, positions, profile);
 
     std::cout << "\nScore written to " << scorePath << "\n";
     return 0;

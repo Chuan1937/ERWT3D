@@ -21,41 +21,6 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 constexpr uint64_t GiB = 1024ULL * 1024ULL * 1024ULL;
-constexpr size_t MIN_MEMORY_MB = 512;
-
-static size_t resolveMemoryLimit(const std::string& value) {
-    if (value == "auto" || value == "0") {
-        uint64_t memAvail = erwt3d::readLinuxMemAvailableBytes();
-        size_t resolved = static_cast<size_t>(memAvail * 0.70 / (1024 * 1024));
-        if (resolved < MIN_MEMORY_MB) {
-            size_t conservative = static_cast<size_t>(memAvail / 2 / (1024 * 1024));
-            resolved = std::max(conservative, MIN_MEMORY_MB);
-        }
-        std::cout << "Memory mode: auto\n"
-                  << "Resolved memory limit: " << resolved << " MiB\n";
-        return resolved;
-    }
-
-    char* end = nullptr;
-    long long parsed = std::strtoll(value.c_str(), &end, 10);
-    if (end != value.c_str() + value.size() || parsed <= 0) {
-        std::cerr << "Error: invalid --memory-limit-mb value: " << value << "\n";
-        std::exit(1);
-    }
-    size_t mib = static_cast<size_t>(parsed);
-    if (mib < MIN_MEMORY_MB) {
-        std::cerr << "Error: --memory-limit-mb must be at least " << MIN_MEMORY_MB << " MiB\n";
-        std::exit(1);
-    }
-    return mib;
-}
-
-static std::string canonicalPath(const std::string& path) {
-    std::error_code ec;
-    auto p = std::filesystem::canonical(path, ec);
-    if (ec) return path;
-    return p.string();
-}
 
 }
 
@@ -123,14 +88,25 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    if (erwt3d::pathsReferToSameFile(inputPath, outputPath)) {
+        std::cerr << "Error: input and output refer to the same file\n";
+        return 1;
+    }
+
     if (toRaw) {
-        size_t memMB = resolveMemoryLimit(memoryLimit);
+        auto memLim = erwt3d::resolveMemoryLimit(memoryLimit);
+        if (!memLim.valid) {
+            std::cerr << "Error: " << memLim.error << "\n";
+            return 1;
+        }
+        std::cout << "Memory mode: " << memLim.mode
+                  << "\nResolved memory limit: " << memLim.mib << " MiB\n";
         auto fmt = erwt3d::detectOptimizedFileFormat(inputPath);
 
         if (fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D) {
             std::cout << "Converting LZ4 ERWT3D to raw...\n";
             erwt3d::ERWT3DReader reader(inputPath);
-            if (!reader.readFullToFile(outputPath, threads, memMB)) {
+            if (!reader.readFullToFile(outputPath, threads, memLim.mib)) {
                 std::cerr << "Error: LZ4 reverse conversion failed\n";
                 return 1;
             }
@@ -216,7 +192,7 @@ int main(int argc, char* argv[]) {
             std::filesystem::remove(outputPath + ".xp", ec);
         }
 
-        size_t memLimitMB = resolveMemoryLimit(memoryLimit);
+        size_t memLimitMB = erwt3d::resolveMemoryLimit(memoryLimit).mib;
 
         erwt3d::RawXAuxStats auxStats;
         if (!erwt3d::writeERWT3DFromFile(
@@ -262,7 +238,7 @@ int main(int argc, char* argv[]) {
         cfg.ny = ny;
         cfg.nz = nz;
         cfg.threads = threads;
-        cfg.memory_limit_mb = resolveMemoryLimit(memoryLimit);
+        cfg.memory_limit_mb = erwt3d::resolveMemoryLimit(memoryLimit).mib;
         cfg.codec.error.policy = erwt3d::RelativeErrorPolicy::Strict;
         cfg.codec.error.contest_bound = 1e-3;
         cfg.codec.error.internal_bound = 7.5e-4;
