@@ -247,7 +247,52 @@ erwt3d_convert 自动选择 RZFP。violations=0, max_rel_error=0.001。
 ### Read Window `erwt3d_contest.cpp`
 - 最大 128 MiB（共享文件夹保守策略）
 
-## P5 功能验证测试 (2026-07-23 evening)
+## P5 纯G盘冷缓存测试 (2026-07-23)
+
+**代码**：PR #58, branch `bench/cup-large-scale-first`, HEAD `8cdd250`
+**模式**：输入 G 盘，输出 G 盘（同盘）。每轮前 `sync && echo 3 > /proc/sys/vm/drop_caches`
+
+### 20GB LZ4 + external XP (0.479x)
+
+| Run | T_composite | e2e (s) | real | Note |
+|-----|------------|---------|------|------|
+| Cold R1 | 24.200s | 145.322 | 2m25.577 | |
+| Cold R2 | 4.880s | 29.422 | 0m29.562 | Host cache warm |
+| Cold R3 | 6.992s | 42.090 | 0m42.167 | |
+
+> R2/R3 被 VMware 宿主机缓存覆盖（20GB 数据集可完全装入宿主机内存），`drop_caches` 仅清 Guest 缓存。
+
+**冷缓存** (R1): T_composite=24.200s，**热缓存** (R3): T_composite=6.992s
+
+### 50GB RZFP (0.421x)
+
+| Run | T_composite | e2e (s) | merged_read (s) | real | Note |
+|-----|------------|---------|------------------|------|------|
+| Cold R1 | 28.946s | 173.673 | 150.427 | 2m57.654 | |
+| Cold R2 | 29.779s | 178.676 | 149.514 | 3m02.876 | |
+| Cold R3 | 29.411s | 176.466 | 148.227 | 3m00.652 | |
+
+**冷缓存中位数**: T_composite=29.411s (CV=1.4%) ✓
+**存储比**: 0.421x ✓
+**输出**: 330 × .dat，330 文件 ✓
+**timing_mode**: merged, group_read_times_estimated=true ✓
+
+> 50GB 数据集过大无法完全装入宿主机缓存，三轮 drop_caches 后均保持稳定 cold 性能。与历史基线 28.662s 差异仅 +2.6%，在误差范围内。
+
+### 验证
+
+| 项目 | 20GB | 50GB |
+|------|------|------|
+| 输出文件数 | 330 ✓ | 330 ✓ |
+| 存储比 | 0.479x ✓ | 0.421x ✓ |
+| 格式检测 | LZ4 ✓ | RZFP ✓ |
+| positions_hash | 0xc68981e1817309e3 | 0xe1b1b036763c5bb8 |
+| close 错误 | 正常 | 正常 |
+| 未修改高性能路径 | ✓ | ✓ |
+| 跨组 leaf 去重 | N/A | ✓ |
+| 六组合并读取 | N/A | ✓ |
+
+## P5 功能交叉验证 (G→K 异盘, 2026-07-23 evening)
 
 **代码**：PR #58, branch `bench/cup-large-scale-first`, HEAD `7b1dde4`
 **测试模式**：输入 G 盘，输出 K 盘（异盘，同 Windows HDD 通过不同 VMware 共享挂载点）
