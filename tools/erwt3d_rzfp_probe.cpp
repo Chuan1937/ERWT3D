@@ -1,5 +1,6 @@
 #include "erwt3d/rzfp_codec.hpp"
 #include "erwt3d/relative_error.hpp"
+#include "erwt3d/raw_x_aux.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -157,21 +158,6 @@ static const char* codecName(RzfpLeafCodec c) {
 
 static const char* fillName(RzfpExceptionFill f) {
     return f == RzfpExceptionFill::Zero ? "Zero" : "Mean";
-}
-
-static bool readFullyAt(int fd, void* buffer, size_t bytes, uint64_t offset) {
-    auto* dst = static_cast<uint8_t*>(buffer);
-    size_t done = 0;
-    while (done < bytes) {
-        ssize_t n = pread(fd, dst + done, bytes - done, static_cast<off_t>(offset + done));
-        if (n == 0) return false;
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            return false;
-        }
-        done += static_cast<size_t>(n);
-    }
-    return true;
 }
 
 static void extractLeaf(

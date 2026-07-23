@@ -57,9 +57,9 @@ DeviceProfile calibrateDeviceProfile(
         file_size < config.random_probe_bytes * 4;
 
     if (fd < 0 || sequentialTooSmall || randomTooSmall) {
-        profile.sequential_mb_s = 80.0;
-        profile.minimum_sequential_mb_s = 80.0;
-        profile.maximum_sequential_mb_s = 80.0;
+        profile.sequential_mb_s = config.minimum_sequential_mb_s;
+        profile.minimum_sequential_mb_s = config.minimum_sequential_mb_s;
+        profile.maximum_sequential_mb_s = config.minimum_sequential_mb_s;
         profile.random_seek_ms = 12.0;
         profile.calibrated = false;
         return profile;
@@ -81,6 +81,14 @@ DeviceProfile calibrateDeviceProfile(
             }
 
             if (config.evict_before_probe) {
+                dropCachedRange(fd, offset, regionBytes);
+            }
+
+            for (uint32_t w = 0; w < config.warmup_count; ++w) {
+                (void)readFullyAt(fd, buffer.data(), regionBytes, offset);
+            }
+
+            if (config.evict_before_probe && config.warmup_count > 0) {
                 dropCachedRange(fd, offset, regionBytes);
             }
 
@@ -121,10 +129,17 @@ DeviceProfile calibrateDeviceProfile(
             } else if (profile.maximum_sequential_mb_s > median * 1.5) {
                 profile.cached_mb_s = profile.maximum_sequential_mb_s;
             }
+
+            if (profile.sequential_mb_s < config.minimum_sequential_mb_s) {
+                profile.sequential_mb_s = config.minimum_sequential_mb_s;
+            }
+            if (profile.minimum_sequential_mb_s < config.minimum_sequential_mb_s) {
+                profile.minimum_sequential_mb_s = config.minimum_sequential_mb_s;
+            }
         } else {
-            profile.sequential_mb_s = 80.0;
-            profile.minimum_sequential_mb_s = 80.0;
-            profile.maximum_sequential_mb_s = 80.0;
+            profile.sequential_mb_s = config.minimum_sequential_mb_s;
+            profile.minimum_sequential_mb_s = config.minimum_sequential_mb_s;
+            profile.maximum_sequential_mb_s = config.minimum_sequential_mb_s;
         }
     }
 
@@ -194,7 +209,10 @@ DeviceProfile calibrateDeviceProfile(
     }
 
     if (profile.sequential_mb_s <= 0.0) {
-        profile.sequential_mb_s = 80.0;
+        profile.sequential_mb_s = config.minimum_sequential_mb_s;
+    }
+    if (profile.sequential_mb_s < config.minimum_sequential_mb_s) {
+        profile.sequential_mb_s = config.minimum_sequential_mb_s;
     }
     if (profile.random_seek_ms <= 0.0) {
         profile.random_seek_ms = 12.0;

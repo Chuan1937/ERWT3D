@@ -30,6 +30,8 @@ struct DeviceCalibrationConfig {
     uint64_t random_probe_bytes = 64ULL * 1024;
     bool evict_before_probe = true;
     bool evict_after_probe = true;
+    uint32_t warmup_count = 1;
+    double minimum_sequential_mb_s = 80.0;
 };
 
 DeviceProfile calibrateDeviceProfile(

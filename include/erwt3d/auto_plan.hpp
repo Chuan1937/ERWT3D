@@ -48,6 +48,8 @@ struct PlannerResult {
     std::vector<FormatCandidate> alternatives;
     HDDReadWindowConfig disk_cfg;
     Lz4ProbeResult lz4_probe;
+    double rzfp_decode_throughput_mibs = 0.0;
+    bool rzfp_decode_benchmarked = false;
     bool rzfp_available = false;
     double elapsed_seconds = 0.0;
 };

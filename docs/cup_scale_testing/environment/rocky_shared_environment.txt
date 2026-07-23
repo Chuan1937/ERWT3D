@@ -1,0 +1,81 @@
+=== ERWT3D Rocky Shared Folder Test Environment ===
+
+⚠️ FSTYPE=fuse.vmhgfs-fuse
+⚠️ 数据位于Windows G盘
+⚠️ 测试结果不等同于原生ext4
+
+2026年 07月 22日 星期三 14:45:11 CST
+
+Rocky Linux release 9.8 (Blue Onyx)
+
+Linux localhost.localdomain 5.14.0-687.26.1.el9_8.x86_64 #1 SMP PREEMPT_DYNAMIC Tue Jul 14 23:40:02 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+
+架构：                                   x86_64
+CPU 运行模式：                           32-bit, 64-bit
+Address sizes:                           45 bits physical, 48 bits virtual
+字节序：                                 Little Endian
+CPU:                                     16
+在线 CPU 列表：                          0-15
+厂商 ID：                                GenuineIntel
+BIOS Vendor ID:                          GenuineIntel
+型号名称：                               Intel(R) Core(TM) i9-10850K CPU @ 3.60GHz
+BIOS Model name:                         Intel(R) Core(TM) i9-10850K CPU @ 3.60GHz
+CPU 系列：                               6
+型号：                                   165
+每个核的线程数：                         1
+每个座的核数：                           2
+座：                                     8
+步进：                                   5
+BogoMIPS：                               7200.02
+标记：                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx pdpe1gb rdtscp lm constant_tsc arch_perfmon nopl xtopology tsc_reliable nonstop_tsc cpuid tsc_known_freq pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand hypervisor lahf_lm abm 3dnowprefetch ssbd ibrs ibpb stibp fsgsbase tsc_adjust bmi1 avx2 smep bmi2 invpcid rdseed adx smap clflushopt xsaveopt xsavec xgetbv1 xsaves arat md_clear flush_l1d arch_capabilities
+超管理器厂商：                           VMware
+虚拟化类型：                             完全
+L1d 缓存：                               512 KiB (16 instances)
+L1i 缓存：                               512 KiB (16 instances)
+L2 缓存：                                4 MiB (16 instances)
+L3 缓存：                                160 MiB (8 instances)
+NUMA 节点：                              1
+NUMA 节点0 CPU：                         0-15
+Vulnerability Gather data sampling:      Unknown: Dependent on hypervisor status
+Vulnerability Indirect target selection: Mitigation; Aligned branch/return thunks
+Vulnerability Itlb multihit:             KVM: Mitigation: VMX unsupported
+Vulnerability L1tf:                      Not affected
+Vulnerability Mds:                       Not affected
+Vulnerability Meltdown:                  Not affected
+Vulnerability Mmio stale data:           Vulnerable: Clear CPU buffers attempted, no microcode; SMT Host state unknown
+Vulnerability Old microcode:             Not affected
+Vulnerability Reg file data sampling:    Not affected
+Vulnerability Retbleed:                  Mitigation; IBRS
+Vulnerability Spec rstack overflow:      Not affected
+Vulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization
+Vulnerability Spectre v2:                Mitigation; IBRS; IBPB conditional; STIBP disabled; RSB filling; PBRSB-eIBRS Not affected; BHI SW loop, KVM SW loop
+Vulnerability Srbds:                     Unknown: Dependent on hypervisor status
+Vulnerability Tsa:                       Not affected
+Vulnerability Tsx async abort:           Not affected
+Vulnerability Vmscape:                   Not affected
+
+               total        used        free      shared  buff/cache   available
+Mem:            62Gi       1.9Gi        58Gi        20Mi       2.8Gi        60Gi
+Swap:           31Gi          0B        31Gi
+
+NAME      TYPE       SIZE USED PRIO
+/dev/dm-1 partition 31.4G   0B   -2
+
+gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-14)
+Copyright © 2021 Free Software Foundation, Inc.
+本程序是自由软件；请参看源代码的版权声明。本软件没有任何担保；
+包括没有适销性和某一专用目的下的适用性担保。
+
+
+TARGET SOURCE      FSTYPE           OPTIONS
+/mnt/g vmhgfs-fuse fuse.vmhgfs-fuse rw,nosuid,nodev,relatime,user_id=0,group_id=0,allow_other
+
+文件系统       类型              容量  已用  可用 已用% 挂载点
+vmhgfs-fuse    fuse.vmhgfs-fuse  7.3T  6.0T  1.4T   82% /mnt/g
+
+=== Git HEAD ===
+687d743f5effa0b1e0ef5c5a9fc49905b9db9c31
+
+=== Git Status ===
+?? docs/cup_scale_testing/

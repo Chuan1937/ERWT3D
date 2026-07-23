@@ -1,0 +1,64 @@
+Internal ctest changing into directory: /root/ERWT3D/build
+Test project /root/ERWT3D/build
+      Start  1: relative_error_strict
+ 1/29 Test  #1: relative_error_strict ............   Passed    0.00 sec
+      Start  2: relative_error_legacy
+ 2/29 Test  #2: relative_error_legacy ............   Passed    0.00 sec
+      Start  3: rzfp_codec
+ 3/29 Test  #3: rzfp_codec .......................   Passed    0.01 sec
+      Start  4: raw_xplane_sampler
+ 4/29 Test  #4: raw_xplane_sampler ...............   Passed    0.00 sec
+      Start  5: sidecar_batch_reader
+ 5/29 Test  #5: sidecar_batch_reader .............   Passed    0.06 sec
+      Start  6: rzfp_auto_plan
+ 6/29 Test  #6: rzfp_auto_plan ...................   Passed    2.62 sec
+      Start  7: rzfp_reader_strategies
+ 7/29 Test  #7: rzfp_reader_strategies ...........   Passed    0.04 sec
+      Start  8: official_raw_layout
+ 8/29 Test  #8: official_raw_layout ..............   Passed    2.20 sec
+      Start  9: rzfp_writer_zfastest
+ 9/29 Test  #9: rzfp_writer_zfastest .............   Passed    0.39 sec
+      Start 10: gen_fast_data
+10/29 Test #10: gen_fast_data ....................   Passed    0.03 sec
+      Start 11: raw_x_aux
+11/29 Test #11: raw_x_aux ........................   Passed    1.01 sec
+      Start 12: adaptive_strategy
+12/29 Test #12: adaptive_strategy ................   Passed    0.01 sec
+      Start 13: memory_cache
+13/29 Test #13: memory_cache .....................   Passed    0.00 sec
+      Start 14: strategy_cost
+14/29 Test #14: strategy_cost ....................   Passed    0.00 sec
+      Start 15: window_cache_reader
+15/29 Test #15: window_cache_reader ..............   Passed    0.05 sec
+      Start 16: rzfp_round_plan
+16/29 Test #16: rzfp_round_plan ..................   Passed    0.09 sec
+      Start 17: extent_cache
+17/29 Test #17: extent_cache .....................   Passed    0.00 sec
+      Start 18: storage_limit_150
+18/29 Test #18: storage_limit_150 ................   Passed    0.00 sec
+      Start 19: rzfp_round_reader
+19/29 Test #19: rzfp_round_reader ................   Passed    0.05 sec
+      Start 20: contest_phase_plan
+20/29 Test #20: contest_phase_plan ...............   Passed    0.00 sec
+      Start 21: contest_batch_plan
+21/29 Test #21: contest_batch_plan ...............   Passed    0.07 sec
+      Start 22: contest_positions
+22/29 Test #22: contest_positions ................   Passed    0.01 sec
+      Start 23: contest_timing
+23/29 Test #23: contest_timing ...................   Passed    0.01 sec
+      Start 24: contest_output_dat
+24/29 Test #24: contest_output_dat ...............   Passed    0.02 sec
+      Start 25: large_positional_io
+25/29 Test #25: large_positional_io ..............   Passed    0.01 sec
+      Start 26: rzfp_to_raw
+26/29 Test #26: rzfp_to_raw ......................   Passed    0.07 sec
+      Start 27: rzfp_line_reader
+27/29 Test #27: rzfp_line_reader .................   Passed    0.05 sec
+      Start 28: embedded_xp
+28/29 Test #28: embedded_xp ......................   Passed    0.02 sec
+      Start 29: contest_output_rzfp
+29/29 Test #29: contest_output_rzfp ..............   Passed    0.06 sec
+
+100% tests passed, 0 tests failed out of 29
+
+Total Test time (real) =   6.91 sec

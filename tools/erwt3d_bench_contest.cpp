@@ -1,4 +1,5 @@
 #include "erwt3d/reader.hpp"
+#include "erwt3d/raw_x_aux.hpp"
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -146,13 +147,12 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
 
             for (size_t i = 0; i < batchLen; ++i) {
                 auto wStart = std::chrono::high_resolution_clock::now();
-                ssize_t written = pwrite(preCreatedFDs[batchStart + i], buffers[i].data(), outBytes, 0);
-                auto wEnd = std::chrono::high_resolution_clock::now();
-                if (written != static_cast<ssize_t>(outBytes)) {
+                if (!erwt3d::writeFullyAt(preCreatedFDs[batchStart + i], buffers[i].data(), outBytes, 0)) {
                     std::cerr << "\nError: Write failed for " << axisName << "[" << (batchStart+i) << "]\n";
                     for (auto fd : preCreatedFDs) if (fd >= 0) close(fd);
                     return false;
                 }
+                auto wEnd = std::chrono::high_resolution_clock::now();
                 double t = std::chrono::duration<double, std::milli>(wEnd - wStart).count();
                 totalWriteMs += t;
                 result.perSliceTimes.push_back(t);
@@ -175,13 +175,12 @@ static bool runGroup(erwt3d::ERWT3DReader& reader,
             totalReadMs += std::chrono::duration<double, std::milli>(rEnd - rStart).count();
 
             auto wStart = std::chrono::high_resolution_clock::now();
-            ssize_t written = pwrite(preCreatedFDs[i], output.data(), outBytes, 0);
-            auto wEnd = std::chrono::high_resolution_clock::now();
-            if (written != static_cast<ssize_t>(outBytes)) {
+            if (!erwt3d::writeFullyAt(preCreatedFDs[i], output.data(), outBytes, 0)) {
                 std::cerr << "\nError: Write failed for " << axisName << "[" << i << "]\n";
                 for (auto fd : preCreatedFDs) if (fd >= 0) close(fd);
                 return false;
             }
+            auto wEnd = std::chrono::high_resolution_clock::now();
             double t = std::chrono::duration<double, std::milli>(wEnd - wStart).count();
             totalWriteMs += t;
             result.perSliceTimes.push_back(t);

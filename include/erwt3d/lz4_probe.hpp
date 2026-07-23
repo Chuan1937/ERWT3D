@@ -15,14 +15,16 @@ struct Lz4ProbeResult {
     double main_ratio_p10 = 1.0;
     double main_ratio_p90 = 1.0;
     double compressed_block_fraction = 0.0;
+    double decode_throughput_mibs = 0.0;
     uint64_t sampled_superblocks = 0;
     uint64_t sampled_raw_bytes = 0;
     uint32_t slabs_sampled = 0;
     double elapsed_seconds = 0.0;
     bool skipped = false;
     bool adaptive = false;
+    bool decode_benchmarked = false;
     std::string skip_reason;
-    std::vector<double> ratios;  // per-superblock ratios (probe-internal, for stats)
+    std::vector<double> ratios;
 };
 
 struct Lz4ProbeConfig {

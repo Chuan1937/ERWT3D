@@ -1,24 +1,28 @@
+#include "erwt3d/reader.hpp"
 #include "erwt3d/rzfp_reader.hpp"
 #include "erwt3d/memory_budget.hpp"
 #include "erwt3d/window_cache.hpp"
+#include "erwt3d/format.hpp"
 #include "erwt3d/rzfp_format.hpp"
-#include "erwt3d/contest_round_executor.hpp"
+#include "erwt3d/contest_positions.hpp"
+#include "erwt3d/contest_groups.hpp"
+#include "erwt3d/raw_x_aux.hpp"
+#include "erwt3d/file_format_detect.hpp"
 
 #include <algorithm>
-#include <cerrno>
 #include <chrono>
-#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <ctime>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <memory>
-#include <numeric>
-#include <random>
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
+#include <sys/utsname.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <vector>
@@ -27,18 +31,6 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 constexpr uint64_t MiB = 1024ULL * 1024ULL;
-
-static uint64_t sliceElements(
-    const erwt3d::RzfpFileHeader& header,
-    erwt3d::SliceAxis axis
-) {
-    switch (axis) {
-        case erwt3d::SliceAxis::X: return header.ny * header.nz;
-        case erwt3d::SliceAxis::Y: return header.nx * header.nz;
-        case erwt3d::SliceAxis::Z: return header.nx * header.ny;
-    }
-    return 0;
-}
 
 static bool mkdirOne(const std::string& path) {
     if (path.empty() || path == ".") return true;
@@ -67,72 +59,111 @@ static bool mkdirP(const std::string& path) {
     return true;
 }
 
-static bool precreateOutputs(
-    const std::string& output_dir,
-    const std::string& prefix,
-    size_t count,
-    uint64_t bytes,
-    std::vector<int>& fds
+static void printPositions(const erwt3d::ContestPositions& pos) {
+    std::cout << "X random count: " << pos.x_random.size() << "\n";
+    std::cout << "Y random count: " << pos.y_random.size() << "\n";
+    std::cout << "Z random count: " << pos.z_random.size() << "\n";
+    if (!pos.x_continuous.empty())
+        std::cout << "X continuous: " << pos.x_continuous.front() << "-" << pos.x_continuous.back() << "\n";
+    if (!pos.y_continuous.empty())
+        std::cout << "Y continuous: " << pos.y_continuous.front() << "-" << pos.y_continuous.back() << "\n";
+    if (!pos.z_continuous.empty())
+        std::cout << "Z continuous: " << pos.z_continuous.front() << "-" << pos.z_continuous.back() << "\n";
+    std::cout << "Positions hash: 0x" << std::hex << erwt3d::computePositionsHash(pos) << std::dec << "\n";
+}
+
+static void writeScoreCsv(
+    const std::string& path,
+    const std::string& inputFile,
+    const std::string& format,
+    uint64_t nx, uint64_t ny, uint64_t nz,
+    double storageRatio,
+    int threads,
+    const std::string& memoryMode,
+    uint64_t memoryLimitMib,
+    uint64_t readWindowMib,
+    const std::string& gitCommit,
+    const erwt3d::ContestPositions& positions,
+    const erwt3d::ContestUnifiedProfile& profile
 ) {
-    fds.clear();
-    fds.resize(count, -1);
-    for (size_t i = 0; i < count; ++i) {
-        std::ostringstream oss;
-        oss << output_dir << "/" << prefix << "_" << i << ".raw";
-        const std::string path = oss.str();
-        int fd = open(
-            path.c_str(),
-            O_RDWR | O_CREAT | O_TRUNC,
-            0644
-        );
-        if (fd < 0) {
-            std::cerr << "Error: cannot create output " << path << "\n";
-            return false;
-        }
-        if (posix_fallocate(fd, 0, static_cast<off_t>(bytes)) != 0 &&
-            ftruncate(fd, static_cast<off_t>(bytes)) != 0) {
-            std::cerr << "Error: cannot preallocate output " << path << "\n";
-            close(fd);
-            return false;
-        }
-        fds[i] = fd;
+    auto now = std::chrono::system_clock::now();
+    auto t = std::chrono::system_clock::to_time_t(now);
+    struct tm tmBuf;
+    localtime_r(&t, &tmBuf);
+    char timeBuf[32];
+    std::strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%dT%H:%M:%S", &tmBuf);
+
+    char hostBuf[256] = {};
+    gethostname(hostBuf, sizeof(hostBuf));
+    struct utsname un{};
+    std::string kernel = "unknown";
+    if (uname(&un) == 0) kernel = std::string(un.sysname) + " " + un.release;
+
+    struct stat st{};
+    std::string fstype = "unknown";
+    if (stat(inputFile.c_str(), &st) == 0) {
+        if (S_ISREG(st.st_mode)) fstype = "regular";
     }
-    return true;
+
+    std::string cacheMode = "unknown";
+
+    std::ofstream out(path);
+    out << "metric,value\n"
+        << "timestamp," << timeBuf << '\n'
+        << "hostname," << hostBuf << '\n'
+        << "kernel," << kernel << '\n'
+        << "filesystem," << fstype << '\n'
+        << "git_commit," << gitCommit << '\n'
+        << "input_file," << inputFile << '\n'
+        << "format," << format << '\n'
+        << "dimensions," << nx << 'x' << ny << 'x' << nz << '\n'
+        << "storage_ratio," << std::fixed << std::setprecision(3) << storageRatio << '\n'
+        << "threads," << threads << '\n'
+        << "memory_mode," << memoryMode << '\n'
+        << "memory_limit_mib," << memoryLimitMib << '\n'
+        << "read_window_mib," << readWindowMib << '\n'
+        << "cache_mode," << cacheMode << '\n'
+        << "positions_hash,0x" << std::hex << erwt3d::computePositionsHash(positions) << std::dec << '\n'
+        << "x_random_time_ms," << std::fixed << std::setprecision(3) << profile.x_random.time_ms << '\n'
+        << "x_random_read_ms," << profile.x_random.read_ms << '\n'
+        << "x_random_write_ms," << profile.x_random.write_ms << '\n'
+        << "y_random_time_ms," << profile.y_random.time_ms << '\n'
+        << "y_random_read_ms," << profile.y_random.read_ms << '\n'
+        << "y_random_write_ms," << profile.y_random.write_ms << '\n'
+        << "z_random_time_ms," << profile.z_random.time_ms << '\n'
+        << "z_random_read_ms," << profile.z_random.read_ms << '\n'
+        << "z_random_write_ms," << profile.z_random.write_ms << '\n'
+        << "x_continuous_time_ms," << profile.x_continuous.time_ms << '\n'
+        << "x_continuous_read_ms," << profile.x_continuous.read_ms << '\n'
+        << "x_continuous_write_ms," << profile.x_continuous.write_ms << '\n'
+        << "y_continuous_time_ms," << profile.y_continuous.time_ms << '\n'
+        << "y_continuous_read_ms," << profile.y_continuous.read_ms << '\n'
+        << "y_continuous_write_ms," << profile.y_continuous.write_ms << '\n'
+        << "z_continuous_time_ms," << profile.z_continuous.time_ms << '\n'
+        << "z_continuous_read_ms," << profile.z_continuous.read_ms << '\n'
+        << "z_continuous_write_ms," << profile.z_continuous.write_ms << '\n'
+        << "x_axis_time_ms," << profile.t_x_ms << '\n'
+        << "y_axis_time_ms," << profile.t_y_ms << '\n'
+        << "z_axis_time_ms," << profile.t_z_ms << '\n'
+        << "T_composite_ms," << profile.t_composite_ms << '\n'
+        << "process_e2e_ms," << profile.process_e2e_ms << '\n'
+        << "merged_read_ms," << profile.merged_read_ms << '\n'
+        << "total_write_ms," << profile.total_write_ms << '\n'
+        << "total_create_files_ms," << profile.total_create_files_ms << '\n'
+        << "timing_mode," << (profile.merged_read_ms > 0.0 ? "merged" : "independent") << '\n'
+        << "group_read_times_estimated," << (profile.merged_read_ms > 0.0 ? "true" : "false") << '\n'
+        << "output_file_count," << profile.output_file_count << '\n'
+        << "output_total_bytes," << profile.output_total_bytes << '\n';
 }
 
-static void closeOutputs(std::vector<int>& fds) {
-    for (int& fd : fds) {
-        if (fd >= 0) close(fd);
-        fd = -1;
-    }
 }
-
-static bool writeFullyAt(int fd, const void* data, uint64_t bytes, uint64_t offset) {
-    const uint8_t* cursor = static_cast<const uint8_t*>(data);
-    uint64_t completed = 0;
-    while (completed < bytes) {
-        const ssize_t written = pwrite(
-            fd, cursor + completed,
-            static_cast<size_t>(bytes - completed),
-            static_cast<off_t>(offset + completed)
-        );
-        if (written > 0) { completed += static_cast<uint64_t>(written); continue; }
-        if (written < 0 && errno == EINTR) continue;
-        return false;
-    }
-    return true;
-}
-
-} // namespace
 
 int main(int argc, char* argv[]) {
     std::string inputPath;
     std::string outputDir;
-    int randomCount = 100;
-    int continuousCount = 10;
+    std::string positionsFile;
     int threads = 8;
-    uint32_t seed = 20260511;
-
+    uint64_t seed = 20260511;
     std::string memoryLimit = "auto";
     uint64_t readWindowMb = 0;
 
@@ -140,43 +171,40 @@ int main(int argc, char* argv[]) {
         const auto next = [&]() -> const char* {
             if (i + 1 >= argc) {
                 std::cerr << "Error: " << argv[i] << " requires a value\n";
-                std::exit(1);
+                return nullptr;
             }
             return argv[++i];
         };
         if (std::strcmp(argv[i], "--input") == 0 || std::strcmp(argv[i], "-i") == 0) {
-            inputPath = next();
+            const char* v = next(); if (!v) return 1; inputPath = v;
         } else if (std::strcmp(argv[i], "--output-dir") == 0 || std::strcmp(argv[i], "-o") == 0) {
-            outputDir = next();
-        } else if (std::strcmp(argv[i], "--random-count") == 0) {
-            randomCount = std::stoi(next());
-        } else if (std::strcmp(argv[i], "--continuous-count") == 0) {
-            continuousCount = std::stoi(next());
+            const char* v = next(); if (!v) return 1; outputDir = v;
+        } else if (std::strcmp(argv[i], "--positions-file") == 0) {
+            const char* v = next(); if (!v) return 1; positionsFile = v;
         } else if (std::strcmp(argv[i], "--threads") == 0) {
-            threads = std::stoi(next());
+            const char* v = next(); if (!v) return 1; threads = std::stoi(v);
         } else if (std::strcmp(argv[i], "--seed") == 0) {
-            seed = static_cast<uint32_t>(std::stoul(next()));
+            const char* v = next(); if (!v) return 1; seed = std::stoull(v);
         } else if (std::strcmp(argv[i], "--memory-limit-mb") == 0) {
-            memoryLimit = next();
+            const char* v = next(); if (!v) return 1; memoryLimit = v;
         } else if (std::strcmp(argv[i], "--read-window-mb") == 0) {
-            readWindowMb = std::stoull(next());
+            const char* v = next(); if (!v) return 1; readWindowMb = std::stoull(v);
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             std::cerr
-                << "Usage: erwt3d_contest --input DATA.rzfp --output-dir DIR [options]\n\n"
-                << "Official competition entrypoint (赛题2 正式入口)\n\n"
-                << "  --input PATH           RZFP file (required)\n"
+                << "Usage: erwt3d_contest --input DATA.erwt3d --output-dir DIR [options]\n\n"
+                << "Official competition entrypoint\n\n"
+                << "  --input PATH           ERWT3D file (LZ4 or RZFP, auto-detected)\n"
                 << "  --output-dir DIR       Output directory (required)\n"
-                << "  --random-count N       Random slices per axis (default: 100)\n"
-                << "  --continuous-count N   Continuous slices per axis (default: 10)\n"
+                << "  --positions-file PATH  CSV/TXT coordinate file (official mode)\n"
+                << "  --seed N               Random seed for test mode (default: 20260511)\n"
                 << "  --threads N            Thread count (default: 8)\n"
-                << "  --memory-limit-mb auto|N    Memory limit MB (default: auto)\n"
-                << "  --read-window-mb N        Max read window MB (0=auto/512)\n"
-                << "  --seed N               Random seed (default: 20260511)\n\n"
-                << "Internal policy (fixed):\n"
-                << "  strategy = auto, cache = stable-auto, window cache = auto\n"
-                << "  execution mode = p5-round (cross-group dedup)\n"
-                << "  no active cache drop, no hidden warm-up\n"
-                << "  explicit memory limits are enforced\n";
+                << "  --memory-limit-mb auto|N    Memory limit MB (default: auto=70% MemAvailable)\n"
+                << "  --read-window-mb N          Max read window MB (0=auto, max 128, default: 0)\n\n"
+                << "Official mode (--positions-file):\n"
+                << "  X/Y/Z random: 100 each, no duplicates\n"
+                << "  X/Y/Z continuous: 10 each, strictly consecutive\n\n"
+                << "Test mode (no --positions-file):\n"
+                << "  Generates random positions with --seed\n";
             return 0;
         } else {
             std::cerr << "Unknown option: " << argv[i] << "\n";
@@ -184,9 +212,8 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    if (inputPath.empty() || outputDir.empty() ||
-        randomCount <= 0 || continuousCount <= 0 || threads <= 0) {
-        std::cerr << "Error: invalid or missing required arguments\n";
+    if (inputPath.empty() || outputDir.empty()) {
+        std::cerr << "Error: --input and --output-dir are required\n";
         return 1;
     }
 
@@ -195,148 +222,252 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    erwt3d::RzfpReader reader(inputPath);
-    if (!reader.ok()) {
-        std::cerr << "Error: cannot open RZFP file " << inputPath << "\n";
-        return 1;
+    {
+        std::error_code ec;
+        if (std::filesystem::exists(outputDir + "/contest_score.csv", ec) ||
+            std::filesystem::exists(outputDir + "/contest_x_random_000.dat", ec)) {
+            std::cerr << "Error: output directory already contains contest results\n";
+            return 1;
+        }
     }
-    const auto& header = reader.header();
 
-    (void)reader.ensureDeviceProfile();
-
-    uint64_t largestOutputBytes = 0;
-    largestOutputBytes = std::max(largestOutputBytes, header.ny * header.nz * sizeof(float));
-    largestOutputBytes = std::max(largestOutputBytes, header.nx * header.nz * sizeof(float));
-    largestOutputBytes = std::max(largestOutputBytes, header.nx * header.ny * sizeof(float));
-
-    erwt3d::MemoryBudget budget = erwt3d::makeMemoryBudget(
-        memoryLimit,
-        reader.payloadBytes(),
-        largestOutputBytes,
-        static_cast<uint64_t>(std::max(randomCount, continuousCount))
-    );
-    if (!budget.valid) {
-        std::cerr << "Error: memory budget: " << budget.error << "\n";
+    const erwt3d::OptimizedFileFormat fmt = erwt3d::detectOptimizedFileFormat(inputPath);
+    if (fmt == erwt3d::OptimizedFileFormat::Unknown) {
+        std::cerr << "Error: cannot detect file format (not ERWT3D or RZFP)\n";
         return 1;
     }
 
-    auto windowCache = std::make_shared<erwt3d::BoundedWindowCache>(
-        budget.window_cache_bytes
-    );
+    const char* fmtName = (fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D) ? "LZ4" : "RZFP";
 
-    struct stat st{};
-    uint64_t fileBytes = 0;
-    if (stat(inputPath.c_str(), &st) == 0) fileBytes = static_cast<uint64_t>(st.st_size);
-    const std::string sidecarPath = inputPath + ".xp";
-    if (stat(sidecarPath.c_str(), &st) == 0) fileBytes += static_cast<uint64_t>(st.st_size);
-    const uint64_t rawBytes = erwt3d::rzfpRawSize(header);
-    const double storageRatio = rawBytes > 0
-        ? static_cast<double>(fileBytes) / static_cast<double>(rawBytes) : 0.0;
+    uint64_t nx = 0, ny = 0, nz = 0;
+    double storageRatio = 0.0;
 
-    std::mt19937 rng(seed);
-    std::uniform_int_distribution<uint64_t> xDist(0, header.nx - 1);
-    std::uniform_int_distribution<uint64_t> yDist(0, header.ny - 1);
-    std::uniform_int_distribution<uint64_t> zDist(0, header.nz - 1);
-
-    std::vector<uint64_t> rndX(randomCount), rndY(randomCount), rndZ(randomCount);
-    for (int i = 0; i < randomCount; ++i) {
-        rndX[i] = xDist(rng);
-        rndY[i] = yDist(rng);
-        rndZ[i] = zDist(rng);
+    if (fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D) {
+        erwt3d::ERWT3DReader reader(inputPath);
+        const auto& header = reader.getHeader();
+        nx = header.nx; ny = header.ny; nz = header.nz;
+        uint64_t rawBytes = erwt3d::getRawSize(header);
+        struct stat st{};
+        uint64_t fileBytes = 0;
+        if (stat(inputPath.c_str(), &st) == 0) fileBytes = st.st_size;
+        const uint64_t totalBytes = erwt3d::getTotalOptimizedStorageBytes(
+            inputPath, fileBytes, header);
+        storageRatio = rawBytes > 0 ? static_cast<double>(totalBytes) / rawBytes : 0.0;
+    } else {
+        erwt3d::RzfpReader reader(inputPath);
+        if (!reader.ok()) {
+            std::cerr << "Error: cannot open RZFP file " << inputPath << "\n";
+            return 1;
+        }
+        const auto& header = reader.header();
+        nx = header.nx; ny = header.ny; nz = header.nz;
+        struct stat st{};
+        uint64_t fileBytes = 0;
+        if (stat(inputPath.c_str(), &st) == 0) fileBytes = st.st_size;
+        const uint64_t rawBytes = erwt3d::rzfpRawSize(header);
+        storageRatio = rawBytes > 0 ? static_cast<double>(fileBytes) / rawBytes : 0.0;
     }
 
-    auto makeCont = [](uint64_t dim, int cnt) {
-        const int n = std::min<int>(cnt, static_cast<int>(dim));
-        std::vector<uint64_t> v(static_cast<size_t>(n));
-        const uint64_t start = static_cast<uint64_t>(n) >= dim ? 0 : dim / 2 - static_cast<uint64_t>(n) / 2;
-        for (int i = 0; i < n; ++i) v[i] = start + static_cast<uint64_t>(i);
-        return v;
-    };
-    const auto contX = makeCont(header.nx, continuousCount);
-    const auto contY = makeCont(header.ny, continuousCount);
-    const auto contZ = makeCont(header.nz, continuousCount);
+    const uint32_t randomCount = 100;
+    const uint32_t continuousCount = 10;
+    erwt3d::ContestPositions positions;
+    std::string posError;
 
-    struct GroupDef {
-        erwt3d::SliceAxis axis;
-        std::string name;
-        const std::vector<uint64_t>* indices;
-    };
-    const std::vector<GroupDef> groups = {
-        {erwt3d::SliceAxis::X, "x_random", &rndX},
-        {erwt3d::SliceAxis::Y, "y_random", &rndY},
-        {erwt3d::SliceAxis::Z, "z_random", &rndZ},
-        {erwt3d::SliceAxis::X, "x_continuous", &contX},
-        {erwt3d::SliceAxis::Y, "y_continuous", &contY},
-        {erwt3d::SliceAxis::Z, "z_continuous", &contZ},
-    };
-
-    std::cout
-        << "============================================================\n"
-        << "  ERWT3D Contest Entry (正式入口)\n"
-        << "============================================================\n"
-        << "  File:          " << inputPath << "\n"
-        << "  Dims:          " << header.nx << " x "
-        << header.ny << " x " << header.nz << "\n"
-        << "  Device:        " << std::fixed << std::setprecision(1)
-        << reader.deviceProfile().sequential_mb_s << " MB/s\n"
-        << "  Memory limit:  " << budget.total_bytes / MiB << " MiB\n"
-        << "  Window cache:  " << budget.window_cache_bytes / MiB << " MiB\n"
-        << "  Storage ratio: " << std::setprecision(3) << storageRatio << "x\n"
-        << "============================================================\n\n";
-
-    std::vector<erwt3d::ContestExecutionGroup> execGroups;
-    for (size_t g = 0; g < groups.size(); ++g) {
-        erwt3d::ContestExecutionGroup eg;
-        eg.axis = groups[g].axis;
-        eg.name = groups[g].name;
-        eg.indices = groups[g].indices;
-        execGroups.push_back(eg);
+    if (!positionsFile.empty()) {
+        if (!erwt3d::parsePositionsFile(positionsFile, nx, ny, nz,
+                                         randomCount, continuousCount,
+                                         positions, posError)) {
+            std::cerr << "Error: " << posError << "\n";
+            return 1;
+        }
+    } else {
+        if (!erwt3d::generateRandomPositions(nx, ny, nz,
+                                              randomCount, continuousCount,
+                                              seed, positions, posError)) {
+            std::cerr << "Error: " << posError << "\n";
+            return 1;
+        }
+        const std::string posCsvPath = outputDir + "/contest_positions.csv";
+        std::ofstream posOut(posCsvPath);
+        posOut << "axis,type,index\n";
+        for (auto x : positions.x_random) posOut << "x,random," << x << "\n";
+        for (auto y : positions.y_random) posOut << "y,random," << y << "\n";
+        for (auto z : positions.z_random) posOut << "z,random," << z << "\n";
+        for (auto x : positions.x_continuous) posOut << "x,continuous," << x << "\n";
+        for (auto y : positions.y_continuous) posOut << "y,continuous," << y << "\n";
+        for (auto z : positions.z_continuous) posOut << "z,continuous," << z << "\n";
     }
 
-    erwt3d::RzfpReaderConfig config;
-    config.strategy = erwt3d::RzfpReadStrategy::Auto;
-    config.decode_threads = threads;
-    config.window_cache = windowCache;
-    config.window_cache_file_identity = reader.fileIdentity();
-    config.use_window_cache = true;
-    config.adaptive.auto_calibrate_device = true;
-    config.adaptive.cache_policy = erwt3d::CachePolicy::StableAuto;
-    config.hdd.read_window_bytes = readWindowMb > 0
-        ? readWindowMb * MiB : 512ULL * MiB;
-    config.hdd.max_gap_bytes = 8ULL * MiB;
+    std::cout << "============================================================\n"
+              << "  ERWT3D Contest Entry (" << fmtName << " path)\n"
+              << "============================================================\n"
+              << "  File:          " << inputPath << "\n"
+              << "  Dims:          " << nx << " x " << ny << " x " << nz << "\n"
+              << "  Format:        " << fmtName << "\n"
+              << "  Threads:       " << threads << "\n"
+              << "  Storage ratio: " << std::fixed << std::setprecision(3) << storageRatio << "x\n"
+              << "============================================================\n\n";
 
-    erwt3d::ContestExecutionProfile execProfile;
-    if (!erwt3d::executeContestRound(
-            reader, header, execGroups, outputDir, "contest",
-            config, budget, &execProfile)) {
-        std::cerr << "Error: contest round execution failed\n";
+    printPositions(positions);
+    std::cout << "\n";
+
+    erwt3d::ResolvedMemoryLimit resolvedMem = erwt3d::resolveMemoryLimit(memoryLimit);
+    if (!resolvedMem.valid) {
+        std::cerr << "Error: " << resolvedMem.error << "\n";
         return 1;
     }
+    std::cout << "Memory mode: " << resolvedMem.mode
+              << "\nResolved memory limit: " << resolvedMem.mib << " MiB\n\n";
 
-    const double readMs = execProfile.read_time_ms;
-    const double writeMs = execProfile.write_time_ms;
-    const double totalMs = execProfile.total_time_ms;
-    const double compositeMs = totalMs / static_cast<double>(groups.size());
+    erwt3d::ContestReadBatchFunction readFn;
+    uint64_t actualMemoryLimitMib = resolvedMem.mib;
+
+    if (fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D) {
+        auto reader = std::make_shared<erwt3d::ERWT3DReader>(inputPath);
+
+        size_t memoryLimitMB = actualMemoryLimitMib;
+
+        reader->setIOBackend(erwt3d::IOBackend::Superblock);
+        reader->setSBReadMode(erwt3d::SBReadMode::HDDReadWindow);
+        reader->setSBTaskOrder(erwt3d::SBTaskOrder::FileOffset);
+        reader->setHDDReadWindowConfig({
+            readWindowMb > 0 ? std::min<uint64_t>(readWindowMb * MiB, 128ULL * MiB) : 128ULL * MiB,
+            8ULL * MiB
+        });
+
+        readFn = [reader, threads, memoryLimitMB, readWindowMb](
+            erwt3d::SliceAxis axis,
+            const std::vector<uint64_t>& indices,
+            std::vector<std::vector<float>>& outputs
+        ) -> bool {
+            erwt3d::HDDReadWindowConfig wcfg{
+                readWindowMb > 0 ? std::min<uint64_t>(readWindowMb * MiB, 128ULL * MiB) : 128ULL * MiB,
+                8ULL * MiB
+            };
+
+            std::vector<erwt3d::ERWT3DReader::SliceBatchRequest> reqs;
+            for (size_t i = 0; i < indices.size(); ++i) {
+                reqs.push_back({axis, indices[i], outputs[i].data()});
+            }
+            return reader->readSlicesBatch(reqs, threads, memoryLimitMB, wcfg);
+        };
+
+    } else {
+        // RZFP path: dummy readFn since executeContestGroupsMerged is used
+        readFn = [](erwt3d::SliceAxis, const std::vector<uint64_t>&,
+                    std::vector<std::vector<float>>&) -> bool {
+            return true;
+        };
+    }
+
+    erwt3d::ContestUnifiedProfile profile;
+
+    if (fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D) {
+        if (!erwt3d::executeContestGroups(positions, outputDir, nx, ny, nz, readFn, &profile)) {
+            std::cerr << "Error: contest execution failed\n";
+            return 1;
+        }
+    } else {
+        auto rzfpReader = std::make_shared<erwt3d::RzfpReader>(inputPath);
+        if (!rzfpReader->ok()) {
+            std::cerr << "Error: cannot open RZFP file\n";
+            return 1;
+        }
+
+        const auto& rzfpHeader = rzfpReader->header();
+        uint64_t largestOutputBytes = std::max({rzfpHeader.ny * rzfpHeader.nz * sizeof(float),
+                                                 rzfpHeader.nx * rzfpHeader.nz * sizeof(float),
+                                                 rzfpHeader.nx * rzfpHeader.ny * sizeof(float)});
+
+        erwt3d::MemoryBudget budget = erwt3d::makeMemoryBudget(
+            memoryLimit, rzfpReader->payloadBytes(), largestOutputBytes, 100);
+
+        if (!budget.valid) {
+            std::cerr << "Error: invalid memory budget: " << budget.error << "\n";
+            return 1;
+        }
+
+        auto windowCache = std::make_shared<erwt3d::BoundedWindowCache>(budget.window_cache_bytes);
+
+        erwt3d::RzfpReaderConfig rzfpConfig;
+        rzfpConfig.strategy = erwt3d::RzfpReadStrategy::Auto;
+        rzfpConfig.decode_threads = threads;
+        rzfpConfig.window_cache = windowCache;
+        rzfpConfig.window_cache_file_identity = rzfpReader->fileIdentity();
+        rzfpConfig.use_window_cache = true;
+        rzfpConfig.adaptive.auto_calibrate_device = false;
+        rzfpConfig.adaptive.cache_policy = erwt3d::CachePolicy::StableAuto;
+        rzfpConfig.hdd.sequential_mb_s = 250.0;
+        rzfpConfig.hdd.seek_ms = 10.0;
+        rzfpConfig.hdd.read_window_bytes = readWindowMb > 0
+            ? std::min<uint64_t>(readWindowMb * MiB, 128ULL * MiB)
+            : std::min<uint64_t>(128ULL * MiB, budget.window_cache_bytes / 2 > 0
+                ? budget.window_cache_bytes / 2 : 64ULL * MiB);
+        rzfpConfig.hdd.max_gap_bytes = 8ULL * MiB;
+
+        erwt3d::MultiGroupReadFunction mergedFn =
+            [rzfpReader, rzfpConfig](
+                const std::vector<erwt3d::GroupReadEntry>& groups,
+                std::vector<std::vector<std::vector<float>>>& allOutputs
+            ) -> bool {
+            if (groups.empty()) return true;
+
+            std::vector<erwt3d::RzfpReader::ContestRoundGroup> cgroups(groups.size());
+            for (size_t g = 0; g < groups.size(); ++g) {
+                cgroups[g].axis = groups[g].axis;
+                cgroups[g].name = groups[g].name;
+                cgroups[g].indices = groups[g].indices;
+                cgroups[g].outputs.clear();
+                auto& outVec = allOutputs[groups[g].original_group_id];
+                for (auto& o : outVec) cgroups[g].outputs.push_back(o.data());
+            }
+
+            std::vector<erwt3d::RzfpReader::RzfpRoundReadResult> results;
+            return rzfpReader->readContestRound(cgroups, rzfpConfig, &results);
+        };
+
+        if (!erwt3d::executeContestGroupsMerged(positions, outputDir, nx, ny, nz, mergedFn, &profile)) {
+            std::cerr << "Error: contest execution failed\n";
+            return 1;
+        }
+    }
 
     std::cout << std::fixed << std::setprecision(3);
-    std::cout << "Read time:   " << readMs / 1000.0 << " s\n";
-    std::cout << "Write time:  " << writeMs / 1000.0 << " s\n";
-    std::cout << "Total time:  " << totalMs / 1000.0 << " s\n";
-    std::cout << "T_composite: " << compositeMs / 1000.0 << " s\n";
 
-    // Write score CSV
-    const std::string scorePath = outputDir + "/contest_score.csv";
-    {
-        std::ofstream out(scorePath);
-        out << "metric,value\n"
-            << "input_file," << inputPath << '\n'
-            << "dimensions," << header.nx << 'x' << header.ny << 'x' << header.nz << '\n'
-            << "storage_ratio," << storageRatio << '\n'
-            << "read_time_ms," << readMs << '\n'
-            << "write_time_ms," << writeMs << '\n'
-            << "total_time_ms," << totalMs << '\n'
-            << "T_composite_ms," << compositeMs << '\n';
+    auto printGroup = [&](const char* label, const erwt3d::ContestGroupTiming& t) {
+        const char* suffix = (profile.merged_read_ms > 0.0) ? " (est share)" : "";
+        std::cout << label << suffix << ":     " << t.time_ms / 1000.0 << " s"
+                  << "  (read=" << t.read_ms / 1000.0
+                  << "s write=" << t.write_ms / 1000.0
+                  << "s";
+        if (profile.merged_read_ms == 0.0) {
+            std::cout << " create=" << t.create_files_ms / 1000.0 << "s";
+        }
+        std::cout << ")\n";
+    };
+
+    printGroup("X random     ", profile.x_random);
+    printGroup("Y random     ", profile.y_random);
+    printGroup("Z random     ", profile.z_random);
+    printGroup("X continuous ", profile.x_continuous);
+    printGroup("Y continuous ", profile.y_continuous);
+    printGroup("Z continuous ", profile.z_continuous);
+    std::cout << "T_X:            " << profile.t_x_ms / 1000.0 << " s\n";
+    std::cout << "T_Y:            " << profile.t_y_ms / 1000.0 << " s\n";
+    std::cout << "T_Z:            " << profile.t_z_ms / 1000.0 << " s\n";
+    std::cout << "T_composite:    " << profile.t_composite_ms / 1000.0 << " s\n";
+    std::cout << "Process e2e:    " << profile.process_e2e_ms / 1000.0 << " s\n";
+    if (profile.merged_read_ms > 0.0) {
+        std::cout << "  merged_read:  " << profile.merged_read_ms / 1000.0 << " s\n";
+        std::cout << "  total_write:  " << profile.total_write_ms / 1000.0 << " s\n";
+        std::cout << "  total_create: " << profile.total_create_files_ms / 1000.0 << " s\n";
     }
+    std::cout << "Output files:   " << profile.output_file_count << "\n";
+
+    const std::string scorePath = outputDir + "/contest_score.csv";
+    writeScoreCsv(scorePath, inputPath, fmtName, nx, ny, nz, storageRatio,
+                  threads, resolvedMem.mode, actualMemoryLimitMib, readWindowMb,
+                  "eab46cd", positions, profile);
 
     std::cout << "\nScore written to " << scorePath << "\n";
     return 0;

@@ -24,6 +24,8 @@ struct MemoryBudget {
     bool automatic = false;
     bool valid = false;
     std::string error;
+    uint64_t auto_mem_available = 0;
+    uint64_t auto_reserve = 0;
 
     uint64_t accountedBytes() const {
         return io_buffer_bytes + output_buffer_bytes +

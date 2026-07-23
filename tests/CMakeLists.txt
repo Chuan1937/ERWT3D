@@ -19,6 +19,15 @@ target_link_libraries(test_rzfp_reader_strategies PRIVATE erwt3d)
 add_executable(test_official_raw_layout test_official_raw_layout.cpp)
 target_link_libraries(test_official_raw_layout PRIVATE erwt3d)
 
+add_executable(test_contest_positions test_contest_positions.cpp)
+target_link_libraries(test_contest_positions PRIVATE erwt3d)
+
+add_executable(test_contest_timing test_contest_timing.cpp)
+target_link_libraries(test_contest_timing PRIVATE erwt3d)
+
+add_executable(test_contest_output_dat test_contest_output_dat.cpp)
+target_link_libraries(test_contest_output_dat PRIVATE erwt3d)
+
 add_executable(test_rzfp_writer_zfastest test_rzfp_writer_zfastest.cpp)
 target_link_libraries(test_rzfp_writer_zfastest PRIVATE erwt3d)
 
@@ -58,6 +67,21 @@ target_link_libraries(test_contest_phase_plan PRIVATE erwt3d)
 add_executable(test_contest_batch_plan test_contest_batch_plan.cpp)
 target_link_libraries(test_contest_batch_plan PRIVATE erwt3d)
 
+add_executable(test_large_positional_io test_large_positional_io.cpp)
+target_link_libraries(test_large_positional_io PRIVATE erwt3d)
+
+add_executable(test_rzfp_to_raw test_rzfp_to_raw.cpp)
+target_link_libraries(test_rzfp_to_raw PRIVATE erwt3d)
+
+add_executable(test_rzfp_line_reader test_rzfp_line_reader.cpp)
+target_link_libraries(test_rzfp_line_reader PRIVATE erwt3d)
+
+add_executable(test_embedded_xp test_embedded_xp.cpp)
+target_link_libraries(test_embedded_xp PRIVATE erwt3d)
+
+add_executable(test_contest_output_rzfp test_contest_output_rzfp.cpp)
+target_link_libraries(test_contest_output_rzfp PRIVATE erwt3d)
+
 add_test(NAME relative_error_strict COMMAND test_relative_error strict)
 add_test(NAME relative_error_legacy COMMAND test_relative_error legacy)
 add_test(NAME rzfp_codec COMMAND test_rzfp_codec)
@@ -79,3 +103,11 @@ add_test(NAME storage_limit_150 COMMAND test_storage_limit_150)
 add_test(NAME rzfp_round_reader COMMAND test_rzfp_round_reader)
 add_test(NAME contest_phase_plan COMMAND test_contest_phase_plan)
 add_test(NAME contest_batch_plan COMMAND test_contest_batch_plan)
+add_test(NAME contest_positions COMMAND test_contest_positions)
+add_test(NAME contest_timing COMMAND test_contest_timing)
+add_test(NAME contest_output_dat COMMAND test_contest_output_dat)
+add_test(NAME large_positional_io COMMAND test_large_positional_io)
+add_test(NAME rzfp_to_raw COMMAND test_rzfp_to_raw)
+add_test(NAME rzfp_line_reader COMMAND test_rzfp_line_reader)
+add_test(NAME embedded_xp COMMAND test_embedded_xp)
+add_test(NAME contest_output_rzfp COMMAND test_contest_output_rzfp)

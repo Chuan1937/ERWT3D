@@ -267,10 +267,14 @@ static bool hasXPSidecarFlag(const erwt3d::ERWT3DHeader& h) {
     return (h.flags & erwt3d::FLAG_HAS_XP_SIDECAR) != 0;
 }
 
+static bool hasXPEmbeddedFlag(const erwt3d::ERWT3DHeader& h) {
+    return (h.flags & erwt3d::FLAG_HAS_XP_EMBEDDED) != 0;
+}
+
 void testXPlaneSidecar(const std::string& prefix,
                        uint64_t nx, uint64_t ny, uint64_t nz,
                        uint32_t stride) {
-    // External sidecar test: separate file
+    // Embedded sidecar test: XP data in main file
     {
         const std::string rawPath = prefix + "_ext.raw";
         const std::string erwtPath = prefix + "_ext.erwt3d";
@@ -293,7 +297,8 @@ void testXPlaneSidecar(const std::string& prefix,
             erwt3d::ERWT3DReader reader(erwtPath);
             const auto& hdr = reader.getHeader();
             check(hasXPSidecarFlag(hdr), "ext-sidecar flag is set");
-            check(access(xpPath.c_str(), F_OK) == 0, "ext-sidecar .xp file exists");
+            check(hasXPEmbeddedFlag(hdr), "XP is embedded in main file");
+            check(access(xpPath.c_str(), F_OK) != 0, "no .xp sidecar file (embedded)");
 
             std::string label = prefix + "_ext_s" + std::to_string(stride);
             verifyAllSlices(reader, nx, ny, nz, label);

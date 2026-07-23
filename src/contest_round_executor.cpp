@@ -1,7 +1,7 @@
 #include "erwt3d/contest_round_executor.hpp"
+#include "erwt3d/raw_x_aux.hpp"
 
 #include <algorithm>
-#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -21,22 +21,6 @@ using Clock = std::chrono::steady_clock;
 
 double msSince(Clock::time_point t) {
     return std::chrono::duration<double, std::milli>(Clock::now() - t).count();
-}
-
-bool writeFullyAt(int fd, const void* data, uint64_t bytes, uint64_t offset) {
-    const uint8_t* cursor = static_cast<const uint8_t*>(data);
-    uint64_t completed = 0;
-    while (completed < bytes) {
-        const ssize_t written = pwrite(
-            fd, cursor + completed,
-            static_cast<size_t>(bytes - completed),
-            static_cast<off_t>(offset + completed)
-        );
-        if (written > 0) { completed += static_cast<uint64_t>(written); continue; }
-        if (written < 0 && errno == EINTR) continue;
-        return false;
-    }
-    return true;
 }
 
 uint64_t elementsForAxis(const RzfpFileHeader& header, SliceAxis axis) {
@@ -290,7 +274,7 @@ bool executeContestRound(
         profile->read_time_ms = totalReadMs;
         profile->write_time_ms = totalWriteMs;
         profile->close_time_ms = closeMs;
-        profile->total_time_ms = totalReadMs + totalWriteMs;
+        profile->total_time_ms = wallMs;
         profile->wall_time_ms = wallMs;
         profile->all_outputs_deferred = phasePlan.all_outputs_deferred;
         profile->logical_leaf_requests = aggregateProfile.logical_leaf_requests;
