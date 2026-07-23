@@ -220,6 +220,108 @@ static void testHashDeterminism() {
     CHECK(computePositionsHash(pos1) == computePositionsHash(pos2), "hash deterministic");
 }
 
+static void testHashDiffersWhenValuesChange() {
+    ContestPositions pos1, pos2;
+    std::string err;
+    generateRandomPositions(1000, 1000, 1000, 100, 10, 42, pos1, err);
+    generateRandomPositions(1000, 1000, 1000, 100, 10, 43, pos2, err);
+    CHECK(computePositionsHash(pos1) != computePositionsHash(pos2),
+          "hash changes with different seed");
+}
+
+static void testHashDiffersWhenGroupsDiffer() {
+    ContestPositions pos;
+    std::string err;
+    generateRandomPositions(100, 200, 300, 10, 5, 42, pos, err);
+    uint64_t h1 = computePositionsHash(pos);
+
+    pos.x_random[0] = 77;
+    uint64_t h2 = computePositionsHash(pos);
+    CHECK(h1 != h2, "hash changes when one value changes");
+
+    pos.x_random[0] = pos.x_random[1];
+    pos.x_random[1] = 77;
+    uint64_t h3 = computePositionsHash(pos);
+    CHECK(h2 != h3, "hash changes when order changes");
+
+    ContestPositions pos2;
+    generateRandomPositions(100, 200, 300, 10, 5, 42, pos2, err);
+    auto tmp = pos2.x_random;
+    pos2.x_random = pos2.y_random;
+    pos2.y_random = tmp;
+    uint64_t h4 = computePositionsHash(pos2);
+    uint64_t h5 = computePositionsHash(pos);
+    CHECK(h4 != h5, "hash changes when groups swapped");
+}
+
+static void testHashFixedValue() {
+    ContestPositions pos;
+    pos.x_random = {0, 1, 2};
+    pos.y_random = {10, 11, 12};
+    pos.z_random = {20, 21, 22};
+    pos.x_continuous = {100, 101};
+    pos.y_continuous = {200, 201};
+    pos.z_continuous = {300, 301};
+    uint64_t h = computePositionsHash(pos);
+    CHECK(h != 0, "hash not zero");
+    ContestPositions pos2 = pos;
+    CHECK(computePositionsHash(pos2) == h, "hash reproducible");
+}
+
+static void testParseErrorMalformed() {
+    const char* path = "/tmp/test_malformed.csv";
+    {
+        std::ofstream out(path);
+        out << "axis,type,index\n";
+        out << "x,random,1\n";
+        out << "badline\n";
+        out << "x,random,2\n";
+    }
+    ContestPositions pos;
+    std::string err;
+    CHECK(!parsePositionsFile(path, 1000, 1000, 1000, 100, 10, pos, err),
+          "should fail: malformed line");
+    CHECK(err.find("positions.csv line") != std::string::npos,
+          "error mentions line number");
+    unlink(path);
+}
+
+static void testParseErrorExtraFields() {
+    const char* path = "/tmp/test_extra.csv";
+    {
+        std::ofstream out(path);
+        out << "axis,type,index\n";
+        out << "x,random,1,extra\n";
+    }
+    ContestPositions pos;
+    std::string err;
+    CHECK(!parsePositionsFile(path, 1000, 1000, 1000, 100, 10, pos, err),
+          "should fail: extra fields");
+    unlink(path);
+}
+
+static void testSkipsCommentsAndEmpty() {
+    const char* path = "/tmp/test_comments.csv";
+    {
+        std::ofstream out(path);
+        out << "axis,type,index\n";
+        for (int i = 0; i < 100; ++i) out << "x,random," << i << "\n";
+        out << "# this is a comment\n";
+        out << "\n";
+        for (int i = 0; i < 100; ++i) out << "y,random," << i << "\n";
+        for (int i = 0; i < 100; ++i) out << "z,random," << i << "\n";
+        for (int i = 500; i < 510; ++i) out << "x,continuous," << i << "\n";
+        for (int i = 600; i < 610; ++i) out << "y,continuous," << i << "\n";
+        for (int i = 700; i < 710; ++i) out << "z,continuous," << i << "\n";
+    }
+    ContestPositions pos;
+    std::string err;
+    CHECK(parsePositionsFile(path, 1000, 1000, 1000, 100, 10, pos, err), err);
+    CHECK(pos.x_random.size() == 100, "comments: x_random");
+    CHECK(pos.y_random.size() == 100, "comments: y_random");
+    unlink(path);
+}
+
 int main() {
     testParseCSV();
     testParseTXT();
@@ -231,6 +333,12 @@ int main() {
     testOrderPreserved();
     testGenerateRandom();
     testHashDeterminism();
+    testHashDiffersWhenValuesChange();
+    testHashDiffersWhenGroupsDiffer();
+    testHashFixedValue();
+    testParseErrorMalformed();
+    testParseErrorExtraFields();
+    testSkipsCommentsAndEmpty();
 
     std::cout << "Passed: " << testsPassed << "/" << (testsPassed + testsFailed) << "\n";
     return testsFailed > 0 ? 1 : 0;

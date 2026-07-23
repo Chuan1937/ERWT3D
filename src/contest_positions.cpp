@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -19,38 +21,74 @@ static std::string axisName(const std::string& s) {
     return r;
 }
 
-static bool parseLine(const std::string& line,
-                      std::string& axis, std::string& type, uint64_t& index) {
+static ParseLineResult parseLine(const std::string& line, int lineNum,
+                                  std::string& axis, std::string& type, uint64_t& index,
+                                  std::string& error) {
     std::string l = line;
     while (!l.empty() && (l.back() == '\r' || l.back() == '\n' || l.back() == ' '))
         l.pop_back();
-    if (l.empty() || l[0] == '#') return false;
+    if (l.empty() || l[0] == '#') return ParseLineResult::Skip;
 
     for (auto& c : l) if (c == ',') c = ' ';
+
+    {
+        std::string lower;
+        for (char c : l) lower.push_back(static_cast<char>(std::tolower(c)));
+        if (lower.find("axis") != std::string::npos &&
+            lower.find("type") != std::string::npos &&
+            lower.find("index") != std::string::npos) {
+            return ParseLineResult::Skip;
+        }
+    }
 
     std::istringstream iss(l);
     std::string a, t;
     uint64_t idx;
-    if (!(iss >> a >> t >> idx)) return false;
+    if (!(iss >> a >> t >> idx)) {
+        error = "positions.csv line " + std::to_string(lineNum) +
+                ": expected \"axis,type,index\", got \"" + l + "\"";
+        return ParseLineResult::Error;
+    }
+
     axis = axisName(a);
     for (auto& c : t) c = static_cast<char>(std::tolower(c));
     type = t;
     index = idx;
-    return true;
+
+    if (axis == "axis" && type == "type" && index == 0) {
+        return ParseLineResult::Skip;
+    }
+
+    std::string extra;
+    if (iss >> extra) {
+        error = "positions.csv line " + std::to_string(lineNum) +
+                ": expected \"axis,type,index\", got \"" + l + "\"";
+        return ParseLineResult::Error;
+    }
+
+    return ParseLineResult::Parsed;
 }
 
-static uint64_t fnv1a64(const uint8_t* data, size_t len) {
-    uint64_t h = 14695981039346656037ULL;
-    for (size_t i = 0; i < len; ++i) {
-        h ^= data[i];
-        h *= 1099511628211ULL;
+static void hashByte(uint64_t& h, uint8_t value) {
+    h ^= value;
+    h *= 1099511628211ULL;
+}
+
+static void hashU64(uint64_t& h, uint64_t value) {
+    for (int i = 0; i < 8; ++i) {
+        hashByte(h, static_cast<uint8_t>((value >> (i * 8)) & 0xff));
     }
-    return h;
+}
+
+static void hashString(uint64_t& h, const std::string& s) {
+    for (char c : s) {
+        hashByte(h, static_cast<uint8_t>(c));
+    }
 }
 
 static void hashVector(uint64_t& h, const std::vector<uint64_t>& v) {
     for (auto x : v) {
-        h = fnv1a64(reinterpret_cast<const uint8_t*>(&x), sizeof(x));
+        hashU64(h, x);
     }
 }
 
@@ -139,10 +177,18 @@ bool parsePositionsFile(
 
     ContestPositions pos;
     std::string line;
+    int lineNum = 0;
     while (std::getline(ifs, line)) {
+        ++lineNum;
         std::string axis, type;
         uint64_t index;
-        if (!parseLine(line, axis, type, index)) continue;
+        std::string parseErr;
+        ParseLineResult res = parseLine(line, lineNum, axis, type, index, parseErr);
+        if (res == ParseLineResult::Error) {
+            error = parseErr;
+            return false;
+        }
+        if (res == ParseLineResult::Skip) continue;
 
         if (axis == "x" && type == "random") pos.x_random.push_back(index);
         else if (axis == "y" && type == "random") pos.y_random.push_back(index);
@@ -151,7 +197,8 @@ bool parsePositionsFile(
         else if (axis == "y" && type == "continuous") pos.y_continuous.push_back(index);
         else if (axis == "z" && type == "continuous") pos.z_continuous.push_back(index);
         else {
-            error = "unknown axis/type: " + axis + "/" + type + " in line: " + line;
+            error = "positions.csv line " + std::to_string(lineNum) +
+                    ": unknown axis/type: " + axis + "/" + type;
             return false;
         }
     }
@@ -212,12 +259,31 @@ bool generateRandomPositions(
 
 uint64_t computePositionsHash(const ContestPositions& positions) {
     uint64_t h = 14695981039346656037ULL;
-    hashVector(h, positions.x_random);
-    hashVector(h, positions.y_random);
-    hashVector(h, positions.z_random);
-    hashVector(h, positions.x_continuous);
-    hashVector(h, positions.y_continuous);
-    hashVector(h, positions.z_continuous);
+
+    hashString(h, "x_random");
+    hashU64(h, static_cast<uint64_t>(positions.x_random.size()));
+    for (auto x : positions.x_random) hashU64(h, x);
+
+    hashString(h, "y_random");
+    hashU64(h, static_cast<uint64_t>(positions.y_random.size()));
+    for (auto y : positions.y_random) hashU64(h, y);
+
+    hashString(h, "z_random");
+    hashU64(h, static_cast<uint64_t>(positions.z_random.size()));
+    for (auto z : positions.z_random) hashU64(h, z);
+
+    hashString(h, "x_continuous");
+    hashU64(h, static_cast<uint64_t>(positions.x_continuous.size()));
+    for (auto x : positions.x_continuous) hashU64(h, x);
+
+    hashString(h, "y_continuous");
+    hashU64(h, static_cast<uint64_t>(positions.y_continuous.size()));
+    for (auto y : positions.y_continuous) hashU64(h, y);
+
+    hashString(h, "z_continuous");
+    hashU64(h, static_cast<uint64_t>(positions.z_continuous.size()));
+    for (auto z : positions.z_continuous) hashU64(h, z);
+
     return h;
 }
 

@@ -1,6 +1,7 @@
 #include "erwt3d/contest_groups.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -85,9 +86,29 @@ static bool createOutputFiles(
     return true;
 }
 
-static void closeFiles(std::vector<int>& fds) {
-    for (int& f : fds) if (f >= 0) close(f);
+static void closeFilesSilent(std::vector<int>& fds) {
+    for (int& f : fds) {
+        if (f >= 0) { close(f); f = -1; }
+    }
     fds.clear();
+}
+
+static bool closeFilesChecked(std::vector<int>& fds, std::string* error = nullptr) {
+    bool allOk = true;
+    for (int& f : fds) {
+        if (f >= 0) {
+            if (close(f) != 0) {
+                if (error && allOk) {
+                    *error = "close failed for fd " + std::to_string(f) +
+                             ": " + std::string(std::strerror(errno));
+                }
+                allOk = false;
+            }
+            f = -1;
+        }
+    }
+    fds.clear();
+    return allOk;
 }
 
 static void finishProfile(ContestUnifiedProfile& p) {
@@ -161,7 +182,7 @@ bool executeContestGroups(
 
         const auto readStart = Clock::now();
         if (!reader(groups[g].axis, indices, outputs)) {
-            closeFiles(fds);
+            closeFilesSilent(fds);
             return false;
         }
         const double readMs = msSince(readStart);
@@ -169,11 +190,13 @@ bool executeContestGroups(
         const auto writeStart = Clock::now();
         for (size_t i = 0; i < indices.size(); ++i) {
             if (!writeFullyAt(fds[i], outputs[i].data(), outBytes, 0)) {
-                closeFiles(fds);
+                closeFilesChecked(fds);
                 return false;
             }
         }
-        closeFiles(fds);
+        if (!closeFilesChecked(fds)) {
+            return false;
+        }
         const double writeMs = msSince(writeStart);
 
         timings[g]->time_ms = msSince(groupStart);
@@ -229,7 +252,7 @@ bool executeContestGroupsMerged(
         const uint64_t elements = sliceElements(nx, ny, nz, groups[g].axis);
         outBytesPerGroup[g] = elements * sizeof(float);
         if (!createOutputFiles(groups[g], outputDir, outBytesPerGroup[g], allFds[g])) {
-            for (auto& fds : allFds) closeFiles(fds);
+            for (auto& fds : allFds) closeFilesSilent(fds);
             return false;
         }
     }
@@ -254,7 +277,7 @@ bool executeContestGroupsMerged(
     }
 
     if (!mergedReader(readEntries, allOutputs)) {
-        for (auto& fds : allFds) closeFiles(fds);
+        for (auto& fds : allFds) closeFilesSilent(fds);
         return false;
     }
     const double readMs = msSince(readStart);
@@ -272,12 +295,17 @@ bool executeContestGroupsMerged(
         const uint64_t outBytes = outBytesPerGroup[g];
         for (size_t i = 0; i < groups[g].indices->size(); ++i) {
             if (!writeFullyAt(allFds[g][i], allOutputs[g][i].data(), outBytes, 0)) {
-                for (auto& fds : allFds) closeFiles(fds);
+                for (auto& fds : allFds) closeFilesSilent(fds);
                 return false;
             }
         }
 
-        closeFiles(allFds[g]);
+        if (!closeFilesChecked(allFds[g])) {
+            for (size_t gg = g + 1; gg < 6; ++gg) {
+                closeFilesSilent(allFds[gg]);
+            }
+            return false;
+        }
 
         double writeCloseMs = msSince(writeStart);
         double groupReadMs = (totalSlices > 0)

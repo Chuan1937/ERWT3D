@@ -2,10 +2,13 @@
 #include "erwt3d/writer.hpp"
 #include "erwt3d/reader.hpp"
 #include "erwt3d/rzfp_writer.hpp"
+#include "erwt3d/rzfp_reader.hpp"
 #include "erwt3d/lz4_xp_sidecar.hpp"
 #include "erwt3d/raw_x_aux.hpp"
 #include "erwt3d/memory_budget.hpp"
+#include "erwt3d/file_format_detect.hpp"
 
+#include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -18,6 +21,41 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 constexpr uint64_t GiB = 1024ULL * 1024ULL * 1024ULL;
+constexpr size_t MIN_MEMORY_MB = 512;
+
+static size_t resolveMemoryLimit(const std::string& value) {
+    if (value == "auto" || value == "0") {
+        uint64_t memAvail = erwt3d::readLinuxMemAvailableBytes();
+        size_t resolved = static_cast<size_t>(memAvail * 0.70 / (1024 * 1024));
+        if (resolved < MIN_MEMORY_MB) {
+            size_t conservative = static_cast<size_t>(memAvail / 2 / (1024 * 1024));
+            resolved = std::max(conservative, MIN_MEMORY_MB);
+        }
+        std::cout << "Memory mode: auto\n"
+                  << "Resolved memory limit: " << resolved << " MiB\n";
+        return resolved;
+    }
+
+    char* end = nullptr;
+    long long parsed = std::strtoll(value.c_str(), &end, 10);
+    if (end != value.c_str() + value.size() || parsed <= 0) {
+        std::cerr << "Error: invalid --memory-limit-mb value: " << value << "\n";
+        std::exit(1);
+    }
+    size_t mib = static_cast<size_t>(parsed);
+    if (mib < MIN_MEMORY_MB) {
+        std::cerr << "Error: --memory-limit-mb must be at least " << MIN_MEMORY_MB << " MiB\n";
+        std::exit(1);
+    }
+    return mib;
+}
+
+static std::string canonicalPath(const std::string& path) {
+    std::error_code ec;
+    auto p = std::filesystem::canonical(path, ec);
+    if (ec) return path;
+    return p.string();
+}
 
 }
 
@@ -27,6 +65,7 @@ int main(int argc, char* argv[]) {
     uint64_t nx = 0, ny = 0, nz = 0;
     bool toRaw = false;
     int threads = 8;
+    std::string memoryLimit = "auto";
 
     for (int i = 1; i < argc; ++i) {
         const auto next = [&]() -> const char* {
@@ -50,20 +89,23 @@ int main(int argc, char* argv[]) {
             threads = std::stoi(next());
         } else if (std::strcmp(argv[i], "--to-raw") == 0) {
             toRaw = true;
+        } else if (std::strcmp(argv[i], "--memory-limit-mb") == 0) {
+            memoryLimit = next();
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             std::cerr
                 << "Usage: erwt3d_convert --input data.raw --output data.erwt3d --nx N --ny N --nz N\n\n"
                 << "Unified auto converter: samples raw data, estimates LZ4 and RZFP compression,\n"
                 << "predicts contest read time, and selects the best format automatically.\n\n"
-                << "  --input PATH    Raw float32 or ERWT3D file (required)\n"
-                << "  --output PATH   Output file (required)\n"
-                << "  --nx N          X dimension (required for raw input)\n"
-                << "  --ny N          Y dimension (required for raw input)\n"
-                << "  --nz N          Z dimension (required for raw input)\n"
-                << "  --threads N     Thread count (default: 8)\n"
-                << "  --to-raw        Convert ERWT3D back to raw\n\n"
+                << "  --input PATH          Raw float32 or ERWT3D/RZFP file (required)\n"
+                << "  --output PATH         Output file (required)\n"
+                << "  --nx N                X dimension (required for raw input)\n"
+                << "  --ny N                Y dimension (required for raw input)\n"
+                << "  --nz N                Z dimension (required for raw input)\n"
+                << "  --threads N           Thread count (default: 8)\n"
+                << "  --memory-limit-mb auto|N  Memory limit in MiB (default: auto)\n"
+                << "  --to-raw              Convert ERWT3D/RZFP back to raw float32\n\n"
                 << "Auto-selected candidates:\n"
-                << "  A) LZ4 + XP sidecar stride=2  (best when LZ4 compresses well)\n"
+                << "  A) LZ4 + embedded XP stride=2  (best when LZ4 compresses well)\n"
                 << "  B) Pure RZFP                    (best when LZ4 ratio > 0.80)\n\n"
                 << "Internal policy:\n"
                 << "  RZFP error: contest_bound=1e-3, internal_bound=7.5e-4\n"
@@ -82,10 +124,32 @@ int main(int argc, char* argv[]) {
     }
 
     if (toRaw) {
-        std::cout << "Converting ERWT3D to raw...\n";
-        erwt3d::ERWT3DReader reader(inputPath);
-        if (!reader.readFullToFile(outputPath, threads, 4096)) {
-            std::cerr << "Error: conversion failed\n";
+        size_t memMB = resolveMemoryLimit(memoryLimit);
+        auto fmt = erwt3d::detectOptimizedFileFormat(inputPath);
+
+        if (fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D) {
+            std::cout << "Converting LZ4 ERWT3D to raw...\n";
+            erwt3d::ERWT3DReader reader(inputPath);
+            if (!reader.readFullToFile(outputPath, threads, memMB)) {
+                std::cerr << "Error: LZ4 reverse conversion failed\n";
+                return 1;
+            }
+        } else if (fmt == erwt3d::OptimizedFileFormat::RZFP) {
+            std::cout << "Converting RZFP to raw...\n";
+            erwt3d::RzfpReader reader(inputPath);
+            if (!reader.ok()) {
+                std::cerr << "Error: cannot open RZFP file " << inputPath << "\n";
+                return 1;
+            }
+            erwt3d::RzfpReaderConfig config;
+            config.decode_threads = threads;
+            if (!reader.readFullToFile(outputPath, config)) {
+                std::cerr << "Error: RZFP reverse conversion failed\n";
+                return 1;
+            }
+        } else {
+            std::cerr << "Error: unknown file format in " << inputPath
+                      << " (expected ERWT3D or RZFP)\n";
             return 1;
         }
         std::cout << "Conversion complete: " << outputPath << "\n";
@@ -146,11 +210,19 @@ int main(int argc, char* argv[]) {
         bool hasXp = (rec.sidecar_format == erwt3d::SidecarFormat::LZ4_XPlane);
         uint32_t xpStride = rec.sidecar_stride;
 
+        {
+            std::error_code ec;
+            std::filesystem::remove(outputPath, ec);
+            std::filesystem::remove(outputPath + ".xp", ec);
+        }
+
+        size_t memLimitMB = resolveMemoryLimit(memoryLimit);
+
         erwt3d::RawXAuxStats auxStats;
         if (!erwt3d::writeERWT3DFromFile(
                 outputPath, inputPath, nx, ny, nz,
                 64, 64, 64, 4, 4, 4,
-                threads, 4096,
+                threads, memLimitMB,
                 0, 0,
                 true,
                 erwt3d::RawXAuxMode::Off,
@@ -161,17 +233,16 @@ int main(int argc, char* argv[]) {
         }
 
         if (hasXp && xpStride > 0) {
-            std::cout << "Generating LZ4 XP sidecar (stride=" << xpStride << ")...\n";
+            std::cout << "Generating embedded LZ4 XP (stride=" << xpStride << ")...\n";
             erwt3d::Lz4XpSidecarStats xpStats;
             if (!erwt3d::writeLz4XpSidecar(
                     inputPath, outputPath, nx, ny, nz,
                     xpStride, 256, 1.50, true, &xpStats)) {
-                std::cerr << "Error: XP sidecar generation failed\n";
+                std::cerr << "Error: embedded XP generation failed\n";
                 std::filesystem::remove(outputPath);
-                std::filesystem::remove(outputPath + ".xp");
                 return 1;
             }
-            std::cout << "XP sidecar: " << xpStats.sidecar_bytes / (1024*1024) << " MB"
+            std::cout << "Embedded XP: " << xpStats.sidecar_bytes / (1024*1024) << " MB"
                       << " ratio=" << std::fixed << std::setprecision(3)
                       << xpStats.compression_ratio << "x\n";
         }
@@ -180,9 +251,6 @@ int main(int argc, char* argv[]) {
         std::error_code ec;
         if (std::filesystem::exists(outputPath, ec))
             fileBytes = std::filesystem::file_size(outputPath, ec);
-        const std::string sidecarPath = outputPath + ".xp";
-        if (std::filesystem::exists(sidecarPath, ec))
-            fileBytes += std::filesystem::file_size(sidecarPath, ec);
         double storageRatio = rawSize > 0 ? static_cast<double>(fileBytes) / rawSize : 0.0;
 
         std::cout << "LZ4 conversion complete: " << outputPath << "\n"
@@ -194,7 +262,7 @@ int main(int argc, char* argv[]) {
         cfg.ny = ny;
         cfg.nz = nz;
         cfg.threads = threads;
-        cfg.memory_limit_mb = 4096;
+        cfg.memory_limit_mb = resolveMemoryLimit(memoryLimit);
         cfg.codec.error.policy = erwt3d::RelativeErrorPolicy::Strict;
         cfg.codec.error.contest_bound = 1e-3;
         cfg.codec.error.internal_bound = 7.5e-4;
@@ -206,10 +274,23 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
+        if (stats.violation_count > 0 ||
+            stats.max_relative_error >= 1e-3 ||
+            !std::isfinite(stats.max_relative_error)) {
+            std::cerr << "Error: RZFP accuracy verification failed:\n"
+                      << "  max_relative_error=" << std::setprecision(10)
+                      << stats.max_relative_error << "\n"
+                      << "  violations=" << stats.violation_count << "\n"
+                      << "output removed\n";
+            std::filesystem::remove(outputPath);
+            return 1;
+        }
+
         std::cout << "RZFP conversion complete: " << outputPath << "\n"
                   << "  Storage ratio: " << std::fixed << std::setprecision(3)
                   << stats.storage_ratio << "x\n"
-                  << "  Max relative error: " << stats.max_relative_error << "\n"
+                  << "  Max relative error: " << std::setprecision(10)
+                  << stats.max_relative_error << "\n"
                   << "  Violations: " << stats.violation_count << "\n";
     } else {
         std::cerr << "Error: unknown format selected: " << static_cast<int>(rec.main_format) << "\n";

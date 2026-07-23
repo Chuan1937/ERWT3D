@@ -7,6 +7,7 @@
 #include "erwt3d/contest_positions.hpp"
 #include "erwt3d/contest_groups.hpp"
 #include "erwt3d/raw_x_aux.hpp"
+#include "erwt3d/file_format_detect.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -28,20 +29,6 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 constexpr uint64_t MiB = 1024ULL * 1024ULL;
-
-enum class FileFormat { LZ4, RZFP, Unknown };
-
-static FileFormat detectFormat(const std::string& path) {
-    int fd = open(path.c_str(), O_RDONLY);
-    if (fd < 0) return FileFormat::Unknown;
-    char magic[8] = {};
-    ssize_t rd = pread(fd, magic, 8, 0);
-    close(fd);
-    if (rd < 8) return FileFormat::Unknown;
-    if (std::memcmp(magic, erwt3d::ERWT3D_MAGIC, 8) == 0) return FileFormat::LZ4;
-    if (std::memcmp(magic, erwt3d::RZFP_MAGIC, 8) == 0) return FileFormat::RZFP;
-    return FileFormat::Unknown;
-}
 
 static bool mkdirOne(const std::string& path) {
     if (path.empty() || path == ".") return true;
@@ -131,6 +118,8 @@ static void writeScoreCsv(
         << "merged_read_ms," << profile.merged_read_ms << '\n'
         << "total_write_ms," << profile.total_write_ms << '\n'
         << "total_create_files_ms," << profile.total_create_files_ms << '\n'
+        << "timing_mode," << (profile.merged_read_ms > 0.0 ? "merged" : "independent") << '\n'
+        << "group_read_times_estimated," << (profile.merged_read_ms > 0.0 ? "true" : "false") << '\n'
         << "output_file_count," << profile.output_file_count << '\n'
         << "output_total_bytes," << profile.output_total_bytes << '\n';
 }
@@ -201,18 +190,18 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    const FileFormat fmt = detectFormat(inputPath);
-    if (fmt == FileFormat::Unknown) {
+    const erwt3d::OptimizedFileFormat fmt = erwt3d::detectOptimizedFileFormat(inputPath);
+    if (fmt == erwt3d::OptimizedFileFormat::Unknown) {
         std::cerr << "Error: cannot detect file format (not ERWT3D or RZFP)\n";
         return 1;
     }
 
-    const char* fmtName = (fmt == FileFormat::LZ4) ? "LZ4" : "RZFP";
+    const char* fmtName = (fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D) ? "LZ4" : "RZFP";
 
     uint64_t nx = 0, ny = 0, nz = 0;
     double storageRatio = 0.0;
 
-    if (fmt == FileFormat::LZ4) {
+    if (fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D) {
         erwt3d::ERWT3DReader reader(inputPath);
         const auto& header = reader.getHeader();
         nx = header.nx; ny = header.ny; nz = header.nz;
@@ -220,9 +209,9 @@ int main(int argc, char* argv[]) {
         struct stat st{};
         uint64_t fileBytes = 0;
         if (stat(inputPath.c_str(), &st) == 0) fileBytes = st.st_size;
-        const std::string sidecarPath = inputPath + ".xp";
-        if (stat(sidecarPath.c_str(), &st) == 0) fileBytes += st.st_size;
-        storageRatio = rawBytes > 0 ? static_cast<double>(fileBytes) / rawBytes : 0.0;
+        const uint64_t totalBytes = erwt3d::getTotalOptimizedStorageBytes(
+            inputPath, fileBytes, header);
+        storageRatio = rawBytes > 0 ? static_cast<double>(totalBytes) / rawBytes : 0.0;
     } else {
         erwt3d::RzfpReader reader(inputPath);
         if (!reader.ok()) {
@@ -234,8 +223,6 @@ int main(int argc, char* argv[]) {
         struct stat st{};
         uint64_t fileBytes = 0;
         if (stat(inputPath.c_str(), &st) == 0) fileBytes = st.st_size;
-        const std::string sidecarPath = inputPath + ".xp";
-        if (stat(sidecarPath.c_str(), &st) == 0) fileBytes += st.st_size;
         const uint64_t rawBytes = erwt3d::rzfpRawSize(header);
         storageRatio = rawBytes > 0 ? static_cast<double>(fileBytes) / rawBytes : 0.0;
     }
@@ -285,7 +272,7 @@ int main(int argc, char* argv[]) {
 
     erwt3d::ContestReadBatchFunction readFn;
 
-    if (fmt == FileFormat::LZ4) {
+    if (fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D) {
         auto reader = std::make_shared<erwt3d::ERWT3DReader>(inputPath);
 
         size_t memoryLimitMB = 4096;
@@ -373,7 +360,7 @@ int main(int argc, char* argv[]) {
 
     erwt3d::ContestUnifiedProfile profile;
 
-    if (fmt == FileFormat::LZ4) {
+    if (fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D) {
         if (!erwt3d::executeContestGroups(positions, outputDir, nx, ny, nz, readFn, &profile)) {
             std::cerr << "Error: contest execution failed\n";
             return 1;
@@ -439,11 +426,16 @@ int main(int argc, char* argv[]) {
 
     std::cout << std::fixed << std::setprecision(3);
 
-    auto printGroup = [](const char* label, const erwt3d::ContestGroupTiming& t) {
-        std::cout << label << ":     " << t.time_ms / 1000.0 << " s"
+    auto printGroup = [&](const char* label, const erwt3d::ContestGroupTiming& t) {
+        const char* suffix = (profile.merged_read_ms > 0.0) ? " (est share)" : "";
+        std::cout << label << suffix << ":     " << t.time_ms / 1000.0 << " s"
                   << "  (read=" << t.read_ms / 1000.0
                   << "s write=" << t.write_ms / 1000.0
-                  << "s create=" << t.create_files_ms / 1000.0 << "s)\n";
+                  << "s";
+        if (profile.merged_read_ms == 0.0) {
+            std::cout << " create=" << t.create_files_ms / 1000.0 << "s";
+        }
+        std::cout << ")\n";
     };
 
     printGroup("X random     ", profile.x_random);

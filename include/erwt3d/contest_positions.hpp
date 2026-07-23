@@ -15,6 +15,12 @@ struct ContestPositions {
     std::vector<uint64_t> z_continuous;
 };
 
+enum class ParseLineResult {
+    Skip,
+    Parsed,
+    Error,
+};
+
 bool parsePositionsFile(
     const std::string& path,
     uint64_t nx,

@@ -240,6 +240,19 @@ public:
         std::vector<RzfpRoundReadResult>* results = nullptr
     );
 
+    bool readFullToFile(
+        const std::string& outputPath,
+        const RzfpReaderConfig& config);
+
+    bool readLine(SliceAxis axis, uint64_t fixed1, uint64_t fixed2,
+                  float* output, const RzfpReaderConfig& config);
+    bool readLineX(uint64_t y, uint64_t z, float* output,
+                   const RzfpReaderConfig& config);
+    bool readLineY(uint64_t x, uint64_t z, float* output,
+                   const RzfpReaderConfig& config);
+    bool readLineZ(uint64_t x, uint64_t y, float* output,
+                   const RzfpReaderConfig& config);
+
 private:
     std::string path_;
     int fd_ = -1;

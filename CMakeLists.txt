@@ -91,6 +91,7 @@ set(LIB_SOURCES
     src/auto_plan.cpp
     src/contest_positions.cpp
     src/contest_groups.cpp
+    src/file_format_detect.cpp
 )
 
 if(ERWT3D_ENABLE_RZFP)
