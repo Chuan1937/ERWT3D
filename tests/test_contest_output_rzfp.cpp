@@ -106,7 +106,8 @@ static void testRzfpContestOutput() {
             cgroups[g].name = groups[g].name;
             cgroups[g].indices = groups[g].indices;
             cgroups[g].outputs.clear();
-            for (auto& o : allOutputs[g]) cgroups[g].outputs.push_back(o.data());
+            for (auto& o : allOutputs[groups[g].original_group_id])
+                cgroups[g].outputs.push_back(o.data());
         }
 
         std::vector<RzfpReader::RzfpRoundReadResult> results;

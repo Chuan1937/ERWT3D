@@ -57,6 +57,7 @@ bool executeContestGroups(
 );
 
 struct GroupReadEntry {
+    size_t original_group_id = 0;
     SliceAxis axis;
     bool isRandom;
     std::string name;

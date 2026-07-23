@@ -269,6 +269,7 @@ bool executeContestGroupsMerged(
         for (auto& o : allOutputs[g]) o.resize(elements);
 
         GroupReadEntry entry;
+        entry.original_group_id = static_cast<size_t>(g);
         entry.axis = groups[g].axis;
         entry.isRandom = groups[g].isRandom;
         entry.name = groups[g].name;

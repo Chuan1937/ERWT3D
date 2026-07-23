@@ -411,7 +411,8 @@ int main(int argc, char* argv[]) {
                 cgroups[g].name = groups[g].name;
                 cgroups[g].indices = groups[g].indices;
                 cgroups[g].outputs.clear();
-                for (auto& o : allOutputs[g]) cgroups[g].outputs.push_back(o.data());
+                auto& outVec = allOutputs[groups[g].original_group_id];
+                for (auto& o : outVec) cgroups[g].outputs.push_back(o.data());
             }
 
             std::vector<erwt3d::RzfpReader::RzfpRoundReadResult> results;
