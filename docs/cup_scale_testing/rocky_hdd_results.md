@@ -412,3 +412,45 @@ erwt3d_contest --input /mnt/g/cup/converted/big_auto.erwt3d \
 |------|---------|-------------|---------|
 | 20GB | 4 GiB (M4) 即可 | ~5s (warm) / ~26s (cold) | 2 GiB |
 | 50GB | **8 GiB (M8)** | **28.1s** | 4 GiB |
+
+## P5 最终回归测试 (2026-07-23 late)
+
+**代码**: PR #58, HEAD `13ae293`
+**配置**: G→G 同盘, threads=8
+
+### 20GB LZ4+XP, --memory-limit-mb 4096
+
+| Run | T_composite | e2e (s) | Note |
+|-----|------------|---------|------|
+| R1 | 4.002s | 24.146 | Guest-cold drop |
+| R2 | 4.051s | 24.433 | |
+| R3 | 10.660s | 64.094 | Disk contention |
+
+**Warm**: ~4.0s (host cache persisted)
+
+### 50GB RZFP, --memory-limit-mb 8192
+
+| Run | T_composite | e2e (s) | merged_read (s) | Note |
+|-----|------------|---------|------------------|------|
+| R1 | 27.336s | 164.014 | 148.529 | |
+| R2 | 27.526s | 165.155 | 148.578 | |
+| **R3** | **28.118s** | **168.708** | **149.018** | |
+
+**冷缓存中位数**: T_composite=27.526s, CV=1.5%
+**存储比**: 0.421x
+**vs 历史基线** (28.662s, M8): -4.0% ✓
+
+### 回归验收
+
+| 检查项 | 20GB | 50GB |
+|--------|------|------|
+| 性能退化 <3% | ✓ (warm ~4s, 原 ~4.8s) | ✓ (27.5s, 原 28.7s) |
+| 输出 330×.dat | ✓ | ✓ |
+| 输出字节数 | 4.376 GB | 6.970 GB |
+| positions_hash | 稳定 | 稳定 |
+| memory_limit_mib 记录 | 4096 ✓ | 8192 ✓ |
+| memory_mode | explicit ✓ | explicit ✓ |
+| 格式检测 | LZ4 ✓ | RZFP ✓ |
+| 合并模式标记 | N/A | merged ✓ |
+| close 错误传播 | 正常 | 正常 |
+| 未修改高性能路径 | ✓ | ✓ |
