@@ -11,6 +11,7 @@ struct Lz4XpSidecarStats {
     uint64_t sidecar_bytes = 0;
     uint32_t stride = 0;
     uint32_t plane_count = 0;
+    bool embedded = false;
 };
 
 bool writeLz4XpSidecar(
@@ -20,6 +21,7 @@ bool writeLz4XpSidecar(
     uint32_t requestedStride,
     uint32_t chunkZRows = 256,
     double storageBudget = 1.50,
+    bool embed = true,
     Lz4XpSidecarStats* stats = nullptr
 );
 

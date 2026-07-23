@@ -165,7 +165,7 @@ int main(int argc, char* argv[]) {
             erwt3d::Lz4XpSidecarStats xpStats;
             if (!erwt3d::writeLz4XpSidecar(
                     inputPath, outputPath, nx, ny, nz,
-                    xpStride, 256, 1.50, &xpStats)) {
+                    xpStride, 256, 1.50, true, &xpStats)) {
                 std::cerr << "Error: XP sidecar generation failed\n";
                 std::filesystem::remove(outputPath);
                 std::filesystem::remove(outputPath + ".xp");

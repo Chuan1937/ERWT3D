@@ -73,6 +73,7 @@ struct ProbeResult {
     bool compressed = false;
     uint64_t raw_size = 0;
     uint64_t comp_size = 0;
+    std::vector<char> comp_data;
 };
 
 } // namespace
@@ -126,6 +127,7 @@ Lz4ProbeResult probeLz4Compression(const std::string& raw_path,
     uint64_t totalCompSampled = 0;
     uint64_t compressedCount = 0;
     uint64_t superblockCount = 0;
+    std::vector<ProbeResult> allResults;
 
     ThreadPool pool(static_cast<size_t>(std::max(1, config.threads)));
 
@@ -176,6 +178,8 @@ Lz4ProbeResult probeLz4Compression(const std::string& raw_path,
                 if (cs > 0 && static_cast<uint64_t>(cs) < sbBytes * 95 / 100) {
                     pr.compressed = true;
                     pr.comp_size = static_cast<uint64_t>(cs);
+                    comp.resize(cs);
+                    pr.comp_data = std::move(comp);
                 } else {
                     pr.compressed = false;
                     pr.comp_size = sbBytes;
@@ -191,6 +195,7 @@ Lz4ProbeResult probeLz4Compression(const std::string& raw_path,
             if (pr.compressed) ++compressedCount;
             ++superblockCount;
             result.ratios.push_back(static_cast<double>(pr.comp_size) / static_cast<double>(pr.raw_size));
+            allResults.push_back(std::move(pr));
         }
     }
 
@@ -235,6 +240,44 @@ Lz4ProbeResult probeLz4Compression(const std::string& raw_path,
         result.skipped = true;
         result.skip_reason = "estimated ratio " + std::to_string(result.main_ratio_estimate) +
                              " > threshold " + std::to_string(config.skip_threshold);
+    }
+
+    // Decode micro-benchmark: measure LZ4 decode throughput on sampled data
+    // Run when ratio is in the gray zone (0.55 - 0.90) where format choice is uncertain
+    double ratio = result.main_ratio_estimate;
+    if (!result.skipped && ratio >= 0.55 && ratio <= 0.90) {
+        std::vector<char> decompBuf(sbBytes);
+        constexpr int decodeRounds = 3;
+        double bestTime = 1e9;
+
+        for (int round = 0; round < decodeRounds; ++round) {
+            auto db0 = Clock::now();
+            uint64_t decodedBytes = 0;
+            for (const auto& pr : allResults) {
+                if (pr.compressed && !pr.comp_data.empty()) {
+                    int ret = LZ4_decompress_safe(
+                        pr.comp_data.data(), decompBuf.data(),
+                        static_cast<int>(pr.comp_data.size()),
+                        static_cast<int>(sbBytes));
+                    if (ret >= 0) {
+                        decodedBytes += sbBytes;
+                    }
+                } else {
+                    decodedBytes += sbBytes;
+                }
+            }
+            auto db1 = Clock::now();
+            double elapsed = std::chrono::duration<double>(db1 - db0).count();
+            if (elapsed < bestTime && decodedBytes > 0) {
+                bestTime = elapsed;
+            }
+        }
+
+        if (bestTime < 1e8) {
+            double totalDecodedMiB = static_cast<double>(allResults.size() * sbBytes) / (1024.0 * 1024.0);
+            result.decode_throughput_mibs = totalDecodedMiB / bestTime;
+            result.decode_benchmarked = true;
+        }
     }
 
     return result;

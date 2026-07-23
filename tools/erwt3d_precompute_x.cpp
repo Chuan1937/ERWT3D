@@ -17,7 +17,7 @@ static int runSidecar(const std::string& rawPath, const std::string& erwtPath,
                       double storageBudget = 1.50) {
     erwt3d::Lz4XpSidecarStats stats;
     if (!erwt3d::writeLz4XpSidecar(rawPath, erwtPath, nx, ny, nz,
-                                    requestedStride, chunkZRows, storageBudget, &stats)) {
+                                    requestedStride, chunkZRows, storageBudget, true, &stats)) {
         std::cerr << "Error: sidecar generation failed" << std::endl;
         return 1;
     }

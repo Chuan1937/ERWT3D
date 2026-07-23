@@ -20,6 +20,7 @@ constexpr uint64_t FLAG_COMPRESSED  = 1ULL << 4;
 constexpr uint64_t FLAG_HAS_XP_SIDECAR = 1ULL << 5;
 constexpr uint64_t FLAG_PHYSICAL_ORDER_YZX = 1ULL << 6;
 constexpr uint64_t FLAG_HAS_RAW_X_AUX = 1ULL << 7;
+constexpr uint64_t FLAG_HAS_XP_EMBEDDED = 1ULL << 8;
 
 constexpr uint32_t RAW_X_AUX_VERSION = 1;
 
@@ -204,6 +205,10 @@ static_assert(sizeof(CompressedBlockIndex) == 16);
 
 // X-plane sidecar support
 inline bool hasXPSidecar(const ERWT3DHeader& h) { return (h.flags & FLAG_HAS_XP_SIDECAR) != 0; }
+inline bool hasXPEmbedded(const ERWT3DHeader& h) { return (h.flags & FLAG_HAS_XP_EMBEDDED) != 0; }
+inline bool hasXP(const ERWT3DHeader& h) { return hasXPSidecar(h) || hasXPEmbedded(h); }
+inline uint64_t getXPEmbeddedOffset(const ERWT3DHeader& h) { return h.reserved[22]; }
+inline uint64_t getXPEmbeddedBytes(const ERWT3DHeader& h) { return h.reserved[23]; }
 
 constexpr char XPSIDECAR_MAGIC[8] = {'E', 'R', 'W', 'T', '3', 'D', 'X', 'P'};
 constexpr uint32_t XPSIDECAR_VERSION = 1;

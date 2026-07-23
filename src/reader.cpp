@@ -117,7 +117,7 @@ ERWT3DReader::~ERWT3DReader() {
     if (fd_ >= 0) {
         close(fd_);
     }
-    if (xpFd_ >= 0) {
+    if (xpFd_ >= 0 && xpFd_ != fd_) {
         close(xpFd_);
     }
 }
@@ -780,6 +780,22 @@ bool ERWT3DReader::tryReadBatchRawXAux_(
 // --- X-plane sidecar ---
 
 void ERWT3DReader::loadSidecar_() {
+    if (hasXPEmbedded(header_)) {
+        uint64_t xpOffset = getXPEmbeddedOffset(header_);
+        if (pread(fd_, &xpHeader_, sizeof(xpHeader_), xpOffset) != sizeof(xpHeader_)) return;
+        if (std::memcmp(xpHeader_.magic, XPSIDECAR_MAGIC, 8) != 0 ||
+            xpHeader_.version != XPSIDECAR_VERSION ||
+            xpHeader_.nx != header_.nx || xpHeader_.ny != header_.ny ||
+            xpHeader_.nz != header_.nz) return;
+        uint64_t idxBytes = xpHeader_.total_chunks * sizeof(XPChunkIndex);
+        if (idxBytes == 0) return;
+        xpIndex_.resize(xpHeader_.total_chunks);
+        if (pread(fd_, xpIndex_.data(), idxBytes, xpHeader_.index_offset) != static_cast<ssize_t>(idxBytes)) return;
+        xpFd_ = fd_;
+        xpAvailable_ = true;
+        return;
+    }
+
     std::string xpPath = path_ + ".xp";
     xpFd_ = open(xpPath.c_str(), O_RDONLY);
     if (xpFd_ < 0) return;

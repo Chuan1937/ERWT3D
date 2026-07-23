@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <future>
 #include <iostream>
+#include <memory>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
@@ -24,10 +25,10 @@ bool writeLz4XpSidecar(
     uint32_t requestedStride,
     uint32_t chunkZRows,
     double storageBudget,
+    bool embed,
     Lz4XpSidecarStats* stats
 ) {
 #ifdef ERWT3D_HAVE_LZ4
-    std::string xpPath = erwtPath + ".xp";
     uint64_t rawBytes = nx * ny * nz * sizeof(float);
     uint64_t planeFloats = ny * nz;
 
@@ -54,9 +55,26 @@ bool writeLz4XpSidecar(
     uint64_t totalChunks = static_cast<uint64_t>(planeCount) * chunksPerPlane;
     uint64_t chunkRawBytes = ny * static_cast<uint64_t>(chunkZRows) * sizeof(float);
 
-    int fdXp = open(xpPath.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
-    if (fdXp < 0) { close(fdRaw); close(fdErwt); return false; }
+    auto pool = std::make_unique<ThreadPool>(std::min<uint32_t>(8, chunksPerPlane));
 
+    // Determine write target
+    int fdXp = -1;
+    std::string xpPath;
+    uint64_t xpDataStart = 0; // offset in the target file where XP data begins
+
+    if (embed) {
+        fdXp = fdErwt;
+        xpDataStart = mainBytes;
+    } else {
+        xpPath = erwtPath + ".xp";
+        fdXp = open(xpPath.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
+        if (fdXp < 0) { close(fdRaw); close(fdErwt); return false; }
+        xpDataStart = 0;
+    }
+
+    // Write XP sidecar header (128 bytes)
+    // For embedded: written at mainBytes
+    // For sidecar:  written at 0
     XPSidecarHeader xpHdr{};
     std::memcpy(xpHdr.magic, XPSIDECAR_MAGIC, 8);
     xpHdr.version = XPSIDECAR_VERSION;
@@ -69,16 +87,22 @@ bool writeLz4XpSidecar(
     xpHdr.chunk_raw_bytes = chunkRawBytes;
     xpHdr.total_chunks = totalChunks;
     xpHdr.compression = 1;
-    if (pwrite(fdXp, &xpHdr, sizeof(xpHdr), 0) != sizeof(xpHdr)) {
-        close(fdXp); close(fdRaw); close(fdErwt); return false;
+    if (pwrite(fdXp, &xpHdr, sizeof(xpHdr), xpDataStart) != sizeof(xpHdr)) {
+        if (!embed) close(fdXp);
+        close(fdRaw); close(fdErwt); return false;
+    }
+
+    // Pre-extend file size for embedded mode
+    if (embed) {
+        if (ftruncate(fdErwt, mainBytes + sizeof(XPSidecarHeader)) != 0) {
+            close(fdRaw); close(fdErwt); return false;
+        }
     }
 
     std::vector<XPChunkIndex> index(totalChunks);
-    uint64_t dataOffset = sizeof(xpHdr);
+    uint64_t dataOffset = xpDataStart + sizeof(xpHdr);
     uint64_t totalStorageBytes = 0;
     std::vector<float> rawPlane(planeFloats);
-
-    ThreadPool pool(std::min<uint32_t>(8, chunksPerPlane));
 
     const int compBound = LZ4_compressBound(static_cast<int>(chunkRawBytes));
     std::vector<std::vector<float>> chunkWorkspace(chunksPerPlane,
@@ -93,14 +117,15 @@ bool writeLz4XpSidecar(
         uint64_t planeOff = x * planeFloats * sizeof(float);
         ssize_t rd = pread(fdRaw, rawPlane.data(), planeFloats * sizeof(float), planeOff);
         if (rd != static_cast<ssize_t>(planeFloats * sizeof(float))) {
-            close(fdXp); close(fdRaw); close(fdErwt); return false;
+            if (!embed) close(fdXp);
+            close(fdRaw); close(fdErwt); return false;
         }
         const float* plane = rawPlane.data();
 
         using ChunkResult = std::pair<bool, int>;
         std::vector<std::future<ChunkResult>> futures;
         for (uint32_t c = 0; c < chunksPerPlane; ++c) {
-            futures.push_back(pool.submit([&, c, ny, plane, chunkZRows, nz]() -> ChunkResult {
+            futures.push_back(pool->submit([&, c, ny, plane, chunkZRows, nz]() -> ChunkResult {
                 uint64_t zStart = static_cast<uint64_t>(c) * chunkZRows;
                 uint64_t zEnd = std::min(zStart + chunkZRows, nz);
                 uint64_t rowsInChunk = zEnd - zStart;
@@ -124,7 +149,10 @@ bool writeLz4XpSidecar(
 
         for (uint32_t c = 0; c < chunksPerPlane; ++c) {
             auto [ok, cs] = futures[c].get();
-            if (!ok) { close(fdXp); close(fdRaw); close(fdErwt); return false; }
+            if (!ok) {
+                if (!embed) close(fdXp);
+                close(fdRaw); close(fdErwt); return false;
+            }
 
             uint64_t globalChunkIdx = static_cast<uint64_t>(pi) * chunksPerPlane + c;
             index[globalChunkIdx].chunk_offset = dataOffset + totalStorageBytes;
@@ -134,30 +162,48 @@ bool writeLz4XpSidecar(
 
             if (pwrite(fdXp, compWorkspace[c].data(), cs,
                        index[globalChunkIdx].chunk_offset) != cs) {
-                close(fdXp); close(fdRaw); close(fdErwt); return false;
+                if (!embed) close(fdXp);
+                close(fdRaw); close(fdErwt); return false;
             }
         }
     }
 
     close(fdRaw);
 
+    pool->waitAll();
+    pool.reset();
+
+    // Write chunk index
     uint64_t indexOffset = dataOffset + totalStorageBytes;
     ssize_t idxBytes = static_cast<ssize_t>(totalChunks * sizeof(XPChunkIndex));
     if (pwrite(fdXp, index.data(), idxBytes, indexOffset) != idxBytes) {
-        close(fdXp); close(fdErwt); return false;
+        if (!embed) close(fdXp);
+        close(fdErwt); return false;
     }
 
+    // Update XP header with final offsets
+    // For embedded mode, chunk_offset values are absolute file offsets
     xpHdr.index_offset = indexOffset;
     xpHdr.total_storage_bytes = totalStorageBytes;
-    if (pwrite(fdXp, &xpHdr, sizeof(xpHdr), 0) != sizeof(xpHdr)) {
-        close(fdXp); close(fdErwt); return false;
+    if (pwrite(fdXp, &xpHdr, sizeof(xpHdr), xpDataStart) != sizeof(xpHdr)) {
+        if (!embed) close(fdXp);
+        close(fdErwt); return false;
     }
 
-    header.flags |= FLAG_HAS_XP_SIDECAR;
-    header.reserved[21] = 1;
-    pwrite(fdErwt, &header, sizeof(header), 0);
+    // Update main file header
+    if (embed) {
+        header.flags |= FLAG_HAS_XP_SIDECAR | FLAG_HAS_XP_EMBEDDED;
+        header.reserved[21] = 1;
+        header.reserved[22] = xpDataStart;
+        header.reserved[23] = sizeof(xpHdr) + totalStorageBytes + idxBytes;
+        pwrite(fdErwt, &header, sizeof(header), 0);
+    } else {
+        header.flags |= FLAG_HAS_XP_SIDECAR;
+        header.reserved[21] = 1;
+        pwrite(fdErwt, &header, sizeof(header), 0);
+        close(fdXp);
+    }
 
-    close(fdXp);
     close(fdErwt);
 
     if (stats) {
@@ -165,7 +211,9 @@ bool writeLz4XpSidecar(
         stats->stride = stride;
         stats->plane_count = planeCount;
         stats->compression_ratio = rawBytes > 0 ? static_cast<double>(totalStorageBytes) / rawBytes : 0.0;
-        stats->total_storage_ratio = rawBytes > 0 ? static_cast<double>(mainBytes + totalStorageBytes) / rawBytes : 0.0;
+        uint64_t totalFileBytes = embed ? (xpDataStart + sizeof(xpHdr) + totalStorageBytes + idxBytes) : (mainBytes + totalStorageBytes);
+        stats->total_storage_ratio = rawBytes > 0 ? static_cast<double>(totalFileBytes) / rawBytes : 0.0;
+        stats->embedded = embed;
     }
 
     return true;
