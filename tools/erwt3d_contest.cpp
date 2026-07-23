@@ -371,7 +371,8 @@ int main(int argc, char* argv[]) {
                 for (size_t i = 0; i < indices.size(); ++i) {
                     reqs.push_back({axis, indices[i], outputs[i].data()});
                 }
-                return reader->readSlicesBatchSSD(reqs, threads, memoryLimitMB);
+                erwt3d::HDDReadWindowConfig wcfg{};
+                return reader->readSlicesBatch(reqs, threads, memoryLimitMB, wcfg);
             };
         } else {
             reader->setIOBackend(erwt3d::IOBackend::Superblock);
