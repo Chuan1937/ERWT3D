@@ -89,6 +89,8 @@ set(LIB_SOURCES
     src/lz4_probe.cpp
     src/lz4_xp_sidecar.cpp
     src/auto_plan.cpp
+    src/contest_positions.cpp
+    src/contest_groups.cpp
 )
 
 if(ERWT3D_ENABLE_RZFP)
