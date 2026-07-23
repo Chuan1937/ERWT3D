@@ -2039,12 +2039,8 @@ bool RzfpReader::readFullToFile(
             const uint64_t copyZ = std::min<uint64_t>(header_.leaf_z, validZ - bz);
 
             uint32_t offset = 0;
-            {
-                const uint32_t checkpointIdx = leafIdx / PREFIX_CHECKPOINT_STRIDE;
-                for (uint64_t j = static_cast<uint64_t>(checkpointIdx) * PREFIX_CHECKPOINT_STRIDE;
-                     j < leafIdx; ++j) {
-                    offset += descriptorSize(descriptors_[descriptorBase + j]);
-                }
+            for (uint64_t j = 0; j < leafIdx; ++j) {
+                offset += descriptorSize(descriptors_[descriptorBase + j]);
             }
 
             const RzfpLeafCodec leafCodec = descriptorCodec(desc);
