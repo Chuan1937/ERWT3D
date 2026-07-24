@@ -8,6 +8,8 @@
 #include "erwt3d/contest_groups.hpp"
 #include "erwt3d/raw_x_aux.hpp"
 #include "erwt3d/file_format_detect.hpp"
+#include "erwt3d/io_profile.hpp"
+#include "erwt3d/unified_read_config.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -84,7 +86,12 @@ static void writeScoreCsv(
     uint64_t readWindowMib,
     const std::string& gitCommit,
     const erwt3d::ContestPositions& positions,
-    const erwt3d::ContestUnifiedProfile& profile
+    const erwt3d::ContestUnifiedProfile& profile,
+    const std::string& requestedIoProfile,
+    const std::string& resolvedIoProfile,
+    const std::string& profileReason,
+    const std::string& filesystemType,
+    bool wslDetected
 ) {
     auto now = std::chrono::system_clock::now();
     auto t = std::chrono::system_clock::to_time_t(now);
@@ -123,6 +130,11 @@ static void writeScoreCsv(
         << "memory_limit_mib," << memoryLimitMib << '\n'
         << "read_window_mib," << readWindowMib << '\n'
         << "cache_mode," << cacheMode << '\n'
+        << "requested_io_profile," << requestedIoProfile << '\n'
+        << "resolved_io_profile," << resolvedIoProfile << '\n'
+        << "profile_reason," << profileReason << '\n'
+        << "filesystem_type," << filesystemType << '\n'
+        << "wsl_detected," << (wslDetected ? "true" : "false") << '\n'
         << "positions_hash,0x" << std::hex << erwt3d::computePositionsHash(positions) << std::dec << '\n'
         << "x_random_time_ms," << std::fixed << std::setprecision(3) << profile.x_random.time_ms << '\n'
         << "x_random_read_ms," << profile.x_random.read_ms << '\n'
@@ -154,6 +166,39 @@ static void writeScoreCsv(
         << "group_read_times_estimated," << (profile.merged_read_ms > 0.0 ? "true" : "false") << '\n'
         << "output_file_count," << profile.output_file_count << '\n'
         << "output_total_bytes," << profile.output_total_bytes << '\n';
+
+    uint64_t peakRssMib = 0;
+    {
+        std::ifstream status("/proc/self/status");
+        std::string line;
+        while (std::getline(status, line)) {
+            if (line.compare(0, 6, "VmHWM:") == 0) {
+                size_t p = line.find_first_of("0123456789");
+                if (p != std::string::npos)
+                    peakRssMib = std::stoull(line.substr(p)) / 1024;
+                break;
+            }
+        }
+    }
+
+    out << "pread_calls," << profile.pread_calls << '\n'
+        << "actual_read_bytes," << profile.actual_read_bytes << '\n'
+        << "read_amplification,";
+    if (profile.output_total_bytes > 0) {
+        double amp = static_cast<double>(profile.actual_read_bytes)
+                   / static_cast<double>(profile.output_total_bytes);
+        out << std::fixed << std::setprecision(3) << amp;
+    } else {
+        out << "0.000";
+    }
+    out << '\n'
+        << "extent_count," << profile.extent_count << '\n'
+        << "decode_time_ms," << profile.decode_time_ms << '\n'
+        << "scatter_time_ms," << profile.scatter_time_ms << '\n'
+        << "window_cache_hits," << profile.window_cache_hits << '\n'
+        << "window_cache_misses," << profile.window_cache_misses << '\n'
+        << "window_cache_saved_bytes," << profile.window_cache_saved_bytes << '\n'
+        << "peak_rss_mib," << peakRssMib << '\n';
 }
 
 }
@@ -166,6 +211,7 @@ int main(int argc, char* argv[]) {
     uint64_t seed = 20260511;
     std::string memoryLimit = "auto";
     uint64_t readWindowMb = 0;
+    std::string ioProfileStr = "auto";
 
     for (int i = 1; i < argc; ++i) {
         const auto next = [&]() -> const char* {
@@ -189,6 +235,8 @@ int main(int argc, char* argv[]) {
             const char* v = next(); if (!v) return 1; memoryLimit = v;
         } else if (std::strcmp(argv[i], "--read-window-mb") == 0) {
             const char* v = next(); if (!v) return 1; readWindowMb = std::stoull(v);
+        } else if (std::strcmp(argv[i], "--io-profile") == 0) {
+            const char* v = next(); if (!v) return 1; ioProfileStr = v;
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             std::cerr
                 << "Usage: erwt3d_contest --input DATA.erwt3d --output-dir DIR [options]\n\n"
@@ -199,7 +247,8 @@ int main(int argc, char* argv[]) {
                 << "  --seed N               Random seed for test mode (default: 20260511)\n"
                 << "  --threads N            Thread count (default: 8)\n"
                 << "  --memory-limit-mb auto|N    Memory limit MB (default: auto=70% MemAvailable)\n"
-                << "  --read-window-mb N          Max read window MB (0=auto, max 128, default: 0)\n\n"
+                << "  --read-window-mb N          Max read window MB (0=auto, max 128, default: 0)\n"
+                << "  --io-profile auto|hdd|ssd|wsl-ssd   IO profile (default: auto=HDD)\n\n"
                 << "Official mode (--positions-file):\n"
                 << "  X/Y/Z random: 100 each, no duplicates\n"
                 << "  X/Y/Z continuous: 10 each, strictly consecutive\n\n"
@@ -322,35 +371,76 @@ int main(int argc, char* argv[]) {
     erwt3d::ContestReadBatchFunction readFn;
     uint64_t actualMemoryLimitMib = resolvedMem.mib;
 
+    erwt3d::IOProfileType requestedProfile = erwt3d::parseIOProfileType(ioProfileStr);
+    erwt3d::UnifiedReadConfig unifiedCfg = erwt3d::makeUnifiedConfig(
+        requestedProfile, inputPath, threads, actualMemoryLimitMib, readWindowMb);
+
+    if (requestedProfile == erwt3d::IOProfileType::Auto) {
+        bool deviceIsSSD = (unifiedCfg.io_profile == erwt3d::IOProfileType::SSD ||
+                            unifiedCfg.io_profile == erwt3d::IOProfileType::WSL_SSD);
+        bool isLZ4 = (fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D);
+
+        if (isLZ4 && deviceIsSSD) {
+            unifiedCfg.io_profile = erwt3d::IOProfileType::SSD;
+            unifiedCfg.resolved_profile_reason = "auto-lz4-on-ssd-extent";
+        } else {
+            unifiedCfg.io_profile = erwt3d::IOProfileType::HDD;
+            unifiedCfg.resolved_profile_reason = isLZ4
+                ? "auto-lz4-on-hdd-large-window"
+                : "auto-rzfp-hdd-large-window-cache";
+        }
+    }
+
+    std::cout << "IO profile: " << ioProfileStr
+              << " -> " << erwt3d::ioProfileTypeName(unifiedCfg.io_profile)
+              << " (" << unifiedCfg.resolved_profile_reason << ")\n";
+    if (unifiedCfg.wsl_detected) std::cout << "WSL detected: yes\n";
+    std::cout << "Filesystem: " << unifiedCfg.filesystem_type << "\n\n";
+
     if (fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D) {
         auto reader = std::make_shared<erwt3d::ERWT3DReader>(inputPath);
 
         size_t memoryLimitMB = actualMemoryLimitMib;
 
-        reader->setIOBackend(erwt3d::IOBackend::Superblock);
-        reader->setSBReadMode(erwt3d::SBReadMode::HDDReadWindow);
-        reader->setSBTaskOrder(erwt3d::SBTaskOrder::FileOffset);
-        reader->setHDDReadWindowConfig({
-            readWindowMb > 0 ? std::min<uint64_t>(readWindowMb * MiB, 128ULL * MiB) : 128ULL * MiB,
-            8ULL * MiB
-        });
+        const bool isSSD = (unifiedCfg.io_profile == erwt3d::IOProfileType::SSD ||
+                            unifiedCfg.io_profile == erwt3d::IOProfileType::WSL_SSD);
 
-        readFn = [reader, threads, memoryLimitMB, readWindowMb](
-            erwt3d::SliceAxis axis,
-            const std::vector<uint64_t>& indices,
-            std::vector<std::vector<float>>& outputs
-        ) -> bool {
-            erwt3d::HDDReadWindowConfig wcfg{
-                readWindowMb > 0 ? std::min<uint64_t>(readWindowMb * MiB, 128ULL * MiB) : 128ULL * MiB,
-                8ULL * MiB
+        if (isSSD) {
+            reader->setIOBackend(erwt3d::IOBackend::Superblock);
+            reader->setSBReadMode(erwt3d::SBReadMode::SSDConcurrentExtent);
+            reader->setSBTaskOrder(erwt3d::SBTaskOrder::FileOffset);
+            reader->setSSDReadConfig(unifiedCfg.ssd);
+
+            readFn = [reader, threads, memoryLimitMB](
+                erwt3d::SliceAxis axis,
+                const std::vector<uint64_t>& indices,
+                std::vector<std::vector<float>>& outputs
+            ) -> bool {
+                std::vector<erwt3d::ERWT3DReader::SliceBatchRequest> reqs;
+                for (size_t i = 0; i < indices.size(); ++i) {
+                    reqs.push_back({axis, indices[i], outputs[i].data()});
+                }
+                erwt3d::HDDReadWindowConfig wcfg{};
+                return reader->readSlicesBatch(reqs, threads, memoryLimitMB, wcfg);
             };
+        } else {
+            reader->setIOBackend(erwt3d::IOBackend::Superblock);
+            reader->setSBReadMode(erwt3d::SBReadMode::HDDReadWindow);
+            reader->setSBTaskOrder(erwt3d::SBTaskOrder::FileOffset);
+            reader->setHDDReadWindowConfig(unifiedCfg.hdd);
 
-            std::vector<erwt3d::ERWT3DReader::SliceBatchRequest> reqs;
-            for (size_t i = 0; i < indices.size(); ++i) {
-                reqs.push_back({axis, indices[i], outputs[i].data()});
-            }
-            return reader->readSlicesBatch(reqs, threads, memoryLimitMB, wcfg);
-        };
+            readFn = [reader, threads, memoryLimitMB, hddCfg = unifiedCfg.hdd](
+                erwt3d::SliceAxis axis,
+                const std::vector<uint64_t>& indices,
+                std::vector<std::vector<float>>& outputs
+            ) -> bool {
+                std::vector<erwt3d::ERWT3DReader::SliceBatchRequest> reqs;
+                for (size_t i = 0; i < indices.size(); ++i) {
+                    reqs.push_back({axis, indices[i], outputs[i].data()});
+                }
+                return reader->readSlicesBatch(reqs, threads, memoryLimitMB, hddCfg);
+            };
+        }
 
     } else {
         // RZFP path: dummy readFn since executeContestGroupsMerged is used
@@ -390,6 +480,7 @@ int main(int argc, char* argv[]) {
         auto windowCache = std::make_shared<erwt3d::BoundedWindowCache>(budget.window_cache_bytes);
 
         erwt3d::RzfpReaderConfig rzfpConfig;
+        rzfpConfig.io_profile = unifiedCfg.io_profile;
         rzfpConfig.strategy = erwt3d::RzfpReadStrategy::Auto;
         rzfpConfig.decode_threads = threads;
         rzfpConfig.window_cache = windowCache;
@@ -397,13 +488,31 @@ int main(int argc, char* argv[]) {
         rzfpConfig.use_window_cache = true;
         rzfpConfig.adaptive.auto_calibrate_device = false;
         rzfpConfig.adaptive.cache_policy = erwt3d::CachePolicy::StableAuto;
-        rzfpConfig.hdd.sequential_mb_s = 250.0;
-        rzfpConfig.hdd.seek_ms = 10.0;
-        rzfpConfig.hdd.read_window_bytes = readWindowMb > 0
-            ? std::min<uint64_t>(readWindowMb * MiB, 128ULL * MiB)
-            : std::min<uint64_t>(128ULL * MiB, budget.window_cache_bytes / 2 > 0
-                ? budget.window_cache_bytes / 2 : 64ULL * MiB);
-        rzfpConfig.hdd.max_gap_bytes = 8ULL * MiB;
+        rzfpConfig.hdd = unifiedCfg.hdd;
+        rzfpConfig.ssd = unifiedCfg.ssd;
+
+        // Format-aware cap: large RZFP benefits from bounded threads/working-set.
+        // 16 threads → SMT contention; >4GB inflates batch planning without gain.
+        const uint64_t rawBytes = rzfpHeader.nx * rzfpHeader.ny * rzfpHeader.nz * sizeof(float);
+        constexpr uint64_t kLargeThreshold = 32ULL * 1024 * 1024 * 1024;
+        if (rawBytes >= kLargeThreshold) {
+            const int cappedT = std::min(threads, 8);
+            const uint64_t cappedM = std::min<uint64_t>(actualMemoryLimitMib, 4096);
+            if (cappedT != threads || cappedM != actualMemoryLimitMib) {
+                std::cout << "RZFP large-format tuning: threads " << threads
+                          << " -> " << cappedT << ", memory "
+                          << actualMemoryLimitMib << " -> " << cappedM << " MiB\n";
+                rzfpConfig.decode_threads = cappedT;
+                actualMemoryLimitMib = cappedM;
+            }
+        }
+
+        if (readWindowMb == 0) {
+            uint64_t budgetClamp = budget.window_cache_bytes / 2 > 0
+                ? budget.window_cache_bytes / 2 : 64ULL * MiB;
+            rzfpConfig.hdd.read_window_bytes = std::min<uint64_t>(
+                rzfpConfig.hdd.read_window_bytes, budgetClamp);
+        }
 
         erwt3d::MultiGroupReadFunction mergedFn =
             [rzfpReader, rzfpConfig](
@@ -423,7 +532,24 @@ int main(int argc, char* argv[]) {
             }
 
             std::vector<erwt3d::RzfpReader::RzfpRoundReadResult> results;
-            return rzfpReader->readContestRound(cgroups, rzfpConfig, &results);
+            bool ok = rzfpReader->readContestRound(cgroups, rzfpConfig, &results);
+            for (auto& r : results) {
+                auto& cp = r.codec_profile;
+                if (cp.decoded_value_count > 0) {
+                    std::cerr << "[RZFP codec profile] "
+                              << "raw=" << cp.raw_count << " zero=" << cp.zero_count
+                              << " const=" << cp.constant_count << " acc=" << cp.accuracy_count
+                              << " ex=" << cp.accuracy_exception_count << " prec=" << cp.precision_count
+                              << " | plcopy=" << cp.payload_copy_ns/1e6 << "ms"
+                              << " zfp=" << cp.zfp_decompress_ns/1e6 << "ms"
+                              << " exc=" << cp.exception_patch_ns/1e6 << "ms"
+                              << " excA=" << cp.exception_alloc_ns/1e6 << "ms"
+                              << " lfcp=" << cp.leaf_copy_ns/1e6 << "ms"
+                              << " | vals=" << cp.decoded_value_count << std::endl;
+                    break;
+                }
+            }
+            return ok;
         };
 
         if (!erwt3d::executeContestGroupsMerged(positions, outputDir, nx, ny, nz, mergedFn, &profile)) {
@@ -467,7 +593,12 @@ int main(int argc, char* argv[]) {
     const std::string scorePath = outputDir + "/contest_score.csv";
     writeScoreCsv(scorePath, inputPath, fmtName, nx, ny, nz, storageRatio,
                   threads, resolvedMem.mode, actualMemoryLimitMib, readWindowMb,
-                  "eab46cd", positions, profile);
+                  "eab46cd", positions, profile,
+                  ioProfileStr,
+                  erwt3d::ioProfileTypeName(unifiedCfg.io_profile),
+                  unifiedCfg.resolved_profile_reason,
+                  unifiedCfg.filesystem_type,
+                  unifiedCfg.wsl_detected);
 
     std::cout << "\nScore written to " << scorePath << "\n";
     return 0;

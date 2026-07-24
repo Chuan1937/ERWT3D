@@ -21,6 +21,7 @@ constexpr uint64_t FLAG_HAS_XP_SIDECAR = 1ULL << 5;
 constexpr uint64_t FLAG_PHYSICAL_ORDER_YZX = 1ULL << 6;
 constexpr uint64_t FLAG_HAS_RAW_X_AUX = 1ULL << 7;
 constexpr uint64_t FLAG_HAS_XP_EMBEDDED = 1ULL << 8;
+constexpr uint64_t FLAG_HAS_RZFP_AXIS_LEAF = 1ULL << 9;
 
 constexpr uint32_t RAW_X_AUX_VERSION = 1;
 

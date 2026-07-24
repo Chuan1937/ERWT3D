@@ -1,8 +1,14 @@
 #pragma once
 
 #include "rzfp_format.hpp"
+#include "rzfp_axis_leaf.hpp"
 #include "rzfp_xplane_codec.hpp"
+#include "axis_plane.hpp"
+
+#include <array>
 #include "device_profile.hpp"
+#include "io_profile.hpp"
+#include "ssd/ssd_config.hpp"
 #include "slice.hpp"
 #include "sb_hdd.hpp"
 #include "window_cache.hpp"
@@ -22,6 +28,12 @@ enum class RzfpReadStrategy {
     FullPayloadScan,
     RawXAux,
     XPlaneSidecar,
+    AxisLeafReplica,
+};
+
+enum class RzfpAxisSidecarPolicy {
+    Disabled,
+    Force,
 };
 
 struct RzfpReadProfile {
@@ -62,6 +74,8 @@ struct RzfpReadProfile {
     std::string strategy_reason;
 
     std::atomic<uint64_t> scatter_ns{0};
+    std::atomic<uint64_t> cache_copy_ns{0};
+    RzfpCodecProfile codec_profile;
 
     RzfpReadProfile() = default;
     RzfpReadProfile(const RzfpReadProfile& o)
@@ -159,7 +173,10 @@ struct RzfpAdaptiveConfig {
 };
 
 struct RzfpReaderConfig {
+    IOProfileType io_profile = IOProfileType::Auto;
+
     HDDReadWindowConfig hdd;
+    SSDReadConfig ssd;
     RzfpReadStrategy strategy = RzfpReadStrategy::Auto;
     int decode_threads = 1;
     RzfpReadProfile* profile = nullptr;
@@ -168,6 +185,9 @@ struct RzfpReaderConfig {
     std::shared_ptr<BoundedWindowCache> window_cache;
     uint64_t window_cache_file_identity = 0;
     bool use_window_cache = true;
+    bool cache_prepared_by_round = false;
+    RzfpAxisSidecarPolicy axis_sidecar_policy = RzfpAxisSidecarPolicy::Disabled;
+    bool detailed_profile = false;
 };
 
 class RzfpReader {
@@ -180,6 +200,8 @@ public:
     const DeviceProfile& deviceProfile() const { return device_profile_; }
     uint64_t fileIdentity() const { return file_identity_; }
     uint64_t payloadBytes() const { return payload_bytes_; }
+    bool hasXPlaneSidecar() const { return has_sidecar_[0]; }
+    bool hasAxisSidecar(PlaneAxis axis) const { return has_sidecar_[static_cast<int>(axis)]; }
 
     const DeviceProfile& ensureDeviceProfile(
         const DeviceCalibrationConfig& config = {}
@@ -232,6 +254,8 @@ public:
         bool round_plan_built = false;
         uint64_t round_unique_superblocks = 0;
         uint64_t round_planned_preads = 0;
+
+        RzfpCodecProfile codec_profile;
     };
 
     bool readContestRound(
@@ -267,15 +291,27 @@ private:
     DeviceProfile device_profile_;
     bool device_profile_ready_ = false;
 
-    // Optional 2D X-plane sidecar.
-    bool has_xplane_ = false;
-    int xplane_fd_ = -1;
-    std::vector<uint64_t> xplane_offsets_;
-    std::vector<uint32_t> xplane_sizes_;
+    // Optional axis-plane sidecars (X, Y, Z).
+    std::array<bool, 3> has_sidecar_{false, false, false};
+    std::array<int, 3> sidecar_fd_{-1, -1, -1};
+    std::array<std::vector<uint64_t>, 3> sidecar_offsets_;
+    std::array<std::vector<uint32_t>, 3> sidecar_sizes_;
 
-    bool openXPlaneSidecar();
-    bool readXPlaneFromSidecar(uint64_t x, float* output, RzfpReadProfile* profile);
-    bool readXPlanesBatchFromSidecar(
+    bool axis_leaf_available_ = false;
+    std::array<int, 3> axis_leaf_fd_{-1, -1, -1};
+    std::array<RzfpAxisLeafHeader, 3> axis_leaf_headers_{};
+    std::array<std::vector<RzfpAxisLeafSlabIndex>, 3>
+        axis_leaf_indexes_;
+
+    void openAxisSidecars_();
+    bool openAxisLeafReplicas_();
+    bool readSlicesBatchFromAxisLeaf_(
+        const std::vector<SliceBatchRequest>& requests,
+        const RzfpReaderConfig& config,
+        RzfpReadProfile& profile
+    );
+    bool readAxisPlanesBatchFromSidecar(
+        PlaneAxis axis,
         const std::vector<SliceBatchRequest>& requests,
         const RzfpReaderConfig& config,
         RzfpReadProfile& profile

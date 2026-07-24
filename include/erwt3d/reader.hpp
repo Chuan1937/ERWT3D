@@ -2,10 +2,13 @@
 
 #include "format.hpp"
 #include "slice.hpp"
+#include "axis_plane.hpp"
 #include "cache.hpp"
 #include "sb_plan.hpp"
 #include "sb_hdd.hpp"
 #include "sb_panel.hpp"
+#include "ssd/ssd_config.hpp"
+#include <array>
 #include <cstdint>
 #include <string>
 #include <memory>
@@ -19,9 +22,10 @@ enum class IOBackend {
 };
 
 enum class SBReadMode {
-    RunBatch,      // batch contiguous superblock runs into single pread
-    LeafIndex,     // read only needed leaf blocks, merge into extents
-    HDDReadWindow, // HDD-max: large contiguous read windows with configurable gap tolerance
+    RunBatch,               // batch contiguous superblock runs into single pread
+    LeafIndex,              // read only needed leaf blocks, merge into extents
+    HDDReadWindow,          // HDD-max: large contiguous read windows with configurable gap tolerance
+    SSDConcurrentExtent,    // SSD: concurrent small-extent pread with decode pipeline
 };
 
 class ERWT3DReader {
@@ -71,10 +75,16 @@ public:
     const HDDReadWindowConfig& hddReadWindowConfig() const { return hddReadWindowCfg_; }
     void setHDDContiguousConfig(const HDDContiguousConfig& c) { hddContigCfg_ = c; }
     const HDDContiguousConfig& hddContiguousConfig() const { return hddContigCfg_; }
+    void setSSDReadConfig(const SSDReadConfig& cfg) { ssdReadCfg_ = cfg; }
+    const SSDReadConfig& ssdReadConfig() const { return ssdReadCfg_; }
     struct SliceBatchRequest { SliceAxis axis; uint64_t index; float* output; };
     bool readSlicesBatch(const std::vector<SliceBatchRequest>& requests,
                          int numThreads, size_t memoryLimitMB,
                          const HDDReadWindowConfig& wcfg);
+
+    // SSD-mode batch read
+    bool readSlicesBatchSSD(const std::vector<SliceBatchRequest>& requests,
+                            int numThreads, size_t memoryLimitMB);
 
     // 一键配置
     void setHDDMode();
@@ -101,6 +111,7 @@ private:
     SBTaskOrder sbTaskOrder_ = SBTaskOrder::FileOffset;
     HDDReadWindowConfig hddReadWindowCfg_;
     HDDContiguousConfig hddContigCfg_;
+    SSDReadConfig ssdReadCfg_;
     bool profileIO_ = false;
     IOProfile lastProfile_;
     bool compressed_ = false;
@@ -117,6 +128,18 @@ private:
     bool tryReadSliceXPSidecar_(uint64_t x, float* output, IOProfile* profile);
     bool tryReadBatchXPSidecar_(const std::vector<SliceBatchRequest>& requests,
                                 std::vector<bool>& handled);
+    
+    // Generic axis-plane sidecars (Y, Z) — LZ4 compressed, v2 header
+    std::array<int, 3> apFd_{-1, -1, -1};
+    std::array<bool, 3> apAvailable_{false, false, false};
+    std::array<AxisPlaneHeader, 3> apHeader_{};
+    std::array<std::vector<AxisPlaneIndexEntry>, 3> apIndex_;
+    std::vector<uint8_t> apCompBuf_;
+    std::vector<uint8_t> apRawBuf_;
+    void openAxisPlaneSidecars_();
+    bool tryReadBatchAxisPlaneSidecar_(PlaneAxis axis,
+                                        const std::vector<SliceBatchRequest>& requests,
+                                        std::vector<bool>& handled);
     
     // Raw X auxiliary (full-coverage uncompressed X-plane region)
     int rawXAuxFd_ = -1;

@@ -93,6 +93,18 @@ inline bool validateRzfpHeader(const RzfpFileHeader& header) {
 }
 
 inline bool hasRawXAux(const RzfpFileHeader& h) { return (h.flags & FLAG_HAS_RAW_X_AUX) != 0; }
+inline bool hasRzfpAxisLeaf(const RzfpFileHeader& h) {
+    return (h.flags & FLAG_HAS_RZFP_AXIS_LEAF) != 0;
+}
+inline uint32_t rzfpAxisLeafVersion(const RzfpFileHeader& h) {
+    return static_cast<uint32_t>(h.reserved[4]);
+}
+inline uint64_t rzfpAxisLeafSourcePayloadBytes(const RzfpFileHeader& h) {
+    return h.reserved[5];
+}
+inline uint64_t rzfpAxisLeafDescriptorHash(const RzfpFileHeader& h) {
+    return h.reserved[6];
+}
 inline uint64_t rzfpRawXAuxOffset(const RzfpFileHeader& h) { return h.reserved[0]; }
 inline uint64_t rzfpRawXAuxBytes(const RzfpFileHeader& h) { return h.reserved[1]; }
 inline uint64_t rzfpRawXAuxPlaneBytes(const RzfpFileHeader& h) { return h.reserved[2]; }

@@ -88,16 +88,23 @@ set(LIB_SOURCES
     src/api.cpp
     src/lz4_probe.cpp
     src/lz4_xp_sidecar.cpp
+    src/lz4_axis_plane_writer.cpp
+    src/rzfp_axis_plane_writer.cpp
     src/auto_plan.cpp
     src/contest_positions.cpp
     src/contest_groups.cpp
     src/file_format_detect.cpp
+    src/io_profile.cpp
+    src/unified_read_config.cpp
+    src/ssd/ssd_extent_planner.cpp
+    src/ssd/ssd_executor.cpp
 )
 
 if(ERWT3D_ENABLE_RZFP)
     list(APPEND LIB_SOURCES
         src/relative_error.cpp
         src/rzfp_codec.cpp
+        src/rzfp_axis_leaf.cpp
         src/rzfp_writer.cpp
         src/rzfp_reader.cpp
         src/rzfp_strategy.cpp
@@ -161,6 +168,17 @@ target_link_libraries(erwt3d_bench_contest PRIVATE erwt3d)
 add_executable(erwt3d_precompute_x tools/erwt3d_precompute_x.cpp)
 target_link_libraries(erwt3d_precompute_x PRIVATE erwt3d)
 
+add_executable(erwt3d_bench_output_floor tools/experimental/erwt3d_bench_output_floor.cpp)
+
+add_executable(erwt3d_bench_codec tools/experimental/erwt3d_bench_codec.cpp)
+target_link_libraries(erwt3d_bench_codec PRIVATE erwt3d)
+
+add_executable(erwt3d_bench_xplane_raw tools/experimental/erwt3d_bench_xplane_raw.cpp)
+target_link_libraries(erwt3d_bench_xplane_raw PRIVATE erwt3d)
+
+add_executable(erwt3d_append_rawx tools/experimental/erwt3d_append_rawx.cpp)
+target_link_libraries(erwt3d_append_rawx PRIVATE erwt3d)
+
 add_executable(example_api tools/example_api.cpp)
 target_link_libraries(example_api PRIVATE erwt3d)
 
@@ -178,6 +196,12 @@ if(ERWT3D_ENABLE_RZFP)
 
     add_executable(erwt3d_rzfp_xplane_gen tools/erwt3d_rzfp_xplane_gen.cpp)
     target_link_libraries(erwt3d_rzfp_xplane_gen PRIVATE erwt3d)
+
+    add_executable(erwt3d_rzfp_axis_repack tools/erwt3d_rzfp_axis_repack.cpp)
+    target_link_libraries(erwt3d_rzfp_axis_repack PRIVATE erwt3d)
+
+    add_executable(erwt3d_axis_plane_gen tools/erwt3d_axis_plane_gen.cpp)
+    target_link_libraries(erwt3d_axis_plane_gen PRIVATE erwt3d)
 
     add_executable(erwt3d_convert_rzfp tools/erwt3d_convert_rzfp.cpp)
     target_link_libraries(erwt3d_convert_rzfp PRIVATE erwt3d)

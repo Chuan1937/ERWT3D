@@ -80,7 +80,7 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 - **ERWT3D/RZFP 内部 Leaf 布局**：X 最快变化，`leaf[(z*leafY+y)*leafX+x]`
   - 转换器负责外部 Z-fastest 与内部 Leaf 布局之间的重排
 
-## 文件格式
+# 文件格式
 
 - Header：256 字节（magic、维度、块大小、flags）
 - Superblock：64×64×64 float32 = 1 MiB，Z-Y-X 顺序排列（内部布局 X fastest）
@@ -180,13 +180,67 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 - **直读回退**：decode 失败时从磁盘重读
 - **存储预算**：1.50 硬上限，1.490 自动目标，1.495 手动上限
 
+## RZFP Axis Leaf（PR #59 最终方案）
+
+RZFP 专用三轴 leaf 副本格式：将原始 4×4×4 leaf payload 按 axis 重新排列为三个独立文件（`.xal/.yal/.zal`），每条记录保留原 descriptor ID。
+
+```bash
+# 转换
+./build/erwt3d_rzfp_axis_repack \
+  --input data.rzfp --output data_axis.rzfp \
+  --memory-limit-mb 32768
+
+# 产出: data_axis.rzfp + .xal + .yal + .zal
+
+# 读取
+./build/erwt3d_contest --input data_axis.rzfp \
+  --threads 8 --memory-limit-mb 4096 --io-profile hdd
+```
+
+### 50GB 最终性能
+
+| 指标 | 原 RZFP merged | Axis leaf | 提速 |
+|------|:---:|:---:|:---:|
+| process_e2e | **119s** | **20.7s** | **5.7×** |
+| T_composite | 19.8s | 3.5s | 5.7× |
+| merged_read | 117s | 19.1s | 6.1× |
+| total_write | 2.3s | 1.6s | — |
+| peak RSS | 24.0 GB | 8.5 GB | -65% |
+| 存储比 | 0.42× | **1.30× ≤ 1.50× ✓** | — |
+| SHA256 vs legacy | — | **330/330 MATCH ✓** | — |
+| 冷缓存 CV (3x) | — | **2%** | — |
+
+### 20GB LZ4 YZ whole-plane
+
+| 指标 | 值 |
+|------|:---:|
+| process_e2e | **7.6s** |
+| 存储比 | **0.99×** |
+| SHA256 vs legacy | **330/330 MATCH ✓** |
+
+### 推荐参赛命令
+
+```bash
+# 20GB LZ4（SSD，YZ whole-plane sidecar）
+./build/erwt3d_contest --input data.erwt3d --output-dir OUT \
+  --threads 8 --memory-limit-mb 4096 --io-profile auto
+
+# 50GB RZFP axis leaf（HDD profile，大窗口）
+./build/erwt3d_contest --input data_axis.rzfp --output-dir OUT \
+  --threads 8 --memory-limit-mb 4096 --io-profile hdd
+```
+
+- **threads=8**：i9-10850K 8 物理核，16 线程 SMT 竞争减速
+- **memory=4GB**：RZFP axis leaf 约 8.5GB peak RSS，4GB 限制足够
+- **io-profile hdd**：即使 SSD，RZFP 大窗口顺读仍优于并发小 extent
+
 ### 推荐方案
 
-| 目标 | 50GB | 20GB |
+| 目标 | 20GB | 50GB |
 |------|------|------|
-| **推荐参赛** | M8 (8 GiB, 128 MB) — 41.37s | M4 (4 GiB) — 17.25s |
-| **绝对最快** | AUTO (27 GiB) — 39.95s | AUTO (17 GiB) — 16.79s |
-| **低内存兜底** | M2 (2 GiB) — 88.30s | M2 (2 GiB) — 50.44s |
+| **正式参赛** | LZ4 + YZ sidecar (7.6s, 0.99×) | RZFP axis leaf (20.7s, 1.30×) |
+| **方法** | whole-plane LZ4 per axis | 三轴 leaf 副本，轴向 slab 读 |
+| **正确性** | SHA256 MATCH ✓ | SHA256 MATCH ✓ |
 
 > 存储比 1.50× 是比赛得分满分线（20/20）。所有性能分公式为
 > `(基准时间 / T_composite) × 60`。
