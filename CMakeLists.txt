@@ -196,6 +196,9 @@ if(ERWT3D_ENABLE_RZFP)
     add_executable(erwt3d_rzfp_xplane_gen tools/erwt3d_rzfp_xplane_gen.cpp)
     target_link_libraries(erwt3d_rzfp_xplane_gen PRIVATE erwt3d)
 
+    add_executable(erwt3d_axis_plane_gen tools/erwt3d_axis_plane_gen.cpp)
+    target_link_libraries(erwt3d_axis_plane_gen PRIVATE erwt3d)
+
     add_executable(erwt3d_convert_rzfp tools/erwt3d_convert_rzfp.cpp)
     target_link_libraries(erwt3d_convert_rzfp PRIVATE erwt3d)
 

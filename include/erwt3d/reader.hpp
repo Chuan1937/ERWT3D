@@ -2,11 +2,13 @@
 
 #include "format.hpp"
 #include "slice.hpp"
+#include "axis_plane.hpp"
 #include "cache.hpp"
 #include "sb_plan.hpp"
 #include "sb_hdd.hpp"
 #include "sb_panel.hpp"
 #include "ssd/ssd_config.hpp"
+#include <array>
 #include <cstdint>
 #include <string>
 #include <memory>
@@ -126,6 +128,18 @@ private:
     bool tryReadSliceXPSidecar_(uint64_t x, float* output, IOProfile* profile);
     bool tryReadBatchXPSidecar_(const std::vector<SliceBatchRequest>& requests,
                                 std::vector<bool>& handled);
+    
+    // Generic axis-plane sidecars (Y, Z) — LZ4 compressed, v2 header
+    std::array<int, 3> apFd_{-1, -1, -1};
+    std::array<bool, 3> apAvailable_{false, false, false};
+    std::array<AxisPlaneHeader, 3> apHeader_{};
+    std::array<std::vector<AxisPlaneIndexEntry>, 3> apIndex_;
+    std::vector<uint8_t> apCompBuf_;
+    std::vector<uint8_t> apRawBuf_;
+    void openAxisPlaneSidecars_();
+    bool tryReadBatchAxisPlaneSidecar_(PlaneAxis axis,
+                                        const std::vector<SliceBatchRequest>& requests,
+                                        std::vector<bool>& handled);
     
     // Raw X auxiliary (full-coverage uncompressed X-plane region)
     int rawXAuxFd_ = -1;
