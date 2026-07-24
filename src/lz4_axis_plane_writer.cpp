@@ -145,7 +145,7 @@ bool writeLz4YZSidecar(
     int threads,
     Lz4AxisPlaneWriterStats* stats
 ) {
-    if (axis != PlaneAxis::X && axis != PlaneAxis::Y && axis != PlaneAxis::Z) return false;
+    if (axis != PlaneAxis::Y && axis != PlaneAxis::Z) return false;
     if (nx == 0 || ny == 0 || nz == 0 || storageBudget <= 0.0) return false;
 
     const AxisPlaneShape shape = makeAxisPlaneShape(axis, nx, ny, nz);
@@ -478,6 +478,39 @@ bool writeLz4AxisPlaneSidecar(
 
 #ifdef ERWT3D_HAVE_LZ4
     try {
+        if (axis == PlaneAxis::X) {
+            if (nx == 0 || ny == 0 || nz == 0) return false;
+            const uint64_t requestedRows = std::max<uint64_t>(
+                1, static_cast<uint64_t>(chunkElements) / ny);
+            const uint32_t chunkZRows = static_cast<uint32_t>(
+                std::min<uint64_t>(
+                    nz,
+                    std::min<uint64_t>(
+                        requestedRows,
+                        std::numeric_limits<uint32_t>::max())));
+
+            Lz4XpSidecarStats xpStats;
+            const bool ok = writeLz4XpSidecar(
+                rawPath,
+                mainPath,
+                nx,
+                ny,
+                nz,
+                1,
+                chunkZRows,
+                storageBudget,
+                false,
+                &xpStats);
+            if (stats) {
+                stats->compression_ratio = xpStats.compression_ratio;
+                stats->total_storage_ratio = xpStats.total_storage_ratio;
+                stats->sidecar_bytes = xpStats.sidecar_bytes;
+                stats->plane_count = xpStats.plane_count;
+                stats->written = ok;
+            }
+            return ok;
+        }
+
         return writeLz4YZSidecar(
             rawPath,
             mainPath,
