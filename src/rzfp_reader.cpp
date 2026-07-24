@@ -2081,6 +2081,7 @@ bool RzfpReader::readContestRound(
                 r.round_plan_built = false;
                 r.round_unique_superblocks = xProfile.unique_superblocks;
                 r.round_planned_preads = xProfile.pread_calls;
+                r.codec_profile = xProfile.codec_profile;
             }
         }
     }
@@ -2115,6 +2116,7 @@ bool RzfpReader::readContestRound(
             r.round_plan_built = false;
             r.round_unique_superblocks = yzProfile.unique_superblocks;
             r.round_planned_preads = yzProfile.pread_calls;
+            r.codec_profile = yzProfile.codec_profile;
         }
     }
 

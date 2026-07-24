@@ -516,7 +516,24 @@ int main(int argc, char* argv[]) {
             }
 
             std::vector<erwt3d::RzfpReader::RzfpRoundReadResult> results;
-            return rzfpReader->readContestRound(cgroups, rzfpConfig, &results);
+            bool ok = rzfpReader->readContestRound(cgroups, rzfpConfig, &results);
+            for (auto& r : results) {
+                auto& cp = r.codec_profile;
+                if (cp.decoded_value_count > 0) {
+                    std::cerr << "[RZFP codec profile] "
+                              << "raw=" << cp.raw_count << " zero=" << cp.zero_count
+                              << " const=" << cp.constant_count << " acc=" << cp.accuracy_count
+                              << " ex=" << cp.accuracy_exception_count << " prec=" << cp.precision_count
+                              << " | plcopy=" << cp.payload_copy_ns/1e6 << "ms"
+                              << " zfp=" << cp.zfp_decompress_ns/1e6 << "ms"
+                              << " exc=" << cp.exception_patch_ns/1e6 << "ms"
+                              << " excA=" << cp.exception_alloc_ns/1e6 << "ms"
+                              << " lfcp=" << cp.leaf_copy_ns/1e6 << "ms"
+                              << " | vals=" << cp.decoded_value_count << std::endl;
+                    break;
+                }
+            }
+            return ok;
         };
 
         if (!erwt3d::executeContestGroupsMerged(positions, outputDir, nx, ny, nz, mergedFn, &profile)) {

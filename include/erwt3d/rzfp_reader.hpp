@@ -239,6 +239,8 @@ public:
         bool round_plan_built = false;
         uint64_t round_unique_superblocks = 0;
         uint64_t round_planned_preads = 0;
+
+        RzfpCodecProfile codec_profile;
     };
 
     bool readContestRound(
