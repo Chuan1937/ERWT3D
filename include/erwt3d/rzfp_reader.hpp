@@ -187,6 +187,7 @@ public:
     const DeviceProfile& deviceProfile() const { return device_profile_; }
     uint64_t fileIdentity() const { return file_identity_; }
     uint64_t payloadBytes() const { return payload_bytes_; }
+    bool hasXPlaneSidecar() const { return has_xplane_; }
 
     const DeviceProfile& ensureDeviceProfile(
         const DeviceCalibrationConfig& config = {}

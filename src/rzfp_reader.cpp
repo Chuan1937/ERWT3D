@@ -1639,23 +1639,27 @@ bool RzfpReader::readXPlanesBatchFromSidecar(
 ) {
     if (xplane_fd_ < 0 || requests.empty()) return false;
 
+    // Group requests by plane_index to deduplicate same-plane reads
     struct XTask {
         uint64_t offset = 0;
         uint32_t size = 0;
-        float* output = nullptr;
+        std::vector<float*> outputs;
     };
+    std::unordered_map<uint64_t, XTask> planeMap;
 
-    std::vector<XTask> tasks;
-    tasks.reserve(requests.size());
     for (const auto& request : requests) {
         if (request.index >= xplane_offsets_.size()) return false;
-        tasks.push_back({
-            xplane_offsets_[request.index],
-            xplane_sizes_[request.index],
-            request.output
-        });
-        profile.requested_record_bytes +=
-            xplane_sizes_[request.index];
+        auto& task = planeMap[request.index];
+        task.offset = xplane_offsets_[request.index];
+        task.size = xplane_sizes_[request.index];
+        task.outputs.push_back(request.output);
+        profile.requested_record_bytes += xplane_sizes_[request.index];
+    }
+
+    std::vector<XTask> tasks;
+    tasks.reserve(planeMap.size());
+    for (auto& kv : planeMap) {
+        tasks.push_back(std::move(kv.second));
     }
 
     std::sort(
@@ -1772,10 +1776,12 @@ bool RzfpReader::readXPlanesBatchFromSidecar(
         for (size_t k = i; k < j; ++k) {
             const auto& task = tasks[k];
             const auto& plane = planes[k - i];
-            for (uint64_t y = 0; y < header_.ny; ++y) {
-                for (uint64_t z = 0; z < header_.nz; ++z) {
-                    task.output[y * header_.nz + z] =
-                        plane[z * header_.ny + y];
+            for (float* output : task.outputs) {
+                for (uint64_t y = 0; y < header_.ny; ++y) {
+                    for (uint64_t z = 0; z < header_.nz; ++z) {
+                        output[y * header_.nz + z] =
+                            plane[z * header_.ny + y];
+                    }
                 }
             }
         }

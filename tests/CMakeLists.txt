@@ -82,6 +82,9 @@ target_link_libraries(test_embedded_xp PRIVATE erwt3d)
 add_executable(test_contest_output_rzfp test_contest_output_rzfp.cpp)
 target_link_libraries(test_contest_output_rzfp PRIVATE erwt3d)
 
+add_executable(test_rzfp_xp_stability test_rzfp_xp_stability.cpp)
+target_link_libraries(test_rzfp_xp_stability PRIVATE erwt3d)
+
 add_executable(test_lz4_xp_stability test_lz4_xp_stability.cpp)
 target_link_libraries(test_lz4_xp_stability PRIVATE erwt3d)
 
@@ -123,6 +126,7 @@ add_test(NAME rzfp_to_raw COMMAND test_rzfp_to_raw)
 add_test(NAME rzfp_line_reader COMMAND test_rzfp_line_reader)
 add_test(NAME embedded_xp COMMAND test_embedded_xp)
 add_test(NAME contest_output_rzfp COMMAND test_contest_output_rzfp)
+add_test(NAME test_rzfp_xp_stability COMMAND test_rzfp_xp_stability)
 add_test(NAME test_lz4_xp_stability COMMAND test_lz4_xp_stability)
 add_test(NAME ssd_extent_planner COMMAND test_ssd_extent_planner)
 add_test(NAME ssd_lz4_batch COMMAND test_ssd_lz4_batch)
