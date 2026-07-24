@@ -944,7 +944,8 @@ static bool executeSelectiveLeaf(
     ) -> bool {
         const auto& task = tasks[user];
         float leaf[64];
-        if (!codec.decodeRecord(task.codec, data, task.record_size, leaf, &profile.codec_profile)) {
+        RzfpCodecProfile* cp = config.detailed_profile ? &profile.codec_profile : nullptr;
+        if (!codec.decodeRecord(task.codec, data, task.record_size, leaf, cp)) {
                    // direct read fallback
             std::vector<uint8_t> direct(task.record_size);
             if (readFullyAt(fd, direct.data(), task.record_size, task.file_offset)) {
@@ -990,10 +991,12 @@ scatter:
         for (const auto& scatter : task.scatters) {
             scatterDecodedLeaf(planHeader, scatter.op, leaf, scatter.output);
         }
-        profile.scatter_ns.fetch_add(
-            nsSince(scatterStart),
-            std::memory_order_relaxed
-        );
+        if (config.detailed_profile) {
+            profile.scatter_ns.fetch_add(
+                nsSince(scatterStart),
+                std::memory_order_relaxed
+            );
+        }
         return true;
     };
 

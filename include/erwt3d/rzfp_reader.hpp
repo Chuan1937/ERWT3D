@@ -185,6 +185,7 @@ struct RzfpReaderConfig {
     bool use_window_cache = true;
     bool cache_prepared_by_round = false;
     RzfpAxisSidecarPolicy axis_sidecar_policy = RzfpAxisSidecarPolicy::Disabled;
+    bool detailed_profile = false;
 };
 
 class RzfpReader {
