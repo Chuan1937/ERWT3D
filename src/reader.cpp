@@ -884,16 +884,12 @@ bool ERWT3DReader::tryReadBatchXPSidecar_(const std::vector<SliceBatchRequest>& 
     uint32_t cpp = xpHeader_.chunks_per_plane;
     uint64_t ny = xpHeader_.ny;
 
-    // Collect all sidecar-hit chunk tasks
-    struct ChunkTask {
-        uint64_t chunk_offset;
-        uint32_t compressed_size;
-        uint32_t raw_size;
-        uint32_t chunk_idx_in_plane;  // c
-        size_t request_idx;           // which request this belongs to
+    // Group requests by plane_idx to deduplicate same-plane reads
+    struct PlaneHit {
         uint64_t plane_idx;
+        std::vector<size_t> request_indices;
     };
-    std::vector<ChunkTask> tasks;
+    std::unordered_map<uint64_t, PlaneHit> planeMap;
     bool anyHit = false;
 
     for (size_t i = 0; i < requests.size(); ++i) {
@@ -905,23 +901,44 @@ bool ERWT3DReader::tryReadBatchXPSidecar_(const std::vector<SliceBatchRequest>& 
         if (planeIdx >= xpHeader_.plane_count) continue;
 
         anyHit = true;
-        for (uint32_t c = 0; c < cpp; ++c) {
-            const XPChunkIndex& ci = xpIndex_[planeIdx * cpp + c];
-            if (ci.compressed_size == 0) continue;
-            tasks.push_back({ci.chunk_offset, ci.compressed_size, ci.raw_size,
-                             c, i, planeIdx});
-        }
+        auto& ph = planeMap[planeIdx];
+        ph.plane_idx = planeIdx;
+        ph.request_indices.push_back(i);
     }
 
     if (!anyHit) return false;
+
+    // Collect chunk tasks per unique plane, with fan-out to all matching requests
+    struct ChunkTask {
+        uint64_t chunk_offset;
+        uint32_t compressed_size;
+        uint32_t raw_size;
+        uint32_t chunk_idx_in_plane;
+        std::vector<size_t> request_indices;
+        uint64_t plane_idx;
+    };
+    std::vector<ChunkTask> tasks;
+
+    for (auto& kv : planeMap) {
+        uint64_t planeIdx = kv.first;
+        auto& requestIndices = kv.second.request_indices;
+        for (uint32_t c = 0; c < cpp; ++c) {
+            const XPChunkIndex& ci = xpIndex_[planeIdx * cpp + c];
+            if (ci.compressed_size == 0) continue;
+            ChunkTask ct;
+            ct.chunk_offset = ci.chunk_offset;
+            ct.compressed_size = ci.compressed_size;
+            ct.raw_size = ci.raw_size;
+            ct.chunk_idx_in_plane = c;
+            ct.request_indices = requestIndices;
+            ct.plane_idx = planeIdx;
+            tasks.push_back(std::move(ct));
+        }
+    }
+
     if (tasks.empty()) {
-        // All hits but all chunks empty — mark as handled
-        for (size_t i = 0; i < requests.size(); ++i) {
-            if (requests[i].axis == SliceAxis::X &&
-                requests[i].index % stride == 0 &&
-                requests[i].index / stride < xpHeader_.plane_count) {
-                handled[i] = true;
-            }
+        for (auto& kv : planeMap) {
+            for (size_t ri : kv.second.request_indices) handled[ri] = true;
         }
         return true;
     }
@@ -934,7 +951,6 @@ bool ERWT3DReader::tryReadBatchXPSidecar_(const std::vector<SliceBatchRequest>& 
     adviseSequential(xpFd_);
 
     // Process with window merging: read contiguous chunks in one pread
-    uint64_t totalRead = 0;
     size_t i = 0;
     while (i < tasks.size()) {
         // Find contiguous run
@@ -942,7 +958,7 @@ bool ERWT3DReader::tryReadBatchXPSidecar_(const std::vector<SliceBatchRequest>& 
         uint64_t runOff = tasks[i].chunk_offset;
         uint64_t runEnd = runOff + tasks[i].compressed_size;
         while (j + 1 < tasks.size() &&
-               tasks[j + 1].chunk_offset <= runEnd + 4096) {  // 4KB gap tolerance
+               tasks[j + 1].chunk_offset <= runEnd + 4096) {
             runEnd = tasks[j + 1].chunk_offset + tasks[j + 1].compressed_size;
             j++;
         }
@@ -951,9 +967,8 @@ bool ERWT3DReader::tryReadBatchXPSidecar_(const std::vector<SliceBatchRequest>& 
         if (xpCompBuf_.size() < runSize) xpCompBuf_.resize(runSize);
         ssize_t n = pread(xpFd_, xpCompBuf_.data(), runSize, runOff);
         if (n != static_cast<ssize_t>(runSize)) return false;
-        totalRead += runSize;
 
-        // Decompress each chunk in the run and scatter to output
+        // Decompress each chunk in the run and scatter to all matching outputs
         for (size_t k = i; k <= j; ++k) {
             const auto& t = tasks[k];
             uint64_t bufOff = t.chunk_offset - runOff;
@@ -975,13 +990,17 @@ bool ERWT3DReader::tryReadBatchXPSidecar_(const std::vector<SliceBatchRequest>& 
                 std::memcpy(xpRawBuf_.data(), compData, t.raw_size);
             }
 
-            float* output = requests[t.request_idx].output;
             uint64_t zStart = static_cast<uint64_t>(t.chunk_idx_in_plane) * xpHeader_.chunk_z_rows;
             uint64_t rowsInChunk = std::min(t.raw_size / (ny * sizeof(float)),
                                              xpHeader_.nz - zStart);
             const float* chunk = reinterpret_cast<const float*>(xpRawBuf_.data());
-            transposeZYToYZ(chunk, output + zStart, rowsInChunk, ny, xpHeader_.nz);
-            handled[t.request_idx] = true;
+
+            // Fan-out to all request outputs
+            for (size_t ri : t.request_indices) {
+                float* output = requests[ri].output;
+                transposeZYToYZ(chunk, output + zStart, rowsInChunk, ny, xpHeader_.nz);
+                handled[ri] = true;
+            }
         }
 
         i = j + 1;
