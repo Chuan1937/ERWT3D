@@ -80,7 +80,23 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 - **ERWT3D/RZFP 内部 Leaf 布局**：X 最快变化，`leaf[(z*leafY+y)*leafX+x]`
   - 转换器负责外部 Z-fastest 与内部 Leaf 布局之间的重排
 
-## 文件格式
+### RZFP 推荐配置
+
+```bash
+# 20GB LZ4 (SSD, YZ whole-plane sidecar):
+./build/erwt3d_contest --input data.erwt3d --output-dir OUT \
+  --threads 8 --memory-limit-mb 4096 --io-profile auto
+
+# 50GB RZFP (HDD, 无 sidecar, merged round):
+./build/erwt3d_contest --input data.rzfp --output-dir OUT \
+  --threads 8 --memory-limit-mb 4096 --io-profile auto
+```
+
+- **threads=8**：i9-10850K 8 物理核，16 线程反而 SMT 竞争减速
+- **memory=4GB**：RZFP merged round 约 4GB 工作集最优，过大 batch 增加规划开销
+- **RZFP 不启用 axis sidecar**：YZ sidecar 在 merged round 下不省 I/O 反增存储
+
+# 文件格式
 
 - Header：256 字节（magic、维度、块大小、flags）
 - Superblock：64×64×64 float32 = 1 MiB，Z-Y-X 顺序排列（内部布局 X fastest）
