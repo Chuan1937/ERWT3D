@@ -1,5 +1,6 @@
 #include "erwt3d/axis_plane.hpp"
 #include "erwt3d/lz4_axis_plane_writer.hpp"
+#include "erwt3d/reader.hpp"
 #include "erwt3d/raw_layout.hpp"
 #include "erwt3d/writer.hpp"
 
@@ -251,6 +252,32 @@ void testRoundTrip(PlaneAxis axis, uint64_t planeIndex) {
     verifyPlaneValues(axis, planeIndex, plane);
 }
 
+void testProductionReaderMultiChunk() {
+    ERWT3DReader reader(lz4Path());
+    std::vector<float> yPlane(kNx * kNz);
+    std::vector<float> zPlane(kNx * kNy);
+
+    HDDReadWindowConfig windowConfig;
+    windowConfig.read_window_bytes = 16ULL << 20;
+    windowConfig.max_gap_bytes = 64ULL << 10;
+
+    std::vector<ERWT3DReader::SliceBatchRequest> requests = {
+        {SliceAxis::Y, 5, yPlane.data()},
+        {SliceAxis::Z, 3, zPlane.data()},
+    };
+    CHECK(
+        reader.readSlicesBatch(requests, 2, 256, windowConfig),
+        "production batch reader assembles multi-chunk planes");
+    verifyPlaneValues(PlaneAxis::Y, 5, yPlane);
+    verifyPlaneValues(PlaneAxis::Z, 3, zPlane);
+
+    std::fill(zPlane.begin(), zPlane.end(), 0.0f);
+    CHECK(
+        reader.readSlice(SliceAxis::Z, 3, zPlane.data(), 2, 256),
+        "production single-slice reader assembles multi-chunk plane");
+    verifyPlaneValues(PlaneAxis::Z, 3, zPlane);
+}
+
 void testStorageBudgetCleanup() {
     const std::string path =
         axisPlaneSidecarPath(lz4Path(), PlaneAxis::Y);
@@ -280,6 +307,7 @@ int main() {
     prepareInput();
     testRoundTrip(PlaneAxis::Y, 5);
     testRoundTrip(PlaneAxis::Z, 3);
+    testProductionReaderMultiChunk();
     testStorageBudgetCleanup();
     std::filesystem::remove_all(kTmpDir);
 
