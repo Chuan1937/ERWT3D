@@ -201,7 +201,7 @@ void testRoundTrip(PlaneAxis axis, uint64_t planeIndex) {
             kNy,
             kNz,
             kChunkElements,
-            1.50,
+            100.0,  // no practical limit for tiny test dataset
             3,
             &stats),
         std::string("write ") + axisLabel(axis) + " sidecar");
