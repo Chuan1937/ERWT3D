@@ -801,98 +801,121 @@ static bool executeSelectiveLeafSSD(
         size_t first_task, task_count;
     };
 
-    std::vector<ExtBuf> extBufs;
-    extBufs.reserve(plan.extents.size());
-    size_t tc = 0;
-    for (size_t ei = 0; ei < plan.extents.size(); ++ei) {
-        const auto& ext = plan.extents[ei];
-        uint8_t* buf = static_cast<uint8_t*>(std::aligned_alloc(4096,
-            (static_cast<size_t>(ext.size) + 4095) & ~static_cast<size_t>(4095ULL)));
-        if (!buf) {
-            for (auto& eb : extBufs) if (eb.buf) std::free(eb.buf);
-            return false;
-        }
-        size_t first = tc;
-        while (tc < tasks.size() &&
-               tasks[tc].file_offset < ext.offset + ext.size) ++tc;
-        extBufs.push_back({ext.offset, ext.size, buf, first, tc - first});
-    }
-
-    auto cleanup = [&]() {
-        for (auto& eb : extBufs) if (eb.buf) { std::free(eb.buf); eb.buf = nullptr; }
-    };
-
-    int readT = config.ssd.read_threads;
-    if (readT < 1) readT = 1;
-    if (readT <= 1 || extBufs.size() <= 1) {
-        for (size_t i = 0; i < extBufs.size(); ++i) {
-            ssize_t n = pread(fd, extBufs[i].buf,
-                              static_cast<size_t>(extBufs[i].size),
-                              static_cast<off_t>(extBufs[i].offset));
-            if (n != static_cast<ssize_t>(extBufs[i].size)) {
-                cleanup(); return false;
-            }
-        }
-    } else {
-        ThreadPool rp(static_cast<size_t>(readT));
-        std::vector<std::future<bool>> futs;
-        for (size_t i = 0; i < extBufs.size(); ++i) {
-            futs.push_back(rp.submit([fd, &extBufs, i]() -> bool {
-                ssize_t n = pread(fd, extBufs[i].buf,
-                                  static_cast<size_t>(extBufs[i].size),
-                                  static_cast<off_t>(extBufs[i].offset));
-                return n == static_cast<ssize_t>(extBufs[i].size);
-            }));
-        }
-        rp.waitAll();
-        for (auto& f : futs) if (!f.get()) { cleanup(); return false; }
-    }
+    const uint64_t poolBytes = config.ssd.buffer_pool_bytes > 0
+        ? config.ssd.buffer_pool_bytes : 512ULL * 1024 * 1024;
 
     const auto decodeStart = Clock::now();
     int decodeT = config.decode_threads;
     if (decodeT < 1) decodeT = 1;
 
-    {
-        ThreadPool dp(static_cast<size_t>(decodeT));
-        std::vector<std::future<bool>> dfuts;
+    size_t extIdx = 0;
+    size_t taskIdx = 0;
 
-        for (size_t i = 0; i < extBufs.size(); ++i) {
-            dfuts.push_back(dp.submit(
-                [fd, &planHeader, &tasks, &extBufs, i]() -> bool {
-            const auto& eb = extBufs[i];
-            RzfpCodec codec;
-            for (size_t ti = eb.first_task;
-                 ti < eb.first_task + eb.task_count; ++ti) {
-                if (ti >= tasks.size()) continue;
-                const auto& task = tasks[ti];
-                uint64_t off = task.file_offset - eb.offset;
-                if (off + task.record_size > eb.size) continue;
+    while (extIdx < plan.extents.size()) {
+        uint64_t batchBytes = 0;
+        size_t batchStart = extIdx;
+        size_t batchTaskStart = taskIdx;
+        while (extIdx < plan.extents.size() &&
+               batchBytes + ((plan.extents[extIdx].size + 4095) & ~static_cast<uint64_t>(4095)) <= poolBytes) {
+            batchBytes += (plan.extents[extIdx].size + 4095) & ~static_cast<uint64_t>(4095);
+            ++extIdx;
+        }
+        if (batchStart == extIdx && extIdx < plan.extents.size()) {
+            batchBytes = (plan.extents[extIdx].size + 4095) & ~static_cast<uint64_t>(4095);
+            ++extIdx;
+        }
 
-                const uint8_t* data = eb.buf + off;
-                float leaf[64];
-                if (!codec.decodeRecord(
-                        task.codec, data, task.record_size, leaf)) {
-                    return false;
-                }
+        const size_t batchCount = extIdx - batchStart;
+        std::vector<ExtBuf> batchBufs(batchCount);
+        size_t tc = taskIdx;
+        for (size_t bi = 0; bi < batchCount; ++bi) {
+            const auto& ext = plan.extents[batchStart + bi];
+            uint8_t* buf = static_cast<uint8_t*>(std::aligned_alloc(4096,
+                static_cast<size_t>((ext.size + 4095) & ~static_cast<uint64_t>(4095))));
+            if (!buf) {
+                for (size_t j = 0; j < bi; ++j) std::free(batchBufs[j].buf);
+                return false;
+            }
+            size_t first = tc;
+            while (tc < tasks.size() &&
+                   tasks[tc].file_offset < ext.offset + ext.size) ++tc;
+            batchBufs[bi] = {ext.offset, ext.size, buf, first, tc - first};
+        }
+        taskIdx = tc;
 
-                for (const auto& scatter : task.scatters) {
-                    scatterDecodedLeaf(planHeader, scatter.op, leaf,
-                                       scatter.output);
+        auto cleanup = [&]() {
+            for (auto& eb : batchBufs) if (eb.buf) { std::free(eb.buf); eb.buf = nullptr; }
+        };
+
+        int readT = config.ssd.read_threads;
+        if (readT < 1) readT = 1;
+        if (readT <= 1 || batchCount <= 1) {
+            for (size_t bi = 0; bi < batchCount; ++bi) {
+                ssize_t n = pread(fd, batchBufs[bi].buf,
+                                  static_cast<size_t>(batchBufs[bi].size),
+                                  static_cast<off_t>(batchBufs[bi].offset));
+                if (n != static_cast<ssize_t>(batchBufs[bi].size)) {
+                    cleanup(); return false;
                 }
             }
-            (void)fd;
-            return true;
-            }));
+        } else {
+            ThreadPool rp(static_cast<size_t>(readT));
+            std::vector<std::future<bool>> futs;
+            for (size_t bi = 0; bi < batchCount; ++bi) {
+                futs.push_back(rp.submit([fd, &batchBufs, bi]() -> bool {
+                    ssize_t n = pread(fd, batchBufs[bi].buf,
+                                      static_cast<size_t>(batchBufs[bi].size),
+                                      static_cast<off_t>(batchBufs[bi].offset));
+                    return n == static_cast<ssize_t>(batchBufs[bi].size);
+                }));
+            }
+            rp.waitAll();
+            for (auto& f : futs) if (!f.get()) { cleanup(); return false; }
         }
-        dp.waitAll();
-        for (auto& f : dfuts) if (!f.get()) { cleanup(); return false; }
+
+        {
+            ThreadPool dp(static_cast<size_t>(decodeT));
+            std::vector<std::future<bool>> dfuts;
+            for (size_t bi = 0; bi < batchCount; ++bi) {
+                dfuts.push_back(dp.submit(
+                    [fd, &planHeader, &tasks, &batchBufs, bi]() -> bool {
+                const auto& eb = batchBufs[bi];
+                RzfpCodec codec;
+                for (size_t ti = eb.first_task;
+                     ti < eb.first_task + eb.task_count; ++ti) {
+                    if (ti >= tasks.size()) continue;
+                    const auto& task = tasks[ti];
+                    if (task.file_offset < eb.offset) continue;
+                    uint64_t off = task.file_offset - eb.offset;
+                    if (off + task.record_size > eb.size) continue;
+
+                    const uint8_t* data = eb.buf + off;
+                    float leaf[64];
+                    if (!codec.decodeRecord(
+                            task.codec, data, task.record_size, leaf)) {
+                        return false;
+                    }
+
+                    for (const auto& scatter : task.scatters) {
+                        scatterDecodedLeaf(planHeader, scatter.op, leaf,
+                                           scatter.output);
+                    }
+                }
+                (void)fd;
+                return true;
+                }));
+            }
+            dp.waitAll();
+            for (auto& f : dfuts) if (!f.get()) { cleanup(); return false; }
+        }
+
+        cleanup();
     }
 
     const auto decodeEnd = Clock::now();
     profile.decode_time_ms += msSince(decodeStart);
     profile.scatter_time_ms += msSince(decodeEnd);
 
-    cleanup();
     return true;
 }
 

@@ -3,7 +3,6 @@
 #include "erwt3d/thread_pool.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <future>
@@ -32,6 +31,10 @@ struct ExtentWithBuf {
     uint64_t size;
     uint8_t* buf;
 };
+
+static uint64_t alignedAllocSize(uint64_t s) {
+    return (s + 4095) & ~static_cast<uint64_t>(4095);
+}
 
 } // anonymous namespace
 
@@ -93,77 +96,98 @@ bool executeSBBatchSSD(
 
     adviseSequential(fd);
 
-    std::vector<ExtentWithBuf> extentBufs;
-    extentBufs.reserve(plan.extents.size());
-    for (size_t ei = 0; ei < plan.extents.size(); ++ei) {
-        const auto& ext = plan.extents[ei];
-        uint8_t* buf = static_cast<uint8_t*>(std::aligned_alloc(4096,
-            (static_cast<size_t>(ext.size) + 4095) & ~static_cast<size_t>(4095ULL)));
-        if (!buf) return false;
-        extentBufs.push_back({ext.offset, ext.size, buf});
-    }
+    const uint64_t poolBytes = ssdCfg.buffer_pool_bytes > 0
+        ? ssdCfg.buffer_pool_bytes : 512ULL * 1024 * 1024;
 
-    auto cleanupBufs = [&]() {
-        for (auto& eb : extentBufs) {
-            if (eb.buf) { std::free(eb.buf); eb.buf = nullptr; }
+    size_t ei = 0;
+    while (ei < plan.extents.size()) {
+        uint64_t batchBytes = 0;
+        size_t batchStart = ei;
+        while (ei < plan.extents.size() &&
+               batchBytes + alignedAllocSize(plan.extents[ei].size) <= poolBytes) {
+            batchBytes += alignedAllocSize(plan.extents[ei].size);
+            ++ei;
         }
-    };
+        if (batchStart == ei && ei < plan.extents.size()) {
+            batchBytes = alignedAllocSize(plan.extents[ei].size);
+            ++ei;
+        }
 
-    if (readThreads == 1 || extentBufs.size() <= 1) {
-        for (size_t i = 0; i < extentBufs.size(); ++i) {
-            ssize_t nr = pread(fd, extentBufs[i].buf,
-                               static_cast<size_t>(extentBufs[i].size),
-                               static_cast<off_t>(extentBufs[i].offset));
-            if (nr != static_cast<ssize_t>(extentBufs[i].size)) {
-                cleanupBufs(); return false;
+        const size_t batchCount = ei - batchStart;
+        std::vector<ExtentWithBuf> batchBufs(batchCount);
+        for (size_t bi = 0; bi < batchCount; ++bi) {
+            const auto& ext = plan.extents[batchStart + bi];
+            uint8_t* buf = static_cast<uint8_t*>(std::aligned_alloc(4096,
+                static_cast<size_t>(alignedAllocSize(ext.size))));
+            if (!buf) {
+                for (size_t j = 0; j < bi; ++j) std::free(batchBufs[j].buf);
+                return false;
+            }
+            batchBufs[bi] = {ext.offset, ext.size, buf};
+        }
+
+        auto cleanupBatch = [&]() {
+            for (auto& eb : batchBufs) if (eb.buf) { std::free(eb.buf); eb.buf = nullptr; }
+        };
+
+        if (readThreads <= 1 || batchCount <= 1) {
+            for (size_t bi = 0; bi < batchCount; ++bi) {
+                ssize_t nr = pread(fd, batchBufs[bi].buf,
+                                   static_cast<size_t>(batchBufs[bi].size),
+                                   static_cast<off_t>(batchBufs[bi].offset));
+                if (nr != static_cast<ssize_t>(batchBufs[bi].size)) {
+                    cleanupBatch(); return false;
+                }
+            }
+        } else {
+            ThreadPool rp(static_cast<size_t>(readThreads));
+            std::vector<std::future<bool>> futs;
+            for (size_t bi = 0; bi < batchCount; ++bi) {
+                futs.push_back(rp.submit([fd, &batchBufs, bi]() -> bool {
+                    ssize_t nr = pread(fd, batchBufs[bi].buf,
+                                       static_cast<size_t>(batchBufs[bi].size),
+                                       static_cast<off_t>(batchBufs[bi].offset));
+                    return nr == static_cast<ssize_t>(batchBufs[bi].size);
+                }));
+            }
+            rp.waitAll();
+            for (auto& f : futs) {
+                if (!f.get()) { cleanupBatch(); return false; }
             }
         }
-    } else {
-        ThreadPool readPool(static_cast<size_t>(readThreads));
-        std::vector<std::future<bool>> readFutures;
-        for (size_t i = 0; i < extentBufs.size(); ++i) {
-            readFutures.push_back(readPool.submit([fd, &extentBufs, i]() -> bool {
-                ssize_t nr = pread(fd, extentBufs[i].buf,
-                                   static_cast<size_t>(extentBufs[i].size),
-                                   static_cast<off_t>(extentBufs[i].offset));
-                return nr == static_cast<ssize_t>(extentBufs[i].size);
-            }));
-        }
-        readPool.waitAll();
-        for (auto& f : readFutures) {
-            if (!f.get()) { cleanupBufs(); return false; }
-        }
-    }
 
-    {
-        ThreadPool decodePool(static_cast<size_t>(decodeThreads));
-        std::vector<std::future<bool>> decodeFutures;
-        for (size_t i = 0; i < plan.extents.size(); ++i) {
-            decodeFutures.push_back(decodePool.submit(
-                [fd, &header, &batch, outputs, &plan, &extentBufs, sbBV, i]() -> bool {
-            const auto& ext = plan.extents[i];
-            const uint8_t* readBuf = extentBufs[i].buf;
-            for (size_t li = ext.first_leaf;
-                 li < ext.first_leaf + ext.leaf_count; ++li) {
-                if (li >= batch.batch_tasks.size()) continue;
-                const auto& task = batch.batch_tasks[li];
-                uint64_t sbOff = task.file_offset - ext.offset;
-                if (sbOff + sbBV > ext.size) continue;
-                SBTask t{task.file_offset, task.first_leaf, task.leaf_count};
-                unpackLeaves(header, *task.plan, t, readBuf + sbOff,
-                             outputs[task.output_id]);
+        {
+            ThreadPool dp(static_cast<size_t>(decodeThreads));
+            std::vector<std::future<bool>> dfuts;
+            for (size_t bi = 0; bi < batchCount; ++bi) {
+                size_t extIdx = batchStart + bi;
+                dfuts.push_back(dp.submit(
+                    [fd, &header, &batch, outputs, &plan, &batchBufs, sbBV, bi, extIdx]() -> bool {
+                const auto& ext = plan.extents[extIdx];
+                const uint8_t* readBuf = batchBufs[bi].buf;
+                for (size_t li = ext.first_leaf;
+                     li < ext.first_leaf + ext.leaf_count; ++li) {
+                    if (li >= batch.batch_tasks.size()) continue;
+                    const auto& task = batch.batch_tasks[li];
+                    uint64_t sbOff = task.file_offset - ext.offset;
+                    if (sbOff + sbBV > ext.size) continue;
+                    SBTask t{task.file_offset, task.first_leaf, task.leaf_count};
+                    unpackLeaves(header, *task.plan, t, readBuf + sbOff,
+                                 outputs[task.output_id]);
+                }
+                (void)fd;
+                return true;
+                }));
             }
-            (void)fd;
-            return true;
-            }));
+            dp.waitAll();
+            for (auto& f : dfuts) {
+                if (!f.get()) { cleanupBatch(); return false; }
+            }
         }
-        decodePool.waitAll();
-        for (auto& f : decodeFutures) {
-            if (!f.get()) { cleanupBufs(); return false; }
-        }
+
+        cleanupBatch();
     }
 
-    cleanupBufs();
     return true;
 }
 
@@ -218,107 +242,132 @@ bool executeCompressedBatchSSD(
 
     adviseSequential(fd);
 
-    struct CExtentBuf {
-        uint64_t offset, size;
-        uint8_t* buf;
-        size_t first_sb, sb_count;
-    };
+    const uint64_t poolBytes = ssdCfg.buffer_pool_bytes > 0
+        ? ssdCfg.buffer_pool_bytes : 512ULL * 1024 * 1024;
 
-    std::vector<CExtentBuf> extBufs;
-    extBufs.reserve(plan.extents.size());
+    struct CExtBuf { uint64_t offset, size; uint8_t* buf; size_t first, count; };
 
     size_t sbCursor = 0;
-    for (size_t ei = 0; ei < plan.extents.size(); ++ei) {
-        const auto& ext = plan.extents[ei];
-        uint8_t* buf = static_cast<uint8_t*>(std::aligned_alloc(4096,
-            (static_cast<size_t>(ext.size) + 4095) & ~static_cast<size_t>(4095ULL)));
-        if (!buf) {
-            for (auto& eb : extBufs) if (eb.buf) std::free(eb.buf);
-            return false;
-        }
-        size_t firstSb = sbCursor;
-        while (sbCursor < n &&
-               sortedCompressedSBs[sbCursor].compressed_offset < ext.offset + ext.size) {
-            ++sbCursor;
-        }
-        extBufs.push_back({ext.offset, ext.size, buf, firstSb, sbCursor - firstSb});
-    }
+    size_t ei = 0;
 
-    auto cleanup = [&]() {
-        for (auto& eb : extBufs) if (eb.buf) { std::free(eb.buf); eb.buf = nullptr; }
+    auto buildBatchExtBufs = [&](size_t bStart, size_t bEnd,
+                                  std::vector<CExtBuf>& out) -> bool {
+        out.clear();
+        size_t localCursor = (bStart == 0) ? 0 : sbCursor;
+        for (size_t idx = bStart; idx < bEnd; ++idx) {
+            const auto& ext = plan.extents[idx];
+            uint8_t* buf = static_cast<uint8_t*>(std::aligned_alloc(4096,
+                static_cast<size_t>(alignedAllocSize(ext.size))));
+            if (!buf) {
+                for (auto& eb : out) std::free(eb.buf);
+                return false;
+            }
+            size_t first = localCursor;
+            while (localCursor < n &&
+                   sortedCompressedSBs[localCursor].compressed_offset < ext.offset + ext.size)
+                ++localCursor;
+            out.push_back({ext.offset, ext.size, buf, first, localCursor - first});
+        }
+        if (bEnd > 0) sbCursor = (out.back().first + out.back().count > sbCursor)
+            ? out.back().first + out.back().count : sbCursor;
+        return true;
     };
 
-    if (readThreads <= 1 || extBufs.size() <= 1) {
-        for (size_t i = 0; i < extBufs.size(); ++i) {
-            ssize_t nr = pread(fd, extBufs[i].buf,
-                               static_cast<size_t>(extBufs[i].size),
-                               static_cast<off_t>(extBufs[i].offset));
-            if (nr != static_cast<ssize_t>(extBufs[i].size)) {
-                cleanup(); return false;
+    auto cleanupBatch = [](std::vector<CExtBuf>& bufs) {
+        for (auto& eb : bufs) if (eb.buf) { std::free(eb.buf); eb.buf = nullptr; }
+    };
+
+    while (sbCursor < n || ei < plan.extents.size()) {
+        uint64_t batchBytes = 0;
+        size_t batchStart = ei;
+        while (ei < plan.extents.size() &&
+               batchBytes + alignedAllocSize(plan.extents[ei].size) <= poolBytes) {
+            batchBytes += alignedAllocSize(plan.extents[ei].size);
+            ++ei;
+        }
+        if (batchStart == ei && ei < plan.extents.size()) {
+            batchBytes = alignedAllocSize(plan.extents[ei].size);
+            ++ei;
+        }
+
+        std::vector<CExtBuf> batchBufs;
+        if (!buildBatchExtBufs(batchStart, ei, batchBufs)) return false;
+
+        if (readThreads <= 1 || batchBufs.size() <= 1) {
+            for (size_t bi = 0; bi < batchBufs.size(); ++bi) {
+                ssize_t nr = pread(fd, batchBufs[bi].buf,
+                                   static_cast<size_t>(batchBufs[bi].size),
+                                   static_cast<off_t>(batchBufs[bi].offset));
+                if (nr != static_cast<ssize_t>(batchBufs[bi].size)) {
+                    cleanupBatch(batchBufs); return false;
+                }
             }
+        } else {
+            ThreadPool rp(static_cast<size_t>(readThreads));
+            std::vector<std::future<bool>> futs;
+            for (size_t bi = 0; bi < batchBufs.size(); ++bi) {
+                futs.push_back(rp.submit([fd, &batchBufs, bi]() -> bool {
+                    ssize_t nr = pread(fd, batchBufs[bi].buf,
+                                       static_cast<size_t>(batchBufs[bi].size),
+                                       static_cast<off_t>(batchBufs[bi].offset));
+                    return nr == static_cast<ssize_t>(batchBufs[bi].size);
+                }));
+            }
+            rp.waitAll();
+            for (auto& f : futs) if (!f.get()) { cleanupBatch(batchBufs); return false; }
         }
-    } else {
-        ThreadPool rp(static_cast<size_t>(readThreads));
-        std::vector<std::future<bool>> futs;
-        for (size_t i = 0; i < extBufs.size(); ++i) {
-            futs.push_back(rp.submit([fd, &extBufs, i]() -> bool {
-                ssize_t nr = pread(fd, extBufs[i].buf,
-                                   static_cast<size_t>(extBufs[i].size),
-                                   static_cast<off_t>(extBufs[i].offset));
-                return nr == static_cast<ssize_t>(extBufs[i].size);
-            }));
-        }
-        rp.waitAll();
-        for (auto& f : futs) if (!f.get()) { cleanup(); return false; }
-    }
 
-    {
-        ThreadPool dp(static_cast<size_t>(decodeThreads));
-        std::vector<std::future<bool>> dfuts;
+        {
+            ThreadPool dp(static_cast<size_t>(decodeThreads));
+            std::vector<std::future<bool>> dfuts;
+            for (size_t bi = 0; bi < batchBufs.size(); ++bi) {
+                dfuts.push_back(dp.submit(
+                    [fd, &header, &sortedCompressedSBs, &batch, outputs,
+                     &batchBufs, sbBV, n, bi]() -> bool {
+                const auto& eb = batchBufs[bi];
+                std::vector<uint8_t> decompBuf(sbBV);
+                for (size_t si = eb.first; si < eb.first + eb.count; ++si) {
+                    if (si >= n) continue;
+                    const auto& sb = sortedCompressedSBs[si];
+                    if (sb.compressed_offset < eb.offset) continue;
+                    uint64_t relOff = sb.compressed_offset - eb.offset;
+                    if (relOff + sb.compressed_size > eb.size) continue;
+                    const uint8_t* src = eb.buf + relOff;
 
-        for (size_t i = 0; i < extBufs.size(); ++i) {
-            dfuts.push_back(dp.submit(
-                [fd, &header, &sortedCompressedSBs, &batch, outputs,
-                 &extBufs, sbBV, n, i]() -> bool {
-            const auto& eb = extBufs[i];
-            std::vector<uint8_t> decompBuf(sbBV);
-            for (size_t si = eb.first_sb; si < eb.first_sb + eb.sb_count; ++si) {
-                if (si >= n) continue;
-                const auto& sb = sortedCompressedSBs[si];
-                const uint8_t* src = eb.buf + (sb.compressed_offset - eb.offset);
-
-                if (sb.is_compressed) {
+                    if (sb.is_compressed) {
 #ifdef ERWT3D_HAVE_LZ4
-                    int dec = LZ4_decompress_safe(
-                        reinterpret_cast<const char*>(src),
-                        reinterpret_cast<char*>(decompBuf.data()),
-                        static_cast<int>(sb.compressed_size),
-                        static_cast<int>(sbBV));
-                    if (dec != static_cast<int>(sbBV)) return false;
+                        int dec = LZ4_decompress_safe(
+                            reinterpret_cast<const char*>(src),
+                            reinterpret_cast<char*>(decompBuf.data()),
+                            static_cast<int>(sb.compressed_size),
+                            static_cast<int>(sbBV));
+                        if (dec != static_cast<int>(sbBV)) return false;
 #else
-                    return false;
+                        return false;
 #endif
-                } else {
-                    std::memcpy(decompBuf.data(), src, sbBV);
-                }
+                    } else {
+                        std::memcpy(decompBuf.data(), src, sbBV);
+                    }
 
-                for (size_t si2 : sb.scatter_indices) {
-                    if (si2 >= batch.batch_tasks.size()) continue;
-                    const auto& bt = batch.batch_tasks[si2];
-                    SBTask t{bt.file_offset, bt.first_leaf, bt.leaf_count};
-                    unpackLeaves(header, *bt.plan, t, decompBuf.data(),
-                                 outputs[bt.output_id]);
+                    for (size_t si2 : sb.scatter_indices) {
+                        if (si2 >= batch.batch_tasks.size()) continue;
+                        const auto& bt = batch.batch_tasks[si2];
+                        SBTask t{bt.file_offset, bt.first_leaf, bt.leaf_count};
+                        unpackLeaves(header, *bt.plan, t, decompBuf.data(),
+                                     outputs[bt.output_id]);
+                    }
                 }
+                (void)fd;
+                return true;
+                }));
             }
-            (void)fd;
-            return true;
-            }));
+            dp.waitAll();
+            for (auto& f : dfuts) if (!f.get()) { cleanupBatch(batchBufs); return false; }
         }
-        dp.waitAll();
-        for (auto& f : dfuts) if (!f.get()) { cleanup(); return false; }
+
+        cleanupBatch(batchBufs);
     }
 
-    cleanup();
     return true;
 }
 

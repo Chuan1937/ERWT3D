@@ -166,6 +166,39 @@ static void writeScoreCsv(
         << "group_read_times_estimated," << (profile.merged_read_ms > 0.0 ? "true" : "false") << '\n'
         << "output_file_count," << profile.output_file_count << '\n'
         << "output_total_bytes," << profile.output_total_bytes << '\n';
+
+    uint64_t peakRssMib = 0;
+    {
+        std::ifstream status("/proc/self/status");
+        std::string line;
+        while (std::getline(status, line)) {
+            if (line.compare(0, 6, "VmHWM:") == 0) {
+                size_t p = line.find_first_of("0123456789");
+                if (p != std::string::npos)
+                    peakRssMib = std::stoull(line.substr(p)) / 1024;
+                break;
+            }
+        }
+    }
+
+    out << "pread_calls," << profile.pread_calls << '\n'
+        << "actual_read_bytes," << profile.actual_read_bytes << '\n'
+        << "read_amplification,";
+    if (profile.output_total_bytes > 0) {
+        double amp = static_cast<double>(profile.actual_read_bytes)
+                   / static_cast<double>(profile.output_total_bytes);
+        out << std::fixed << std::setprecision(3) << amp;
+    } else {
+        out << "0.000";
+    }
+    out << '\n'
+        << "extent_count," << profile.extent_count << '\n'
+        << "decode_time_ms," << profile.decode_time_ms << '\n'
+        << "scatter_time_ms," << profile.scatter_time_ms << '\n'
+        << "window_cache_hits," << profile.window_cache_hits << '\n'
+        << "window_cache_misses," << profile.window_cache_misses << '\n'
+        << "window_cache_saved_bytes," << profile.window_cache_saved_bytes << '\n'
+        << "peak_rss_mib," << peakRssMib << '\n';
 }
 
 }
@@ -343,12 +376,18 @@ int main(int argc, char* argv[]) {
         requestedProfile, inputPath, threads, actualMemoryLimitMib, readWindowMb);
 
     if (requestedProfile == erwt3d::IOProfileType::Auto) {
-        if (fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D) {
+        bool deviceIsSSD = (unifiedCfg.io_profile == erwt3d::IOProfileType::SSD ||
+                            unifiedCfg.io_profile == erwt3d::IOProfileType::WSL_SSD);
+        bool isLZ4 = (fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D);
+
+        if (isLZ4 && deviceIsSSD) {
             unifiedCfg.io_profile = erwt3d::IOProfileType::SSD;
-            unifiedCfg.resolved_profile_reason = "auto-lz4-best-ssd";
+            unifiedCfg.resolved_profile_reason = "auto-lz4-on-ssd-extent";
         } else {
             unifiedCfg.io_profile = erwt3d::IOProfileType::HDD;
-            unifiedCfg.resolved_profile_reason = "auto-rzfp-best-hdd-windowcache";
+            unifiedCfg.resolved_profile_reason = isLZ4
+                ? "auto-lz4-on-hdd-large-window"
+                : "auto-rzfp-hdd-large-window-cache";
         }
     }
 

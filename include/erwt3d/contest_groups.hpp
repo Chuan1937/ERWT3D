@@ -44,6 +44,15 @@ struct ContestUnifiedProfile {
 
     uint64_t output_file_count = 0;
     uint64_t output_total_bytes = 0;
+
+    uint64_t pread_calls = 0;
+    uint64_t actual_read_bytes = 0;
+    uint64_t extent_count = 0;
+    double decode_time_ms = 0.0;
+    double scatter_time_ms = 0.0;
+    uint64_t window_cache_hits = 0;
+    uint64_t window_cache_misses = 0;
+    uint64_t window_cache_saved_bytes = 0;
 };
 
 bool executeContestGroups(
