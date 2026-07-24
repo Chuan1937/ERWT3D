@@ -1,4 +1,5 @@
 #include "erwt3d/rzfp_reader.hpp"
+#include "erwt3d/rzfp_axis_leaf.hpp"
 #include "erwt3d/morton.hpp"
 #include "erwt3d/rzfp_codec.hpp"
 #include "erwt3d/rzfp_strategy.hpp"
@@ -14,6 +15,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <fcntl.h>
 #include <filesystem>
 #include <functional>
@@ -87,6 +89,62 @@ static uint64_t combineFileIdentity(const struct stat& st, uint64_t fileSize) {
          0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
     h ^= fileSize + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
     return h;
+}
+
+static uint64_t axisLeafDescriptorHash(
+    const std::vector<RzfpLeafDescriptor>& descriptors
+) {
+    uint64_t hash = 1469598103934665603ULL;
+    const auto* data =
+        reinterpret_cast<const uint8_t*>(descriptors.data());
+    const uint64_t bytes =
+        descriptors.size() * sizeof(RzfpLeafDescriptor);
+    for (uint64_t i = 0; i < bytes; ++i) {
+        hash ^= data[i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+static void axisLeafRecordCoordinates(
+    const RzfpFileHeader& header,
+    uint64_t descriptorId,
+    uint64_t& gx,
+    uint64_t& gy,
+    uint64_t& gz
+) {
+    const uint64_t leavesPerSB =
+        rzfpTotalLeafsPerSuper(header);
+    const uint64_t physicalSb =
+        descriptorId / leavesPerSB;
+    const uint32_t morton = static_cast<uint32_t>(
+        descriptorId % leavesPerSB);
+
+    const uint64_t sgX = rzfpSuperGridX(header);
+    const uint64_t sgY = rzfpSuperGridY(header);
+    const uint64_t sgZ = rzfpSuperGridZ(header);
+    const uint64_t sx = physicalSb % sgX;
+    const uint64_t rem = physicalSb / sgX;
+    uint64_t sy = 0;
+    uint64_t sz = 0;
+    if ((header.flags & FLAG_PHYSICAL_ORDER_YZX) != 0) {
+        sz = rem % sgZ;
+        sy = rem / sgZ;
+    } else {
+        sy = rem % sgY;
+        sz = rem / sgY;
+    }
+
+    uint32_t lx = 0;
+    uint32_t ly = 0;
+    uint32_t lz = 0;
+    unmorton3D(morton, lx, ly, lz);
+    gx = sx * header.super_x +
+         static_cast<uint64_t>(lx) * header.leaf_x;
+    gy = sy * header.super_y +
+         static_cast<uint64_t>(ly) * header.leaf_y;
+    gz = sz * header.super_z +
+         static_cast<uint64_t>(lz) * header.leaf_z;
 }
 
 struct ScatterRef {
@@ -1268,14 +1326,18 @@ RzfpReader::RzfpReader(const std::string& path)
         return;
     }
 
-    for (uint64_t i = 0; i < totalSB; ++i) {
-        const auto& index = sb_index_[i];
-        if (index.payload_offset < header_.payload_offset ||
-            index.payload_offset > file_size_ ||
-            index.payload_bytes > file_size_ - index.payload_offset) {
-            close(fd_);
-            fd_ = -1;
-            return;
+    const bool axisLeafFormat = hasRzfpAxisLeaf(header_);
+    if (!axisLeafFormat) {
+        for (uint64_t i = 0; i < totalSB; ++i) {
+            const auto& index = sb_index_[i];
+            if (index.payload_offset < header_.payload_offset ||
+                index.payload_offset > file_size_ ||
+                index.payload_bytes >
+                    file_size_ - index.payload_offset) {
+                close(fd_);
+                fd_ = -1;
+                return;
+            }
         }
     }
 
@@ -1306,9 +1368,21 @@ RzfpReader::RzfpReader(const std::string& path)
         }
     }
 
-    payload_bytes_ = totalPayloadBytes(sb_index_);
-    openAxisSidecars_();
-    initRawXAux_();
+    payload_bytes_ = axisLeafFormat
+        ? rzfpAxisLeafSourcePayloadBytes(header_)
+        : totalPayloadBytes(sb_index_);
+    if (axisLeafFormat) {
+        if (rzfpAxisLeafVersion(header_) !=
+                RZFP_AXIS_LEAF_VERSION ||
+            !openAxisLeafReplicas_()) {
+            close(fd_);
+            fd_ = -1;
+            return;
+        }
+    } else {
+        openAxisSidecars_();
+        initRawXAux_();
+    }
 }
 
 RzfpReader::~RzfpReader() {
@@ -1316,6 +1390,10 @@ RzfpReader::~RzfpReader() {
     if (fd_ >= 0) close(fd_);
     for (int i = 0; i < 3; ++i) {
         if (sidecar_fd_[i] >= 0 && sidecar_fd_[i] != fd_) close(sidecar_fd_[i]);
+        if (axis_leaf_fd_[i] >= 0 &&
+            axis_leaf_fd_[i] != fd_) {
+            close(axis_leaf_fd_[i]);
+        }
     }
 }
 
@@ -1335,6 +1413,26 @@ const DeviceProfile& RzfpReader::ensureDeviceProfile(
 
 bool RzfpReader::dropPayloadCache() {
     if (fd_ < 0 || sb_index_.empty()) return false;
+
+    if (axis_leaf_available_) {
+        bool ok = true;
+        for (int axis = 0; axis < 3; ++axis) {
+            const auto& header = axis_leaf_headers_[axis];
+            struct stat st{};
+            if (axis_leaf_fd_[axis] < 0 ||
+                fstat(axis_leaf_fd_[axis], &st) != 0 ||
+                posix_fadvise(
+                    axis_leaf_fd_[axis],
+                    static_cast<off_t>(header.payload_offset),
+                    static_cast<off_t>(
+                        static_cast<uint64_t>(st.st_size) -
+                        header.payload_offset),
+                    POSIX_FADV_DONTNEED) != 0) {
+                ok = false;
+            }
+        }
+        return ok;
+    }
 
     uint64_t start = std::numeric_limits<uint64_t>::max();
     uint64_t end = 0;
@@ -1392,6 +1490,469 @@ void RzfpReader::initRawXAux_() {
     rawXAuxFd_ = open(path_.c_str(), O_RDONLY);
     if (rawXAuxFd_ < 0) return;
     rawXAuxAvailable_ = true;
+}
+
+bool RzfpReader::openAxisLeafReplicas_() {
+    const uint64_t descHash =
+        axisLeafDescriptorHash(descriptors_);
+    if (descHash !=
+        rzfpAxisLeafDescriptorHash(header_)) {
+        return false;
+    }
+
+    for (int ai = 0; ai < 3; ++ai) {
+        const PlaneAxis axis =
+            static_cast<PlaneAxis>(ai);
+        const std::string sidecarPath =
+            rzfpAxisLeafPath(path_, axis);
+        const int fd = open(
+            sidecarPath.c_str(),
+            O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
+            for (int closeIndex = 0;
+                 closeIndex < ai;
+                 ++closeIndex) {
+                close(axis_leaf_fd_[closeIndex]);
+                axis_leaf_fd_[closeIndex] = -1;
+            }
+            return false;
+        }
+
+        RzfpAxisLeafHeader sidecar{};
+        struct stat st{};
+        bool ok =
+            fstat(fd, &st) == 0 &&
+            readFullyAt(
+                fd,
+                &sidecar,
+                sizeof(sidecar),
+                0) &&
+            validateRzfpAxisLeafHeader(
+                sidecar,
+                header_,
+                axis,
+                descHash);
+        if (ok) {
+            const uint64_t indexBytes =
+                sidecar.slab_count *
+                sizeof(RzfpAxisLeafSlabIndex);
+            ok =
+                sidecar.payload_offset <=
+                    static_cast<uint64_t>(st.st_size) &&
+                sidecar.index_offset <=
+                    static_cast<uint64_t>(st.st_size) &&
+                indexBytes <=
+                    static_cast<uint64_t>(st.st_size) -
+                    sidecar.index_offset;
+        }
+
+        std::vector<RzfpAxisLeafSlabIndex> indexes;
+        if (ok) {
+            indexes.resize(
+                static_cast<size_t>(
+                    sidecar.slab_count));
+            ok = readFullyAt(
+                fd,
+                indexes.data(),
+                indexes.size() *
+                    sizeof(RzfpAxisLeafSlabIndex),
+                sidecar.index_offset);
+        }
+        if (ok) {
+            uint64_t previousEnd =
+                sidecar.payload_offset;
+            for (const auto& index : indexes) {
+                if (index.offset != previousEnd ||
+                    index.offset >
+                        static_cast<uint64_t>(st.st_size) ||
+                    index.bytes >
+                        static_cast<uint64_t>(st.st_size) -
+                        index.offset) {
+                    ok = false;
+                    break;
+                }
+                previousEnd =
+                    index.offset + index.bytes;
+            }
+            if (previousEnd !=
+                static_cast<uint64_t>(st.st_size)) {
+                ok = false;
+            }
+        }
+
+        if (!ok) {
+            close(fd);
+            for (int closeIndex = 0;
+                 closeIndex < ai;
+                 ++closeIndex) {
+                close(axis_leaf_fd_[closeIndex]);
+                axis_leaf_fd_[closeIndex] = -1;
+            }
+            return false;
+        }
+
+        axis_leaf_fd_[ai] = fd;
+        axis_leaf_headers_[ai] = sidecar;
+        axis_leaf_indexes_[ai] =
+            std::move(indexes);
+    }
+
+    axis_leaf_available_ = true;
+    return true;
+}
+
+bool RzfpReader::readSlicesBatchFromAxisLeaf_(
+    const std::vector<SliceBatchRequest>& requests,
+    const RzfpReaderConfig& config,
+    RzfpReadProfile& profile
+) {
+    if (!axis_leaf_available_ || requests.empty()) {
+        return false;
+    }
+
+    struct PlaneTarget {
+        uint32_t local = 0;
+        std::vector<float*> outputs;
+    };
+    struct SlabJob {
+        PlaneAxis axis = PlaneAxis::X;
+        uint64_t slab = 0;
+        RzfpAxisLeafSlabIndex index{};
+        std::vector<PlaneTarget> targets;
+    };
+    struct DecodeResult {
+        bool ok = false;
+        double elapsed_ms = 0.0;
+        uint64_t decoded_leaves = 0;
+    };
+
+    std::array<std::vector<SlabJob>, 3> jobsByAxis;
+    std::array<std::unordered_map<uint64_t, size_t>, 3>
+        jobMaps;
+
+    for (const auto& request : requests) {
+        PlaneAxis axis = PlaneAxis::X;
+        uint64_t axisSize = 0;
+        uint32_t leafSize = 0;
+        switch (request.axis) {
+            case SliceAxis::X:
+                axis = PlaneAxis::X;
+                axisSize = header_.nx;
+                leafSize = header_.leaf_x;
+                break;
+            case SliceAxis::Y:
+                axis = PlaneAxis::Y;
+                axisSize = header_.ny;
+                leafSize = header_.leaf_y;
+                break;
+            case SliceAxis::Z:
+                axis = PlaneAxis::Z;
+                axisSize = header_.nz;
+                leafSize = header_.leaf_z;
+                break;
+        }
+        if (request.output == nullptr ||
+            request.index >= axisSize ||
+            leafSize == 0) {
+            return false;
+        }
+
+        const int ai = static_cast<int>(axis);
+        const uint64_t slab = request.index / leafSize;
+        const uint32_t local = static_cast<uint32_t>(
+            request.index % leafSize);
+        if (slab >= axis_leaf_indexes_[ai].size()) {
+            return false;
+        }
+
+        size_t jobIndex = 0;
+        const auto found = jobMaps[ai].find(slab);
+        if (found == jobMaps[ai].end()) {
+            jobIndex = jobsByAxis[ai].size();
+            SlabJob job;
+            job.axis = axis;
+            job.slab = slab;
+            job.index =
+                axis_leaf_indexes_[ai][
+                    static_cast<size_t>(slab)];
+            jobsByAxis[ai].push_back(
+                std::move(job));
+            jobMaps[ai].emplace(slab, jobIndex);
+        } else {
+            jobIndex = found->second;
+        }
+
+        auto& job = jobsByAxis[ai][jobIndex];
+        auto target = std::find_if(
+            job.targets.begin(),
+            job.targets.end(),
+            [&](const PlaneTarget& item) {
+                return item.local == local;
+            }
+        );
+        if (target == job.targets.end()) {
+            PlaneTarget item;
+            item.local = local;
+            item.outputs.push_back(request.output);
+            job.targets.push_back(std::move(item));
+        } else {
+            target->outputs.push_back(request.output);
+        }
+    }
+
+    std::vector<SlabJob> jobs;
+    for (int ai = 0; ai < 3; ++ai) {
+        std::sort(
+            jobsByAxis[ai].begin(),
+            jobsByAxis[ai].end(),
+            [](const SlabJob& a, const SlabJob& b) {
+                return a.index.offset < b.index.offset;
+            });
+        for (auto& job : jobsByAxis[ai]) {
+            jobs.push_back(std::move(job));
+        }
+    }
+
+    const int decodeThreads =
+        std::max(1, config.decode_threads);
+    ThreadPool pool(
+        static_cast<size_t>(decodeThreads),
+        false);
+    std::deque<std::future<DecodeResult>> pending;
+    bool ok = true;
+
+    const auto consumeOne = [&]() {
+        DecodeResult result =
+            pending.front().get();
+        pending.pop_front();
+        if (!result.ok) ok = false;
+        profile.decode_time_ms +=
+            result.elapsed_ms;
+        profile.unique_leaves +=
+            result.decoded_leaves;
+        profile.unique_leaf_requests +=
+            result.decoded_leaves;
+    };
+
+    for (auto& job : jobs) {
+        const int ai = static_cast<int>(job.axis);
+        std::vector<uint8_t> data(
+            static_cast<size_t>(job.index.bytes));
+        const auto ioStart = Clock::now();
+        if (!data.empty() &&
+            !readFullyAt(
+                axis_leaf_fd_[ai],
+                data.data(),
+                data.size(),
+                job.index.offset)) {
+            ok = false;
+            break;
+        }
+        profile.io_time_ms += msSince(ioStart);
+        profile.actual_read_bytes +=
+            job.index.bytes;
+        profile.requested_record_bytes +=
+            job.index.bytes;
+        ++profile.pread_calls;
+
+        pending.push_back(pool.submit(
+            [this,
+             job = std::move(job),
+             data = std::move(data)]() mutable {
+                DecodeResult result;
+                const auto start = Clock::now();
+                RzfpCodec codec;
+                uint64_t offset = 0;
+
+                while (offset < data.size()) {
+                    if (data.size() - offset <
+                        sizeof(uint32_t)) {
+                        result.elapsed_ms =
+                            msSince(start);
+                        return result;
+                    }
+                    uint32_t descriptorId = 0;
+                    std::memcpy(
+                        &descriptorId,
+                        data.data() + offset,
+                        sizeof(descriptorId));
+                    offset += sizeof(descriptorId);
+                    if (descriptorId >=
+                        descriptors_.size()) {
+                        result.elapsed_ms =
+                            msSince(start);
+                        return result;
+                    }
+
+                    const auto descriptor =
+                        descriptors_[descriptorId];
+                    const uint16_t recordSize =
+                        descriptorSize(descriptor);
+                    if (recordSize >
+                        data.size() - offset) {
+                        result.elapsed_ms =
+                            msSince(start);
+                        return result;
+                    }
+
+                    uint64_t gx = 0;
+                    uint64_t gy = 0;
+                    uint64_t gz = 0;
+                    axisLeafRecordCoordinates(
+                        header_,
+                        descriptorId,
+                        gx,
+                        gy,
+                        gz);
+
+                    const uint64_t slab =
+                        job.axis == PlaneAxis::X
+                            ? gx / header_.leaf_x
+                        : job.axis == PlaneAxis::Y
+                            ? gy / header_.leaf_y
+                            : gz / header_.leaf_z;
+                    if (slab != job.slab) {
+                        result.elapsed_ms =
+                            msSince(start);
+                        return result;
+                    }
+
+                    if (gx < header_.nx &&
+                        gy < header_.ny &&
+                        gz < header_.nz) {
+                        float leaf[64];
+                        if (!codec.decodeRecord(
+                                descriptorCodec(
+                                    descriptor),
+                                data.data() + offset,
+                                recordSize,
+                                leaf)) {
+                            result.elapsed_ms =
+                                msSince(start);
+                            return result;
+                        }
+                        ++result.decoded_leaves;
+
+                        const uint64_t copyX =
+                            std::min<uint64_t>(
+                                header_.leaf_x,
+                                header_.nx - gx);
+                        const uint64_t copyY =
+                            std::min<uint64_t>(
+                                header_.leaf_y,
+                                header_.ny - gy);
+                        const uint64_t copyZ =
+                            std::min<uint64_t>(
+                                header_.leaf_z,
+                                header_.nz - gz);
+
+                        for (const auto& target :
+                             job.targets) {
+                            if ((job.axis ==
+                                     PlaneAxis::X &&
+                                 target.local >= copyX) ||
+                                (job.axis ==
+                                     PlaneAxis::Y &&
+                                 target.local >= copyY) ||
+                                (job.axis ==
+                                     PlaneAxis::Z &&
+                                 target.local >= copyZ)) {
+                                continue;
+                            }
+
+                            for (float* output :
+                                 target.outputs) {
+                                if (job.axis ==
+                                    PlaneAxis::X) {
+                                    for (uint64_t z = 0;
+                                         z < copyZ;
+                                         ++z) {
+                                        for (uint64_t y = 0;
+                                             y < copyY;
+                                             ++y) {
+                                            output[
+                                                (gy + y) *
+                                                    header_.nz +
+                                                gz + z] =
+                                                leaf[
+                                                    (z *
+                                                         header_.leaf_y +
+                                                     y) *
+                                                        header_.leaf_x +
+                                                    target.local];
+                                        }
+                                    }
+                                } else if (
+                                    job.axis ==
+                                    PlaneAxis::Y) {
+                                    for (uint64_t z = 0;
+                                         z < copyZ;
+                                         ++z) {
+                                        for (uint64_t x = 0;
+                                             x < copyX;
+                                             ++x) {
+                                            output[
+                                                (gx + x) *
+                                                    header_.nz +
+                                                gz + z] =
+                                                leaf[
+                                                    (z *
+                                                         header_.leaf_y +
+                                                     target.local) *
+                                                        header_.leaf_x +
+                                                    x];
+                                        }
+                                    }
+                                } else {
+                                    for (uint64_t y = 0;
+                                         y < copyY;
+                                         ++y) {
+                                        for (uint64_t x = 0;
+                                             x < copyX;
+                                             ++x) {
+                                            output[
+                                                (gx + x) *
+                                                    header_.ny +
+                                                gy + y] =
+                                                leaf[
+                                                    (target.local *
+                                                         header_.leaf_y +
+                                                     y) *
+                                                        header_.leaf_x +
+                                                    x];
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    offset += recordSize;
+                }
+
+                result.ok = offset == data.size();
+                result.elapsed_ms = msSince(start);
+                return result;
+            }
+        ));
+
+        if (pending.size() >=
+            static_cast<size_t>(
+                decodeThreads * 2)) {
+            consumeOne();
+            if (!ok) break;
+        }
+    }
+
+    while (!pending.empty()) {
+        consumeOne();
+    }
+    if (!ok) return false;
+
+    profile.selected_strategy =
+        RzfpReadStrategy::AxisLeafReplica;
+    profile.strategy_reason =
+        "axis-ordered RZFP leaf replicas";
+    return true;
 }
 
 bool RzfpReader::tryReadSliceRawXAux_(
@@ -1891,6 +2452,13 @@ bool RzfpReader::readSlicesBatch(
         if (config.window_cache) {
             config.window_cache->clear();
         }
+    }
+
+    if (axis_leaf_available_) {
+        return readSlicesBatchFromAxisLeaf_(
+            requests,
+            config,
+            *profile);
     }
 
     std::vector<SliceBatchRequest> fallback;
