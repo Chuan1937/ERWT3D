@@ -1,6 +1,7 @@
 #include "erwt3d/rzfp_codec.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -504,9 +505,24 @@ bool RzfpCodec::decodeRecord(
     RzfpLeafCodec codec,
     const uint8_t* data,
     size_t size,
-    float output[64]
-) {
+    float output[RZFP_LEAF_VALUES],
+    RzfpCodecProfile* prof)
+{
+    using Clock = std::chrono::steady_clock;
+
 #ifdef ERWT3D_HAVE_RZFP
+    if (prof) {
+        switch (codec) {
+            case RzfpLeafCodec::RawFloat32:          ++prof->raw_count; break;
+            case RzfpLeafCodec::ConstantZero:         ++prof->zero_count; break;
+            case RzfpLeafCodec::ConstantValue:        ++prof->constant_count; break;
+            case RzfpLeafCodec::ZfpAccuracy:          ++prof->accuracy_count; break;
+            case RzfpLeafCodec::ZfpAccuracyExceptions: ++prof->accuracy_exception_count; break;
+            case RzfpLeafCodec::ZfpPrecision:          ++prof->precision_count; break;
+        }
+        prof->decoded_value_count += 64;
+        prof->compressed_payload_bytes += size;
+    }
     switch (codec) {
         case RzfpLeafCodec::RawFloat32: {
             if (size != 256) return false;
@@ -542,12 +558,12 @@ bool RzfpCodec::decodeRecord(
                 std::memcpy(&exception_mask, data + 2, sizeof(uint64_t));
                 zfp_offset = header_size;
                 zfp_size = size - header_size - exc_bytes;
+
+                auto tExcAlloc = Clock::now();
                 exception_values.resize(exc_count);
-                std::memcpy(
-                    exception_values.data(),
-                    data + zfp_offset + zfp_size,
-                    exc_bytes
-                );
+                std::memcpy(exception_values.data(), data + zfp_offset + zfp_size, exc_bytes);
+                if (prof) prof->exception_alloc_ns += static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - tExcAlloc).count());
             }
 
             if (zfp_size == 0) return false;
@@ -556,17 +572,30 @@ bool RzfpCodec::decodeRecord(
             zfp_stream_set_accuracy(impl_->stream, tolerance);
 
             impl_->ensureBuffer(zfp_size);
+            auto tPayloadCopy = Clock::now();
             std::memcpy(impl_->buffer.data(), data + zfp_offset, zfp_size);
+            if (prof) prof->payload_copy_ns += static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - tPayloadCopy).count());
             impl_->rewind();
 
+            auto tZfp = Clock::now();
             if (!zfp_decompress(impl_->stream, impl_->output_field)) {
                 return false;
             }
+            if (prof) prof->zfp_decompress_ns += static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - tZfp).count());
 
+            auto tExcPatch = Clock::now();
             if (!patchExceptions(impl_->decoded, exception_mask, exception_values)) {
                 return false;
             }
+            if (prof) prof->exception_patch_ns += static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - tExcPatch).count());
+
+            auto tLeafCopy = Clock::now();
             std::memcpy(output, impl_->decoded, 256);
+            if (prof) prof->leaf_copy_ns += static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - tLeafCopy).count());
             return true;
         }
         case RzfpLeafCodec::ZfpPrecision: {
@@ -577,13 +606,23 @@ bool RzfpCodec::decodeRecord(
 
             zfp_stream_set_precision(impl_->stream, precision);
             impl_->ensureBuffer(zfp_size);
+            auto tPC = Clock::now();
             std::memcpy(impl_->buffer.data(), data + 1, zfp_size);
+            if (prof) prof->payload_copy_ns += static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - tPC).count());
             impl_->rewind();
 
+            auto tZ = Clock::now();
             if (!zfp_decompress(impl_->stream, impl_->output_field)) {
                 return false;
             }
+            if (prof) prof->zfp_decompress_ns += static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - tZ).count());
+
+            auto tLC = Clock::now();
             std::memcpy(output, impl_->decoded, 256);
+            if (prof) prof->leaf_copy_ns += static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - tLC).count());
             return true;
         }
     }

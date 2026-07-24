@@ -64,6 +64,8 @@ struct RzfpReadProfile {
     std::string strategy_reason;
 
     std::atomic<uint64_t> scatter_ns{0};
+    std::atomic<uint64_t> cache_copy_ns{0};
+    RzfpCodecProfile codec_profile;
 
     RzfpReadProfile() = default;
     RzfpReadProfile(const RzfpReadProfile& o)

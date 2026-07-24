@@ -944,11 +944,7 @@ static bool executeSelectiveLeaf(
     ) -> bool {
         const auto& task = tasks[user];
         float leaf[64];
-        if (!codec.decodeRecord(
-                task.codec,
-                data,
-                task.record_size,
-                leaf)) {
+        if (!codec.decodeRecord(task.codec, data, task.record_size, leaf, &profile.codec_profile)) {
             std::vector<uint8_t> direct(task.record_size);
             if (readFullyAt(fd, direct.data(), task.record_size, task.file_offset)) {
                 if (std::memcmp(data, direct.data(), task.record_size) == 0) {
@@ -1002,7 +998,8 @@ scatter:
         return true;
     };
 
-    return executeWindowedRead(fd, intervals, config, decode, profile);
+    bool ok = executeWindowedRead(fd, intervals, config, decode, profile);
+    return ok;
 }
 
 static bool executeWholeSuperblock(

@@ -51,8 +51,8 @@ struct RzfpCodecConfig {
     bool try_precision = true;
     bool try_constant = true;
 };
-
 struct RzfpCandidate {
+
     RzfpLeafCodec codec = RzfpLeafCodec::RawFloat32;
 
     std::vector<uint8_t> payload;
@@ -75,6 +75,25 @@ struct RzfpCandidate {
     double decode_ns = 0.0;
 
     bool passed = false;
+};
+
+struct RzfpCodecProfile {
+    uint64_t raw_count = 0;
+    uint64_t zero_count = 0;
+    uint64_t constant_count = 0;
+    uint64_t accuracy_count = 0;
+    uint64_t accuracy_exception_count = 0;
+    uint64_t precision_count = 0;
+
+    uint64_t compressed_payload_bytes = 0;
+    uint64_t decoded_value_count = 0;
+    uint64_t scattered_value_count = 0;
+
+    uint64_t payload_copy_ns = 0;
+    uint64_t zfp_decompress_ns = 0;
+    uint64_t exception_patch_ns = 0;
+    uint64_t leaf_copy_ns = 0;
+    uint64_t exception_alloc_ns = 0;
 };
 
 class RzfpCodec {
@@ -100,7 +119,8 @@ public:
         RzfpLeafCodec codec,
         const uint8_t* data,
         size_t size,
-        float output[RZFP_LEAF_VALUES]
+        float output[RZFP_LEAF_VALUES],
+        RzfpCodecProfile* profile = nullptr
     );
 
 private:
