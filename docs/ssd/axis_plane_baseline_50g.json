@@ -1,0 +1,43 @@
+{
+  "branch": "perf/ssd-native-ext4",
+  "tag": "ssd-before-axis-plane",
+  "date": "2026-07-24",
+  "dataset": "50GB Big",
+  "dims": [2001, 2201, 3000],
+  "raw_size_bytes": 52848012000,
+  "format": "RZFP",
+  "storage_ratio": 0.421,
+  "optimized_size_bytes": 22253000000,
+  "profile": "HDD",
+  "memory_limit_mb": 4096,
+  "merged": true,
+  "baseline": {
+    "process_e2e_median_s": 115.4,
+    "T_composite_median_s": 19.2,
+    "merged_read_median_s": 112.7,
+    "total_write_median_s": 2.8,
+    "groups_estimated": {
+      "X_random": 34.5,
+      "Y_random": 35.1,
+      "Z_random": 34.8,
+      "X_continuous": 3.5,
+      "Y_continuous": 3.5,
+      "Z_continuous": 3.5
+    },
+    "breakdown": {
+      "io_read_gb": 21.0,
+      "io_bandwidth_MBs": 250,
+      "zfp_decode_MBs": 268,
+      "scatter_other_s": 1.0,
+      "write_s": 2.8,
+      "output_floor_s": 3.7
+    },
+    "rounds": [
+      { "round": 1, "process_e2e": 117.4, "merged_read": 114.7, "total_write": 2.7, "T_composite": 19.57 },
+      { "round": 2, "process_e2e": 115.8, "merged_read": 113.0, "total_write": 2.8, "T_composite": 19.29 },
+      { "round": 3, "process_e2e": 114.9, "merged_read": 112.1, "total_write": 2.8, "T_composite": 19.15 },
+      { "round": 4, "process_e2e": 115.6, "merged_read": 112.7, "total_write": 2.9, "T_composite": 19.27 },
+      { "round": 5, "process_e2e": 114.5, "merged_read": 111.6, "total_write": 2.9, "T_composite": 19.08 }
+    ]
+  }
+}
