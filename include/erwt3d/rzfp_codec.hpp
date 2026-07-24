@@ -123,6 +123,8 @@ public:
         RzfpCodecProfile* profile = nullptr
     );
 
+    const float* decodedData() const;
+
 private:
     struct Impl;
     Impl* impl_;

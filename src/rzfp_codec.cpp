@@ -59,21 +59,17 @@ static float computeFillValue(
 static bool patchExceptions(
     float decoded[64],
     uint64_t exception_mask,
-    const std::vector<float>& values
+    const float* values,
+    uint8_t exc_count
 ) {
-    const size_t mask_popcount = static_cast<size_t>(__builtin_popcountll(exception_mask));
-    if (mask_popcount > values.size()) {
-        return false;
-    }
-    size_t pos = 0;
+    uint8_t pos = 0;
     for (uint32_t i = 0; i < 64; ++i) {
         if (exception_mask & (uint64_t{1} << i)) {
-            if (pos >= values.size()) return false;
+            if (pos >= exc_count) return false;
             decoded[i] = values[pos++];
         }
     }
-    if (pos != values.size()) return false;
-    return true;
+    return pos == exc_count;
 }
 
 static int16_t safeToleranceExponent(double target_tolerance) {
@@ -398,7 +394,9 @@ RzfpCandidate RzfpCodec::encodeBest(
                         c.exception_count = exc_count;
                         c.serialized_size = 2 + static_cast<uint32_t>(c.payload.size());
 
-                        if (!patchExceptions(impl_->decoded, exception_mask, c.exception_values)) continue;
+                        if (!patchExceptions(impl_->decoded, exception_mask,
+                                             c.exception_values.data(),
+                                             static_cast<uint8_t>(c.exception_values.size()))) continue;
                         c.error_stats = checkBlockError(
                             input, impl_->decoded, 64, valid_mask, config.error
                         );
@@ -526,18 +524,20 @@ bool RzfpCodec::decodeRecord(
     switch (codec) {
         case RzfpLeafCodec::RawFloat32: {
             if (size != 256) return false;
-            std::memcpy(output, data, 256);
+            if (output) std::memcpy(output, data, 256);
             return true;
         }
         case RzfpLeafCodec::ConstantZero: {
-            std::fill(output, output + 64, 0.0f);
+            if (output) std::fill(output, output + 64, 0.0f);
             return true;
         }
         case RzfpLeafCodec::ConstantValue: {
             if (size != sizeof(float)) return false;
-            float v = 0.0f;
-            std::memcpy(&v, data, sizeof(float));
-            std::fill(output, output + 64, v);
+            if (output) {
+                float v = 0.0f;
+                std::memcpy(&v, data, sizeof(float));
+                std::fill(output, output + 64, v);
+            }
             return true;
         }
         case RzfpLeafCodec::ZfpAccuracy:
@@ -546,22 +546,23 @@ bool RzfpCodec::decodeRecord(
             const int8_t min_exp = static_cast<int8_t>(data[0]);
 
             uint64_t exception_mask = 0;
-            std::vector<float> exception_values;
+            float exc_buf[64];
+            uint8_t exc_count = 0;
             size_t zfp_offset = 1;
             size_t zfp_size = size - 1;
             if (codec == RzfpLeafCodec::ZfpAccuracyExceptions) {
                 if (size < 2) return false;
-                const uint8_t exc_count = data[1];
+                exc_count = data[1];
                 const size_t header_size = 2 + sizeof(uint64_t);
                 const size_t exc_bytes = exc_count * sizeof(float);
                 if (size < header_size + exc_bytes) return false;
+                if (exc_count > 64) return false;
                 std::memcpy(&exception_mask, data + 2, sizeof(uint64_t));
                 zfp_offset = header_size;
                 zfp_size = size - header_size - exc_bytes;
 
                 auto tExcAlloc = Clock::now();
-                exception_values.resize(exc_count);
-                std::memcpy(exception_values.data(), data + zfp_offset + zfp_size, exc_bytes);
+                std::memcpy(exc_buf, data + zfp_offset + zfp_size, exc_bytes);
                 if (prof) prof->exception_alloc_ns += static_cast<uint64_t>(
                     std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - tExcAlloc).count());
             }
@@ -586,16 +587,18 @@ bool RzfpCodec::decodeRecord(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - tZfp).count());
 
             auto tExcPatch = Clock::now();
-            if (!patchExceptions(impl_->decoded, exception_mask, exception_values)) {
+            if (!patchExceptions(impl_->decoded, exception_mask, exc_buf, exc_count)) {
                 return false;
             }
             if (prof) prof->exception_patch_ns += static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - tExcPatch).count());
 
-            auto tLeafCopy = Clock::now();
-            std::memcpy(output, impl_->decoded, 256);
-            if (prof) prof->leaf_copy_ns += static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - tLeafCopy).count());
+            if (output) {
+                auto tLeafCopy = Clock::now();
+                std::memcpy(output, impl_->decoded, 256);
+                if (prof) prof->leaf_copy_ns += static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - tLeafCopy).count());
+            }
             return true;
         }
         case RzfpLeafCodec::ZfpPrecision: {
@@ -619,10 +622,12 @@ bool RzfpCodec::decodeRecord(
             if (prof) prof->zfp_decompress_ns += static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - tZ).count());
 
-            auto tLC = Clock::now();
-            std::memcpy(output, impl_->decoded, 256);
-            if (prof) prof->leaf_copy_ns += static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - tLC).count());
+            if (output) {
+                auto tLC = Clock::now();
+                std::memcpy(output, impl_->decoded, 256);
+                if (prof) prof->leaf_copy_ns += static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - tLC).count());
+            }
             return true;
         }
     }
@@ -633,6 +638,14 @@ bool RzfpCodec::decodeRecord(
     (void)size;
     (void)output;
     return false;
+#endif
+}
+
+const float* RzfpCodec::decodedData() const {
+#ifdef ERWT3D_HAVE_RZFP
+    return impl_->decoded;
+#else
+    return nullptr;
 #endif
 }
 

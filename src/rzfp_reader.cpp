@@ -945,8 +945,12 @@ static bool executeSelectiveLeaf(
         const auto& task = tasks[user];
         float leaf[64];
         if (!codec.decodeRecord(task.codec, data, task.record_size, leaf, &profile.codec_profile)) {
+                   // direct read fallback
             std::vector<uint8_t> direct(task.record_size);
             if (readFullyAt(fd, direct.data(), task.record_size, task.file_offset)) {
+                if (codec.decodeRecord(task.codec, direct.data(),
+                                       task.record_size, leaf, &profile.codec_profile))
+                    goto scatter_direct;
                 if (std::memcmp(data, direct.data(), task.record_size) == 0) {
                     std::cerr << "Error: RZFP decode failed for sb="
                               << task.physical_sb_id
@@ -971,8 +975,8 @@ static bool executeSelectiveLeaf(
                               << "])" << std::endl;
                 }
                 if (codec.decodeRecord(task.codec, direct.data(),
-                                       task.record_size, leaf)) {
-                    goto scatter;
+                                       task.record_size, leaf, &profile.codec_profile)) {
+                    goto scatter_direct;
                 }
             }
             std::cerr << "Error: RZFP decode failed for sb="
@@ -980,16 +984,11 @@ static bool executeSelectiveLeaf(
                       << " morton=" << task.morton << std::endl;
             return false;
         }
+scatter_direct:
 scatter:
-
         const auto scatterStart = Clock::now();
         for (const auto& scatter : task.scatters) {
-            scatterDecodedLeaf(
-                planHeader,
-                scatter.op,
-                leaf,
-                scatter.output
-            );
+            scatterDecodedLeaf(planHeader, scatter.op, leaf, scatter.output);
         }
         profile.scatter_ns.fetch_add(
             nsSince(scatterStart),
