@@ -165,6 +165,8 @@ target_link_libraries(erwt3d_bench_contest PRIVATE erwt3d)
 add_executable(erwt3d_precompute_x tools/erwt3d_precompute_x.cpp)
 target_link_libraries(erwt3d_precompute_x PRIVATE erwt3d)
 
+add_executable(erwt3d_bench_output_floor tools/experimental/erwt3d_bench_output_floor.cpp)
+
 add_executable(example_api tools/example_api.cpp)
 target_link_libraries(example_api PRIVATE erwt3d)
 
