@@ -12,9 +12,11 @@
 #include <cstring>
 #include <fcntl.h>
 #include <future>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <unistd.h>
 #include <vector>
 
@@ -171,15 +173,30 @@ bool writeRzfpYZSidecar(
     std::atomic<uint64_t> totalCompressed{0};
     uint64_t payloadCursor = dataOffset;
 
-    // Accumulate plane data across all X-slabs before encoding.
-    // Each slab covers a subset of X rows; we need the full plane.
-    std::vector<std::vector<float>> planeBufs(
-        static_cast<size_t>(planeCount));
-    for (auto& p : planeBufs) {
-        p.resize(static_cast<size_t>(shape.plane_elements));
-    }
+    // Allocate plane buffers via mmap to avoid physical RAM pressure.
+    // Y: 2201*2001*3000*4 = 52.8 GB, Z: 3000*2001*2201*4 = 52.8 GB.
+    uint64_t totalPlaneFloats = 0, totalPlaneBytes = 0;
+    if (!checkedMul(planeCount, shape.plane_elements, totalPlaneFloats) ||
+        !checkedMul(totalPlaneFloats, sizeof(float), totalPlaneBytes)) return false;
 
-    for (uint64_t xStart = 0; xStart < nx; xStart += slabX) {
+    std::string tmpName = sidecarPath + ".buf";
+    UnlinkUnlessCommitted bufCleanup(tmpName);
+    int bufFd = open(tmpName.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (bufFd < 0) return false;
+    if (ftruncate(bufFd, static_cast<off_t>(totalPlaneBytes)) != 0) {
+        close(bufFd); return false;
+    }
+    float* const planeBufBase = static_cast<float*>(
+        mmap(nullptr, static_cast<size_t>(totalPlaneBytes), PROT_READ | PROT_WRITE,
+             MAP_SHARED, bufFd, 0));
+    if (planeBufBase == MAP_FAILED) { close(bufFd); return false; }
+    close(bufFd);
+
+    // Single pass through raw file, parallel scatter
+    const uint64_t totalSlabs = (nx + slabX - 1) / slabX;
+    uint64_t slabIdx = 0;
+    posix_fadvise(rawFd.get(), 0, 0, POSIX_FADV_SEQUENTIAL);
+    for (uint64_t xStart = 0; xStart < nx; xStart += slabX, ++slabIdx) {
         const uint64_t xEnd = std::min(xStart + slabX, nx);
         const uint64_t rows = xEnd - xStart;
 
@@ -191,36 +208,49 @@ bool writeRzfpYZSidecar(
         uint64_t rawOffset = 0;
         if (!checkedMul(xStart, inputSlabBytes, rawOffset) ||
             !preadAll(rawFd.get(), slab.data(), static_cast<size_t>(slabBytes), rawOffset)) {
-            std::cerr << "Error: failed to read X-slab x=" << xStart << std::endl;
+            munmap(planeBufBase, static_cast<size_t>(totalPlaneBytes));
             return false;
         }
 
-        for (uint64_t plane = 0; plane < planeCount; ++plane) {
-            if (axis == PlaneAxis::Y) {
-                for (uint64_t localX = 0; localX < rows; ++localX) {
-                    const uint64_t x = xStart + localX;
-                    const float* src = slab.data() +
-                        (localX * ny + plane) * nz;
-                    float* dst = planeBufs[static_cast<size_t>(plane)].data() + x * nz;
-                    std::copy_n(src, nz, dst);
-                }
-            } else {
-                for (uint64_t localX = 0; localX < rows; ++localX) {
-                    const uint64_t x = xStart + localX;
-                    const float* xSlab = slab.data() + localX * ny * nz;
-                    float* dst = planeBufs[static_cast<size_t>(plane)].data() + x * ny;
-                    for (uint64_t y = 0; y < ny; ++y) {
-                        dst[y] = xSlab[y * nz + plane];
+        // Parallel scatter across planes
+        {
+            const uint64_t perWorker = (planeCount + static_cast<size_t>(std::max(1, threads)) - 1) / static_cast<size_t>(std::max(1, threads));
+            std::vector<std::future<void>> sfutures;
+            for (size_t w = 0; w < static_cast<size_t>(std::max(1, threads)); ++w) {
+                const uint64_t p0 = static_cast<uint64_t>(w) * perWorker;
+                const uint64_t p1 = std::min(p0 + perWorker, planeCount);
+                if (p0 >= p1) break;
+                sfutures.push_back(pool.submit([&, p0, p1, rows]() {
+                    for (uint64_t plane = p0; plane < p1; ++plane) {
+                        float* dst = planeBufBase + plane * shape.plane_elements;
+                        if (axis == PlaneAxis::Y) {
+                            for (uint64_t localX = 0; localX < rows; ++localX) {
+                                const uint64_t x = xStart + localX;
+                                const float* src = slab.data() + (localX * ny + plane) * nz;
+                                std::copy_n(src, nz, dst + x * nz);
+                            }
+                        } else {
+                            for (uint64_t localX = 0; localX < rows; ++localX) {
+                                const uint64_t x = xStart + localX;
+                                const float* xSlab = slab.data() + localX * ny * nz;
+                                for (uint64_t y = 0; y < ny; ++y) {
+                                    dst[x * ny + y] = xSlab[y * nz + plane];
+                                }
+                            }
+                        }
                     }
-                }
+                }));
             }
+            for (auto& f : sfutures) f.get();
         }
-
-        std::cout << "RZFP " << axisLabel(axis) << " sidecar slab x="
-                  << xStart << ".." << (xEnd - 1) << " done" << std::endl;
+        std::cerr << "\rRZFP " << axisLabel(axis) << " slab " << (slabIdx + 1)
+                  << "/" << totalSlabs << " x=" << xStart << ".." << (xEnd - 1)
+                  << std::flush;
     }
+    std::cerr << std::endl;
 
-    // Encode accumulated planes in parallel
+    // Encode in parallel
+    uint64_t encodeProgress = 0;
     for (uint64_t firstPlane = 0; firstPlane < planeCount; firstPlane += inFlightLimit) {
         const uint64_t endPlane = std::min(planeCount, firstPlane + inFlightLimit);
         std::vector<std::future<std::vector<uint8_t>>> futures;
@@ -230,7 +260,7 @@ bool writeRzfpYZSidecar(
             futures.push_back(pool.submit(
                 [&, plane]() -> std::vector<uint8_t> {
                     return encodeXPlane2D(
-                        planeBufs[static_cast<size_t>(plane)].data(),
+                        planeBufBase + plane * shape.plane_elements,
                         shape.dim_a,
                         shape.dim_b,
                         codecConfig);
@@ -241,8 +271,7 @@ bool writeRzfpYZSidecar(
             std::vector<uint8_t> record =
                 futures[static_cast<size_t>(plane - firstPlane)].get();
             const uint32_t size = static_cast<uint32_t>(record.size());
-
-            if (size > 512ULL * 1024 * 1024) return false;
+            if (size > 512ULL * 1024 * 1024) { munmap(planeBufBase, totalPlaneBytes); return false; }
 
             index[static_cast<size_t>(plane)].offset = payloadCursor;
             index[static_cast<size_t>(plane)].compressed_size = size;
@@ -250,14 +279,20 @@ bool writeRzfpYZSidecar(
 
             if (!record.empty()) {
                 if (!pwriteAll(outFd.get(), record.data(), record.size(), payloadCursor)) {
-                    std::cerr << "Error: sidecar write failed plane=" << plane << std::endl;
-                    return false;
+                    munmap(planeBufBase, totalPlaneBytes); return false;
                 }
             }
             payloadCursor += record.size();
             totalCompressed += record.size();
         }
+        encodeProgress += (endPlane - firstPlane);
+        std::cerr << "\rRZFP " << axisLabel(axis) << " encode "
+                  << encodeProgress << "/" << planeCount << std::flush;
     }
+    std::cerr << std::endl;
+
+    munmap(planeBufBase, static_cast<size_t>(totalPlaneBytes));
+    pool.waitAll();
 
     pool.waitAll();
 

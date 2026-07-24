@@ -145,7 +145,7 @@ bool writeLz4YZSidecar(
     int threads,
     Lz4AxisPlaneWriterStats* stats
 ) {
-    if (axis != PlaneAxis::Y && axis != PlaneAxis::Z) return false;
+    if (axis != PlaneAxis::X && axis != PlaneAxis::Y && axis != PlaneAxis::Z) return false;
     if (nx == 0 || ny == 0 || nz == 0 || storageBudget <= 0.0) return false;
 
     const AxisPlaneShape shape = makeAxisPlaneShape(axis, nx, ny, nz);
@@ -308,23 +308,36 @@ bool writeLz4YZSidecar(
 
             for (uint64_t plane = firstPlane; plane < endPlane; ++plane) {
                 futures.push_back(pool.submit(
-                    [&, plane, rows, chunkOrdinal]() -> CompressedChunk {
+                    [&, plane, rows, chunkOrdinal, x0]() -> CompressedChunk {
                         CompressedChunk result;
                         result.plane = plane;
                         result.chunk = chunkOrdinal;
 
                         uint64_t chunkFloatCount = 0;
-                        if (!checkedMul(rows, shape.dim_b, chunkFloatCount) ||
-                            chunkFloatCount >
-                                static_cast<uint64_t>(INT_MAX) /
-                                    sizeof(float)) {
+                        if (axis == PlaneAxis::X) {
+                            chunkFloatCount = ny * nz;
+                        } else {
+                            if (!checkedMul(rows, shape.dim_b, chunkFloatCount)) return result;
+                        }
+                        if (chunkFloatCount >
+                            static_cast<uint64_t>(INT_MAX) / sizeof(float)) {
                             return result;
                         }
 
                         std::vector<float> rawChunk(
                             static_cast<size_t>(chunkFloatCount));
 
-                        if (axis == PlaneAxis::Y) {
+                        if (axis == PlaneAxis::X) {
+                            uint64_t localPlane = plane - x0;
+                            if (localPlane >= rows) {
+                                result.rawBytes = 0;
+                                result.ok = true;
+                                return result;
+                            }
+                            const float* src = slab.data() + localPlane * ny * nz;
+                            std::memcpy(rawChunk.data(), src,
+                                        ny * nz * sizeof(float));
+                        } else if (axis == PlaneAxis::Y) {
                             for (uint64_t localX = 0;
                                  localX < rows;
                                  ++localX) {
@@ -465,39 +478,6 @@ bool writeLz4AxisPlaneSidecar(
 
 #ifdef ERWT3D_HAVE_LZ4
     try {
-        if (axis == PlaneAxis::X) {
-            if (nx == 0 || ny == 0 || nz == 0) return false;
-            const uint64_t requestedRows = std::max<uint64_t>(
-                1, static_cast<uint64_t>(chunkElements) / ny);
-            const uint32_t chunkZRows = static_cast<uint32_t>(
-                std::min<uint64_t>(
-                    nz,
-                    std::min<uint64_t>(
-                        requestedRows,
-                        std::numeric_limits<uint32_t>::max())));
-
-            Lz4XpSidecarStats xpStats;
-            const bool ok = writeLz4XpSidecar(
-                rawPath,
-                mainPath,
-                nx,
-                ny,
-                nz,
-                1,
-                chunkZRows,
-                storageBudget,
-                false,
-                &xpStats);
-            if (stats) {
-                stats->compression_ratio = xpStats.compression_ratio;
-                stats->total_storage_ratio = xpStats.total_storage_ratio;
-                stats->sidecar_bytes = xpStats.sidecar_bytes;
-                stats->plane_count = xpStats.plane_count;
-                stats->written = ok;
-            }
-            return ok;
-        }
-
         return writeLz4YZSidecar(
             rawPath,
             mainPath,

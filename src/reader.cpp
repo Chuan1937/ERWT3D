@@ -1014,7 +1014,7 @@ bool ERWT3DReader::tryReadBatchXPSidecar_(const std::vector<SliceBatchRequest>& 
 }
 
 void ERWT3DReader::openAxisPlaneSidecars_() {
-    for (int ai = 1; ai < 3; ++ai) {
+    for (int ai = 0; ai < 3; ++ai) {
         PlaneAxis axis = static_cast<PlaneAxis>(ai);
         const std::string sp = axisPlaneSidecarPath(path_, axis);
         int fd = open(sp.c_str(), O_RDONLY);
@@ -1152,8 +1152,8 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
         }
     }
 
-    // Try X-plane sidecar fast path (compressed sidecar file)
-    if (axis == SliceAxis::X && xpAvailable_) {
+    // Try X-plane sidecar fast path (compressed sidecar file, old XP format)
+    if (axis == SliceAxis::X && xpAvailable_ && !apAvailable_[0]) {
         uint32_t stride = xpHeader_.stride;
         if (index % stride == 0) {
             uint64_t planeIdx = index / stride;
@@ -1231,7 +1231,7 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
     }
 
     // Try Y/Z axis-plane sidecar fast path (LZ4 compressed, v2)
-    for (int ai = 1; ai < 3; ++ai) {
+    for (int ai = 0; ai < 3; ++ai) {
         if (!apAvailable_[ai]) continue;
         PlaneAxis pax = static_cast<PlaneAxis>(ai);
         if (axis != axisToSliceAxis(pax)) continue;
@@ -1354,15 +1354,16 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
         tryReadBatchRawXAux_(requests, rawXAuxHandled);
     }
 
-    // Step 1: Try batch sidecar read for remaining X requests
+    // Step 1: Try batch sidecar read for remaining X requests (old XP format)
     std::vector<bool> xpHandled(requests.size(), false);
-    if (xpAvailable_) {
+    if (xpAvailable_ && !apAvailable_[0]) {  // skip old XP if v2 X is available
         tryReadBatchXPSidecar_(requests, xpHandled);
     }
 
-    // Step 1b: Try Y/Z axis-plane sidecar batch reads
+    // Step 1b: Try X/Y/Z axis-plane sidecar batch reads (v2 format)
     std::vector<bool> ypHandled(requests.size(), false);
     std::vector<bool> zpHandled(requests.size(), false);
+    if (apAvailable_[0]) tryReadBatchAxisPlaneSidecar_(PlaneAxis::X, requests, xpHandled);
     if (apAvailable_[1]) tryReadBatchAxisPlaneSidecar_(PlaneAxis::Y, requests, ypHandled);
     if (apAvailable_[2]) tryReadBatchAxisPlaneSidecar_(PlaneAxis::Z, requests, zpHandled);
 
@@ -1625,12 +1626,13 @@ bool ERWT3DReader::readSlicesBatchSSD(const std::vector<SliceBatchRequest>& requ
     }
 
     std::vector<bool> xpHandled(requests.size(), false);
-    if (xpAvailable_) {
+    if (xpAvailable_ && !apAvailable_[0]) {
         tryReadBatchXPSidecar_(requests, xpHandled);
     }
 
     std::vector<bool> ypHandled(requests.size(), false);
     std::vector<bool> zpHandled(requests.size(), false);
+    if (apAvailable_[0]) tryReadBatchAxisPlaneSidecar_(PlaneAxis::X, requests, xpHandled);
     if (apAvailable_[1]) tryReadBatchAxisPlaneSidecar_(PlaneAxis::Y, requests, ypHandled);
     if (apAvailable_[2]) tryReadBatchAxisPlaneSidecar_(PlaneAxis::Z, requests, zpHandled);
 
