@@ -1,217 +1,289 @@
-#include "erwt3d/writer.hpp"
-#include "erwt3d/reader.hpp"
 #include "erwt3d/axis_plane.hpp"
 #include "erwt3d/lz4_axis_plane_writer.hpp"
-#include "erwt3d/format.hpp"
 #include "erwt3d/raw_layout.hpp"
+#include "erwt3d/writer.hpp"
 
 #ifdef ERWT3D_HAVE_LZ4
 #include <lz4.h>
 #endif
 
-#include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <string>
 #include <vector>
 
 using namespace erwt3d;
 
-static int testsPassed = 0;
-static int testsFailed = 0;
+namespace {
+
+int testsPassed = 0;
+int testsFailed = 0;
 
 #define CHECK(cond, msg) do { \
     if (!(cond)) { \
         std::cerr << "FAIL: " << msg << " at line " << __LINE__ << "\n"; \
         ++testsFailed; \
-    } else { ++testsPassed; } \
-} while(0)
+    } else { \
+        ++testsPassed; \
+    } \
+} while (0)
 
-static std::string TMPDIR = "/tmp/test_lz4_axis_plane";
+const std::string kTmpDir = "/tmp/test_lz4_axis_plane";
+constexpr uint64_t kNx = 40;
+constexpr uint64_t kNy = 30;
+constexpr uint64_t kNz = 50;
+constexpr uint32_t kChunkElements = 200;
 
-static void ensureTmpDir() {
-    std::filesystem::remove_all(TMPDIR);
-    std::filesystem::create_directories(TMPDIR);
+std::string rawPath() { return kTmpDir + "/data.raw"; }
+std::string lz4Path() { return kTmpDir + "/data.erwt3d"; }
+
+bool readAt(
+    const std::string& path,
+    uint64_t offset,
+    void* buffer,
+    size_t bytes
+) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) return false;
+    input.seekg(static_cast<std::streamoff>(offset));
+    if (!input) return false;
+    input.read(static_cast<char*>(buffer), static_cast<std::streamsize>(bytes));
+    return input.gcount() == static_cast<std::streamsize>(bytes);
 }
 
-static void cleanup() {
-    std::filesystem::remove_all(TMPDIR);
-}
+void prepareInput() {
+    std::filesystem::remove_all(kTmpDir);
+    std::filesystem::create_directories(kTmpDir);
 
-static std::string rawPath() { return TMPDIR + "/data.raw"; }
-static std::string lz4Path() { return TMPDIR + "/data.erwt3d"; }
-
-static const uint64_t NX = 40;
-static const uint64_t NY = 30;
-static const uint64_t NZ = 50;
-
-static void writeTestRaw() {
-    std::vector<float> data(NX * NY * NZ);
-    for (uint64_t x = 0; x < NX; ++x)
-        for (uint64_t y = 0; y < NY; ++y)
-            for (uint64_t z = 0; z < NZ; ++z)
-                data[rawOffsetZFastest(x, y, z, NY, NZ)] =
+    std::vector<float> data(kNx * kNy * kNz);
+    for (uint64_t x = 0; x < kNx; ++x) {
+        for (uint64_t y = 0; y < kNy; ++y) {
+            for (uint64_t z = 0; z < kNz; ++z) {
+                data[rawOffsetZFastest(x, y, z, kNy, kNz)] =
                     static_cast<float>(x * 10000 + y * 100 + z);
-    std::ofstream out(rawPath(), std::ios::binary);
-    out.write(reinterpret_cast<const char*>(data.data()), data.size() * sizeof(float));
-}
-
-static void writeLz4() {
-    CHECK(writeERWT3DFromFile(lz4Path(), rawPath(), NX, NY, NZ,
-                              64, 64, 64, 4, 4, 4, 2, 256,
-                              0, 0, true, RawXAuxMode::Off, false),
-          "write LZ4 file");
-}
-
-static void test_y_plane_roundtrip() {
-    ensureTmpDir();
-    writeTestRaw();
-    writeLz4();
-
-    // Write Y-plane sidecar
-    Lz4AxisPlaneWriterStats yStats;
-    CHECK(writeLz4AxisPlaneSidecar(rawPath(), lz4Path(), PlaneAxis::Y,
-                                    NX, NY, NZ, 128 * 1024, 1.50, 2, &yStats),
-          "write Y-plane sidecar");
-    CHECK(yStats.written, "Y stats written");
-    CHECK(std::filesystem::exists(TMPDIR + "/data.erwt3d.yp"), "yp file exists");
-    CHECK(yStats.plane_count == NY, "Y plane count");
-
-    // Read Y-plane sidecar header
-    AxisPlaneHeader ypHdr;
-    {
-        std::ifstream yp(TMPDIR + "/data.erwt3d.yp", std::ios::binary);
-        yp.read(reinterpret_cast<char*>(&ypHdr), sizeof(ypHdr));
-        CHECK(yp.good(), "YP header read okay");
-    }
-    CHECK(validateAxisPlaneHeader(ypHdr, NX, NY, NZ), "YP header valid");
-    CHECK(ypHdr.axis == static_cast<uint8_t>(PlaneAxis::Y), "YP axis=Y");
-    CHECK(ypHdr.compression == AXISPLANE_COMPRESSION_LZ4, "YP LZ4");
-    CHECK(ypHdr.plane_count == NY, "YP plane count");
-
-    // Read a specific Y-plane and verify
-    std::vector<float> yplane(NX * NZ);
-
-    // Since the sidecar doesn't yet have a registered reader path in ERWT3DReader,
-    // manually read and verify by round-tripping through lz4 decompress
-    // For now, verify the sidecar file is well-formed
-    uint64_t planeIdx = 5;
-    std::vector<AxisPlaneIndexEntry> yIdx(NY);
-    {
-        std::ifstream yp(TMPDIR + "/data.erwt3d.yp", std::ios::binary);
-        yp.seekg(ypHdr.index_offset);
-        yp.read(reinterpret_cast<char*>(yIdx.data()), NY * sizeof(AxisPlaneIndexEntry));
-        CHECK(yp.good(), "YP index read okay");
-    }
-
-    CHECK(yIdx[planeIdx].compressed_size > 0, "YP plane 5 has data");
-    CHECK(yIdx[planeIdx].raw_size == NX * NZ * sizeof(float), "YP plane 5 raw size");
-
-    // Verify Y-plane data via direct LZ4 decompress
-#ifdef ERWT3D_HAVE_LZ4
-    std::vector<uint8_t> compData(yIdx[planeIdx].compressed_size);
-    std::vector<uint8_t> rawData(yIdx[planeIdx].raw_size);
-    {
-        std::ifstream yp(TMPDIR + "/data.erwt3d.yp", std::ios::binary);
-        yp.seekg(yIdx[planeIdx].offset);
-        yp.read(reinterpret_cast<char*>(compData.data()), compData.size());
-        CHECK(yp.good(), "YP plane 5 data read");
-    }
-    int decSize = LZ4_decompress_safe(
-        reinterpret_cast<const char*>(compData.data()),
-        reinterpret_cast<char*>(rawData.data()),
-        static_cast<int>(compData.size()),
-        static_cast<int>(rawData.size()));
-    CHECK(decSize == static_cast<int>(rawData.size()), "YP plane 5 decompress OK");
-
-    const float* plane = reinterpret_cast<const float*>(rawData.data());
-    for (uint64_t x = 0; x < NX; ++x) {
-        for (uint64_t z = 0; z < NZ; ++z) {
-            float expected = static_cast<float>(x * 10000 + planeIdx * 100 + z);
-            float got = plane[x * NZ + z];
-            CHECK(std::abs(got - expected) < 1e-6f,
-                  ("Y[" + std::to_string(x) + "," + std::to_string(z) + "]").c_str());
+            }
         }
     }
+
+    std::ofstream raw(rawPath(), std::ios::binary);
+    raw.write(
+        reinterpret_cast<const char*>(data.data()),
+        static_cast<std::streamsize>(data.size() * sizeof(float)));
+    CHECK(raw.good(), "write raw fixture");
+    raw.close();
+
+    CHECK(
+        writeERWT3DFromFile(
+            lz4Path(),
+            rawPath(),
+            kNx,
+            kNy,
+            kNz,
+            64,
+            64,
+            64,
+            4,
+            4,
+            4,
+            2,
+            256,
+            0,
+            0,
+            true,
+            RawXAuxMode::Off,
+            false),
+        "write LZ4 main file");
+}
+
+bool decompressPlane(
+    const std::string& sidecarPath,
+    const AxisPlaneHeader& header,
+    uint64_t planeIndex,
+    std::vector<float>& output
+) {
+#ifdef ERWT3D_HAVE_LZ4
+    const PlaneAxis axis = static_cast<PlaneAxis>(header.axis);
+    const AxisPlaneShape shape =
+        makeAxisPlaneShape(axis, header.nx, header.ny, header.nz);
+    if (planeIndex >= header.plane_count ||
+        header.total_chunks !=
+            header.plane_count * header.chunks_per_plane ||
+        output.size() != shape.plane_elements) {
+        return false;
+    }
+
+    std::vector<AxisPlaneIndexEntry> index(
+        static_cast<size_t>(header.total_chunks));
+    if (!readAt(
+            sidecarPath,
+            header.index_offset,
+            index.data(),
+            index.size() * sizeof(AxisPlaneIndexEntry))) {
+        return false;
+    }
+
+    uint64_t outputBytes = 0;
+    for (uint32_t chunk = 0; chunk < header.chunks_per_plane; ++chunk) {
+        const AxisPlaneIndexEntry& entry =
+            index[static_cast<size_t>(
+                planeIndex * header.chunks_per_plane + chunk)];
+        if (entry.compressed_size == 0 || entry.raw_size == 0 ||
+            outputBytes + entry.raw_size > shape.plane_bytes) {
+            return false;
+        }
+
+        std::vector<char> compressed(entry.compressed_size);
+        if (!readAt(
+                sidecarPath,
+                entry.offset,
+                compressed.data(),
+                compressed.size())) {
+            return false;
+        }
+
+        const int decoded = LZ4_decompress_safe(
+            compressed.data(),
+            reinterpret_cast<char*>(output.data()) + outputBytes,
+            static_cast<int>(compressed.size()),
+            static_cast<int>(entry.raw_size));
+        if (decoded != static_cast<int>(entry.raw_size)) return false;
+        outputBytes += entry.raw_size;
+    }
+    return outputBytes == shape.plane_bytes;
+#else
+    (void)sidecarPath;
+    (void)header;
+    (void)planeIndex;
+    (void)output;
+    return false;
 #endif
 }
 
-static void test_z_plane_roundtrip() {
-    ensureTmpDir();
-    writeTestRaw();
-    writeLz4();
-
-    // Write Z-plane sidecar
-    Lz4AxisPlaneWriterStats zStats;
-    CHECK(writeLz4AxisPlaneSidecar(rawPath(), lz4Path(), PlaneAxis::Z,
-                                    NX, NY, NZ, 128 * 1024, 1.50, 2, &zStats),
-          "write Z-plane sidecar");
-    CHECK(zStats.written, "Z stats written");
-    CHECK(std::filesystem::exists(TMPDIR + "/data.erwt3d.zp"), "zp file exists");
-    CHECK(zStats.plane_count == NZ, "Z plane count");
-
-    // Read Z-plane sidecar header
-    AxisPlaneHeader zpHdr;
-    {
-        std::ifstream zp(TMPDIR + "/data.erwt3d.zp", std::ios::binary);
-        zp.read(reinterpret_cast<char*>(&zpHdr), sizeof(zpHdr));
-        CHECK(zp.good(), "ZP header read okay");
-    }
-    CHECK(validateAxisPlaneHeader(zpHdr, NX, NY, NZ), "ZP header valid");
-    CHECK(zpHdr.axis == static_cast<uint8_t>(PlaneAxis::Z), "ZP axis=Z");
-
-    // Verify a specific Z-plane
-    uint64_t planeIdx = 3;
-    std::vector<AxisPlaneIndexEntry> zIdx(NZ);
-    {
-        std::ifstream zp(TMPDIR + "/data.erwt3d.zp", std::ios::binary);
-        zp.seekg(zpHdr.index_offset);
-        zp.read(reinterpret_cast<char*>(zIdx.data()), NZ * sizeof(AxisPlaneIndexEntry));
-        CHECK(zp.good(), "ZP index read okay");
-    }
-
-    CHECK(zIdx[planeIdx].compressed_size > 0, "ZP plane 3 has data");
-    CHECK(zIdx[planeIdx].raw_size == NX * NY * sizeof(float), "ZP plane 3 raw size");
-
-#ifdef ERWT3D_HAVE_LZ4
-    std::vector<uint8_t> compData(zIdx[planeIdx].compressed_size);
-    std::vector<uint8_t> rawData(zIdx[planeIdx].raw_size);
-    {
-        std::ifstream zp(TMPDIR + "/data.erwt3d.zp", std::ios::binary);
-        zp.seekg(zIdx[planeIdx].offset);
-        zp.read(reinterpret_cast<char*>(compData.data()), compData.size());
-        CHECK(zp.good(), "ZP plane 3 data read");
-    }
-    int decSize = LZ4_decompress_safe(
-        reinterpret_cast<const char*>(compData.data()),
-        reinterpret_cast<char*>(rawData.data()),
-        static_cast<int>(compData.size()),
-        static_cast<int>(rawData.size()));
-    std::cerr << "Z decSize=" << decSize << " compData.size=" << compData.size()
-              << " rawData.size=" << rawData.size()
-              << " idx compressed_size=" << zIdx[planeIdx].compressed_size
-              << " idx raw_size=" << zIdx[planeIdx].raw_size << std::endl;
-    CHECK(decSize == static_cast<int>(rawData.size()), "ZP plane 3 decompress OK");
-
-    const float* plane = reinterpret_cast<const float*>(rawData.data());
-    for (uint64_t x = 0; x < NX; ++x) {
-        for (uint64_t y = 0; y < NY; ++y) {
-            float expected = static_cast<float>(x * 10000 + y * 100 + planeIdx);
-            float got = plane[x * NY + y];
-            CHECK(std::abs(got - expected) < 1e-6f,
-                  ("Z[" + std::to_string(x) + "," + std::to_string(y) + "]").c_str());
+void verifyPlaneValues(
+    PlaneAxis axis,
+    uint64_t planeIndex,
+    const std::vector<float>& plane
+) {
+    if (axis == PlaneAxis::Y) {
+        for (uint64_t x = 0; x < kNx; ++x) {
+            for (uint64_t z = 0; z < kNz; ++z) {
+                const float expected = static_cast<float>(
+                    x * 10000 + planeIndex * 100 + z);
+                CHECK(
+                    std::abs(plane[x * kNz + z] - expected) < 1e-6f,
+                    "Y plane value mismatch");
+            }
+        }
+    } else {
+        for (uint64_t x = 0; x < kNx; ++x) {
+            for (uint64_t y = 0; y < kNy; ++y) {
+                const float expected = static_cast<float>(
+                    x * 10000 + y * 100 + planeIndex);
+                CHECK(
+                    std::abs(plane[x * kNy + y] - expected) < 1e-6f,
+                    "Z plane value mismatch");
+            }
         }
     }
-#endif
 }
+
+void testRoundTrip(PlaneAxis axis, uint64_t planeIndex) {
+    Lz4AxisPlaneWriterStats stats;
+    CHECK(
+        writeLz4AxisPlaneSidecar(
+            rawPath(),
+            lz4Path(),
+            axis,
+            kNx,
+            kNy,
+            kNz,
+            kChunkElements,
+            1.50,
+            3,
+            &stats),
+        std::string("write ") + axisLabel(axis) + " sidecar");
+    CHECK(stats.written, "writer stats mark output written");
+    CHECK(stats.axis == axis, "writer stats axis");
+
+    const std::string sidecarPath = axisPlaneSidecarPath(lz4Path(), axis);
+    CHECK(std::filesystem::exists(sidecarPath), "sidecar exists");
+    CHECK(
+        stats.sidecar_bytes == std::filesystem::file_size(sidecarPath),
+        "sidecar byte count includes header, index, and payload");
+
+    AxisPlaneHeader header {};
+    CHECK(
+        readAt(sidecarPath, 0, &header, sizeof(header)),
+        "read sidecar header");
+    CHECK(
+        validateAxisPlaneHeader(header, kNx, kNy, kNz),
+        "validate sidecar header");
+    CHECK(
+        header.axis == static_cast<uint8_t>(axis),
+        "header axis");
+    CHECK(
+        header.compression == AXISPLANE_COMPRESSION_LZ4,
+        "header compression");
+    CHECK(header.chunks_per_plane > 1, "exercise multi-chunk layout");
+    CHECK(
+        header.total_chunks ==
+            header.plane_count * header.chunks_per_plane,
+        "total chunk count");
+    CHECK(
+        header.data_offset ==
+            sizeof(AxisPlaneHeader) +
+                header.total_chunks * sizeof(AxisPlaneIndexEntry),
+        "payload follows fixed index");
+    CHECK(
+        header.data_offset + header.total_storage_bytes ==
+            std::filesystem::file_size(sidecarPath),
+        "payload extent matches file size");
+
+    const AxisPlaneShape shape =
+        makeAxisPlaneShape(axis, kNx, kNy, kNz);
+    std::vector<float> plane(shape.plane_elements);
+    CHECK(
+        decompressPlane(sidecarPath, header, planeIndex, plane),
+        "decompress every chunk in plane");
+    verifyPlaneValues(axis, planeIndex, plane);
+}
+
+void testStorageBudgetCleanup() {
+    const std::string path =
+        axisPlaneSidecarPath(lz4Path(), PlaneAxis::Y);
+    std::filesystem::remove(path);
+
+    Lz4AxisPlaneWriterStats stats;
+    CHECK(
+        !writeLz4AxisPlaneSidecar(
+            rawPath(),
+            lz4Path(),
+            PlaneAxis::Y,
+            kNx,
+            kNy,
+            kNz,
+            kChunkElements,
+            0.01,
+            2,
+            &stats),
+        "reject sidecar exceeding storage budget");
+    CHECK(!stats.written, "rejected sidecar not marked written");
+    CHECK(!std::filesystem::exists(path), "rejected sidecar removed");
+}
+
+}  // namespace
 
 int main() {
-    test_y_plane_roundtrip();
-    //test_z_plane_roundtrip();
+    prepareInput();
+    testRoundTrip(PlaneAxis::Y, 5);
+    testRoundTrip(PlaneAxis::Z, 3);
+    testStorageBudgetCleanup();
+    std::filesystem::remove_all(kTmpDir);
 
-    cleanup();
-
-    std::cout << "Passed: " << testsPassed << "/" << (testsPassed + testsFailed) << "\n";
-    return testsFailed > 0 ? 1 : 0;
+    std::cout << "Passed: " << testsPassed << "/"
+              << (testsPassed + testsFailed) << "\n";
+    return testsFailed == 0 ? 0 : 1;
 }
