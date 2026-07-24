@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rzfp_format.hpp"
+#include "rzfp_axis_leaf.hpp"
 #include "rzfp_xplane_codec.hpp"
 #include "axis_plane.hpp"
 
@@ -27,6 +28,7 @@ enum class RzfpReadStrategy {
     FullPayloadScan,
     RawXAux,
     XPlaneSidecar,
+    AxisLeafReplica,
 };
 
 enum class RzfpAxisSidecarPolicy {
@@ -295,7 +297,19 @@ private:
     std::array<std::vector<uint64_t>, 3> sidecar_offsets_;
     std::array<std::vector<uint32_t>, 3> sidecar_sizes_;
 
+    bool axis_leaf_available_ = false;
+    std::array<int, 3> axis_leaf_fd_{-1, -1, -1};
+    std::array<RzfpAxisLeafHeader, 3> axis_leaf_headers_{};
+    std::array<std::vector<RzfpAxisLeafSlabIndex>, 3>
+        axis_leaf_indexes_;
+
     void openAxisSidecars_();
+    bool openAxisLeafReplicas_();
+    bool readSlicesBatchFromAxisLeaf_(
+        const std::vector<SliceBatchRequest>& requests,
+        const RzfpReaderConfig& config,
+        RzfpReadProfile& profile
+    );
     bool readAxisPlanesBatchFromSidecar(
         PlaneAxis axis,
         const std::vector<SliceBatchRequest>& requests,
