@@ -1882,7 +1882,8 @@ bool RzfpReader::readSlicesBatch(
     // Cold-group behavior is explicit and local to this call. Production
     // StableAuto and WarmAllowed modes retain both page cache and the bounded
     // user-space cache between groups.
-    if (config.adaptive.cache_policy == CachePolicy::DeterministicCold) {
+    if (config.adaptive.cache_policy == CachePolicy::DeterministicCold
+        && !config.cache_prepared_by_round) {
         (void)dropPayloadCache();
         if (config.window_cache) {
             config.window_cache->clear();
@@ -1911,8 +1912,8 @@ bool RzfpReader::readSlicesBatch(
                 xRequests.end()
             );
         }
-    } else {
-        // Try each axis sidecar individually
+    } else if (config.axis_sidecar_policy == RzfpAxisSidecarPolicy::Force) {
+        // Try each axis sidecar individually (experimental mode only)
         for (int ai = 0; ai < 3; ++ai) {
             if (!has_sidecar_[ai]) continue;
             PlaneAxis paxis = static_cast<PlaneAxis>(ai);
@@ -1943,6 +1944,9 @@ bool RzfpReader::readSlicesBatch(
             }
             if (!handled) fallback.push_back(request);
         }
+    } else {
+        // RzfpAxisSidecarPolicy::Disabled — all requests to main format
+        fallback = requests;
     }
 
     profile->plan_time_ms += msSince(classifyStart);
@@ -2071,58 +2075,77 @@ bool RzfpReader::readContestRound(
         results->resize(groups.size());
     }
 
-    size_t requestCount = 0;
-    for (const auto& group : groups) {
-        if (group.indices.size() != group.outputs.size()) return false;
-        requestCount += group.indices.size();
-    }
+    // Separate X requests from Y/Z requests into two bounded batches.
+    // This avoids a single mega-batch of 330 requests producing
+    // ~1.3M logical leaf references in one unordered_map.
+    std::vector<SliceBatchRequest> xRequests;
+    std::vector<SliceBatchRequest> yzRequests;
 
-    std::vector<SliceBatchRequest> requests;
-    requests.reserve(requestCount);
-    for (const auto& group : groups) {
+    for (size_t g = 0; g < groups.size(); ++g) {
+        const auto& group = groups[g];
+        if (group.indices.size() != group.outputs.size()) return false;
         for (size_t i = 0; i < group.indices.size(); ++i) {
-            requests.push_back(
-                {group.axis, group.indices[i], group.outputs[i]});
+            if (group.axis == SliceAxis::X)
+                xRequests.push_back({group.axis, group.indices[i], group.outputs[i]});
+            else
+                yzRequests.push_back({group.axis, group.indices[i], group.outputs[i]});
         }
     }
-    if (requests.empty()) return true;
+
+    // Cold cache once for the entire round
+    if (config.adaptive.cache_policy == CachePolicy::DeterministicCold) {
+        (void)dropPayloadCache();
+        if (config.window_cache) config.window_cache->clear();
+    }
 
     RzfpReaderConfig roundConfig = config;
-    RzfpReadProfile roundProfile;
-    roundConfig.profile = &roundProfile;
+    roundConfig.cache_prepared_by_round = true;
 
-    const auto readStart = Clock::now();
-    if (!readSlicesBatch(requests, roundConfig)) return false;
-    const double readTimeMs = msSince(readStart);
+    // --- Stage 1: X random + X continuous ---
+    double xReadMs = 0.0;
+    RzfpReadProfile xProfile;
+    if (!xRequests.empty()) {
+        RzfpReaderConfig xConfig = roundConfig;
+        xConfig.profile = &xProfile;
+        const auto tx0 = Clock::now();
+        if (!readSlicesBatch(xRequests, xConfig)) return false;
+        xReadMs = msSince(tx0);
+    }
+
+    // --- Stage 2: Y/Z random + continuous (merged) ---
+    double yzReadMs = 0.0;
+    RzfpReadProfile yzProfile;
+    if (!yzRequests.empty()) {
+        RzfpReaderConfig yzConfig = roundConfig;
+        yzConfig.profile = &yzProfile;
+        const auto tyz0 = Clock::now();
+        if (!readSlicesBatch(yzRequests, yzConfig)) return false;
+        yzReadMs = msSince(tyz0);
+    }
 
     if (results) {
         for (size_t g = 0; g < groups.size(); ++g) {
-            RzfpRoundReadResult& result = (*results)[g];
-            result.read_time_ms = readTimeMs;
-            result.io_time_ms = roundProfile.io_time_ms;
-            result.decode_time_ms = roundProfile.decode_time_ms;
-            result.scatter_time_ms = roundProfile.scatter_time_ms;
-            result.unique_leaves = roundProfile.unique_leaf_requests;
-            result.duplicate_leaf_requests =
-                roundProfile.duplicate_leaf_requests;
-            result.logical_leaf_requests =
-                roundProfile.logical_leaf_requests;
-            result.planned_read_bytes =
-                roundProfile.unique_record_bytes != 0
-                    ? roundProfile.unique_record_bytes
-                    : roundProfile.actual_read_bytes;
-            result.actual_read_bytes = roundProfile.actual_read_bytes;
-            result.eliminated_read_bytes =
-                roundProfile.eliminated_record_bytes;
-            result.read_reduction_ratio =
-                roundProfile.dedupReductionRatio();
-            result.selected_strategy = roundProfile.selected_strategy;
-            result.strategy_reason = roundProfile.strategy_reason;
-            result.round_plan_built = true;
-            result.round_unique_superblocks =
-                roundProfile.unique_superblocks;
-            result.round_planned_preads = roundProfile.pread_calls;
-            result.codec_profile = roundProfile.codec_profile;
+            RzfpRoundReadResult& r = (*results)[g];
+            const bool isX = (groups[g].axis == SliceAxis::X);
+            const auto& prof = isX ? xProfile : yzProfile;
+            r.read_time_ms = isX ? xReadMs : yzReadMs;
+            r.io_time_ms = prof.io_time_ms;
+            r.decode_time_ms = prof.decode_time_ms;
+            r.scatter_time_ms = prof.scatter_time_ms;
+            r.unique_leaves = prof.unique_leaf_requests;
+            r.duplicate_leaf_requests = prof.duplicate_leaf_requests;
+            r.logical_leaf_requests = prof.logical_leaf_requests;
+            r.planned_read_bytes = prof.unique_record_bytes != 0
+                ? prof.unique_record_bytes : prof.actual_read_bytes;
+            r.actual_read_bytes = prof.actual_read_bytes;
+            r.eliminated_read_bytes = prof.eliminated_record_bytes;
+            r.read_reduction_ratio = prof.dedupReductionRatio();
+            r.selected_strategy = prof.selected_strategy;
+            r.strategy_reason = prof.strategy_reason;
+            r.round_plan_built = true;
+            r.round_unique_superblocks = prof.unique_superblocks;
+            r.round_planned_preads = prof.pread_calls;
+            r.codec_profile = prof.codec_profile;
         }
     }
 

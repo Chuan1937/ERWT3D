@@ -29,6 +29,11 @@ enum class RzfpReadStrategy {
     XPlaneSidecar,
 };
 
+enum class RzfpAxisSidecarPolicy {
+    Disabled,
+    Force,
+};
+
 struct RzfpReadProfile {
     uint64_t unique_superblocks = 0;
     uint64_t unique_leaves = 0;
@@ -178,6 +183,8 @@ struct RzfpReaderConfig {
     std::shared_ptr<BoundedWindowCache> window_cache;
     uint64_t window_cache_file_identity = 0;
     bool use_window_cache = true;
+    bool cache_prepared_by_round = false;
+    RzfpAxisSidecarPolicy axis_sidecar_policy = RzfpAxisSidecarPolicy::Disabled;
 };
 
 class RzfpReader {

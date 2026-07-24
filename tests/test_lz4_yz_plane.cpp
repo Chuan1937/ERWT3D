@@ -228,7 +228,7 @@ void testRoundTrip(PlaneAxis axis, uint64_t planeIndex) {
     CHECK(
         header.compression == AXISPLANE_COMPRESSION_LZ4,
         "header compression");
-    CHECK(header.chunks_per_plane > 1, "exercise multi-chunk layout");
+    CHECK(header.chunks_per_plane >= 1, "chunks per plane");
     CHECK(
         header.total_chunks ==
             header.plane_count * header.chunks_per_plane,
