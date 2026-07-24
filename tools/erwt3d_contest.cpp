@@ -491,6 +491,22 @@ int main(int argc, char* argv[]) {
         rzfpConfig.hdd = unifiedCfg.hdd;
         rzfpConfig.ssd = unifiedCfg.ssd;
 
+        // Format-aware cap: large RZFP benefits from bounded threads/working-set.
+        // 16 threads → SMT contention; >4GB inflates batch planning without gain.
+        const uint64_t rawBytes = rzfpHeader.nx * rzfpHeader.ny * rzfpHeader.nz * sizeof(float);
+        constexpr uint64_t kLargeThreshold = 32ULL * 1024 * 1024 * 1024;
+        if (rawBytes >= kLargeThreshold) {
+            const int cappedT = std::min(threads, 8);
+            const uint64_t cappedM = std::min<uint64_t>(actualMemoryLimitMib, 4096);
+            if (cappedT != threads || cappedM != actualMemoryLimitMib) {
+                std::cout << "RZFP large-format tuning: threads " << threads
+                          << " -> " << cappedT << ", memory "
+                          << actualMemoryLimitMib << " -> " << cappedM << " MiB\n";
+                rzfpConfig.decode_threads = cappedT;
+                actualMemoryLimitMib = cappedM;
+            }
+        }
+
         if (readWindowMb == 0) {
             uint64_t budgetClamp = budget.window_cache_bytes / 2 > 0
                 ? budget.window_cache_bytes / 2 : 64ULL * MiB;
