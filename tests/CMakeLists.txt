@@ -85,6 +85,9 @@ target_link_libraries(test_contest_output_rzfp PRIVATE erwt3d)
 add_executable(test_rzfp_xp_stability test_rzfp_xp_stability.cpp)
 target_link_libraries(test_rzfp_xp_stability PRIVATE erwt3d)
 
+add_executable(test_lz4_yz_plane test_lz4_yz_plane.cpp)
+target_link_libraries(test_lz4_yz_plane PRIVATE erwt3d)
+
 add_executable(test_axis_plane test_axis_plane.cpp)
 target_link_libraries(test_axis_plane PRIVATE erwt3d)
 
@@ -129,6 +132,7 @@ add_test(NAME rzfp_to_raw COMMAND test_rzfp_to_raw)
 add_test(NAME rzfp_line_reader COMMAND test_rzfp_line_reader)
 add_test(NAME embedded_xp COMMAND test_embedded_xp)
 add_test(NAME contest_output_rzfp COMMAND test_contest_output_rzfp)
+add_test(NAME test_lz4_yz_plane COMMAND test_lz4_yz_plane)
 add_test(NAME test_axis_plane COMMAND test_axis_plane)
 add_test(NAME test_rzfp_xp_stability COMMAND test_rzfp_xp_stability)
 add_test(NAME test_lz4_xp_stability COMMAND test_lz4_xp_stability)

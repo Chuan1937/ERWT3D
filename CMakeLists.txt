@@ -88,6 +88,7 @@ set(LIB_SOURCES
     src/api.cpp
     src/lz4_probe.cpp
     src/lz4_xp_sidecar.cpp
+    src/lz4_axis_plane_writer.cpp
     src/auto_plan.cpp
     src/contest_positions.cpp
     src/contest_groups.cpp
