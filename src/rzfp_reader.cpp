@@ -1304,14 +1304,16 @@ RzfpReader::RzfpReader(const std::string& path)
     }
 
     payload_bytes_ = totalPayloadBytes(sb_index_);
-    openXPlaneSidecar();
+    openAxisSidecars_();
     initRawXAux_();
 }
 
 RzfpReader::~RzfpReader() {
     if (rawXAuxFd_ >= 0) close(rawXAuxFd_);
     if (fd_ >= 0) close(fd_);
-    if (xplane_fd_ >= 0) close(xplane_fd_);
+    for (int i = 0; i < 3; ++i) {
+        if (sidecar_fd_[i] >= 0 && sidecar_fd_[i] != fd_) close(sidecar_fd_[i]);
+    }
 }
 
 const DeviceProfile& RzfpReader::ensureDeviceProfile(
@@ -1520,163 +1522,168 @@ bool RzfpReader::tryReadBatchRawXAux_(
     return true;
 }
 
-bool RzfpReader::openXPlaneSidecar() {
-    const std::string sidecarPath = path_ + ".xp";
-    const int fd = open(sidecarPath.c_str(), O_RDONLY);
-    if (fd < 0) return false;
-
-    XPlaneHeader sidecarHeader{};
-    if (!readFullyAt(fd, &sidecarHeader, sizeof(sidecarHeader), 0)) {
-        close(fd);
-        return false;
-    }
-
-    const char expectedMagic[8] = {
-        'E', 'R', 'W', 'T', '3', 'D', 'X', ' '
-    };
-    if (!magicMatches(sidecarHeader.magic, expectedMagic) ||
-        sidecarHeader.version != 1 ||
-        sidecarHeader.nx != header_.nx ||
-        sidecarHeader.ny != header_.ny ||
-        sidecarHeader.nz != header_.nz) {
-        close(fd);
-        return false;
-    }
-
-    xplane_offsets_.resize(sidecarHeader.nx);
-    xplane_sizes_.resize(sidecarHeader.nx);
-    std::vector<XPlaneIndexEntry> entries(sidecarHeader.nx);
-    const uint64_t indexBytes =
-        sidecarHeader.nx * sizeof(XPlaneIndexEntry);
-    if (!readFullyAt(
-            fd,
-            entries.data(),
-            indexBytes,
-            sizeof(XPlaneHeader))) {
-        close(fd);
-        return false;
-    }
-
-    struct stat st{};
-    uint64_t sidecarSize = 0;
-    if (fstat(fd, &st) == 0) {
-        sidecarSize = static_cast<uint64_t>(st.st_size);
-    }
-
-    for (uint64_t i = 0; i < sidecarHeader.nx; ++i) {
-        const auto& entry = entries[i];
-        if (sidecarSize > 0) {
-            if (entry.size == 0 || entry.size > 512ULL * MiB ||
-                entry.offset > sidecarSize ||
-                entry.size > sidecarSize - entry.offset) {
-                close(fd);
-                return false;
+void RzfpReader::openAxisSidecars_() {
+    // Try X sidecar first (v1 legacy + v2)
+    {
+        const std::string xpPath = path_ + ".xp";
+        int fd = open(xpPath.c_str(), O_RDONLY);
+        if (fd >= 0) {
+            // Try v2 header first
+            AxisPlaneHeader v2Hdr{};
+            if (readFullyAt(fd, &v2Hdr, sizeof(v2Hdr), 0) &&
+                std::memcmp(v2Hdr.magic, AXISPLANE_MAGIC, 8) == 0 &&
+                v2Hdr.axis == static_cast<uint8_t>(PlaneAxis::X) &&
+                v2Hdr.nx == header_.nx && v2Hdr.ny == header_.ny && v2Hdr.nz == header_.nz) {
+                uint64_t pc = v2Hdr.plane_count;
+                sidecar_offsets_[0].resize(pc);
+                sidecar_sizes_[0].resize(pc);
+                std::vector<AxisPlaneIndexEntry> entries(pc);
+                if (readFullyAt(fd, entries.data(), pc * sizeof(AxisPlaneIndexEntry), sizeof(AxisPlaneHeader))) {
+                    for (uint64_t i = 0; i < pc; ++i) {
+                        sidecar_offsets_[0][i] = entries[i].offset;
+                        sidecar_sizes_[0][i] = entries[i].compressed_size;
+                    }
+                    sidecar_fd_[0] = fd;
+                    has_sidecar_[0] = true;
+                    goto tryY;
+                }
+            } else {
+                // Try legacy v1 header
+                XPlaneHeader v1Hdr{};
+                lseek(fd, 0, SEEK_SET);
+                if (readFullyAt(fd, &v1Hdr, sizeof(v1Hdr), 0)) {
+                    const char expectedMagic[8] = {'E','R','W','T','3','D','X',' '};
+                    if (magicMatches(v1Hdr.magic, expectedMagic) && v1Hdr.version == 1 &&
+                        v1Hdr.nx == header_.nx && v1Hdr.ny == header_.ny && v1Hdr.nz == header_.nz) {
+                        uint64_t pc = v1Hdr.nx;
+                        sidecar_offsets_[0].resize(pc);
+                        sidecar_sizes_[0].resize(pc);
+                        std::vector<XPlaneIndexEntry> entries(pc);
+                        if (readFullyAt(fd, entries.data(), pc * sizeof(XPlaneIndexEntry), sizeof(XPlaneHeader))) {
+                            for (uint64_t i = 0; i < pc; ++i) {
+                                sidecar_offsets_[0][i] = entries[i].offset;
+                                sidecar_sizes_[0][i] = entries[i].size;
+                            }
+                            sidecar_fd_[0] = fd;
+                            has_sidecar_[0] = true;
+                            goto tryY;
+                        }
+                    }
+                }
             }
-        }
-        xplane_offsets_[i] = entry.offset;
-        xplane_sizes_[i] = entry.size;
-    }
-
-    xplane_fd_ = fd;
-    has_xplane_ = true;
-    return true;
-}
-
-bool RzfpReader::readXPlaneFromSidecar(
-    uint64_t x,
-    float* output,
-    RzfpReadProfile* profile
-) {
-    if (!has_xplane_ || x >= xplane_offsets_.size()) return false;
-
-    const uint64_t offset = xplane_offsets_[x];
-    const uint32_t size = xplane_sizes_[x];
-    std::vector<uint8_t> record(size);
-
-    const auto ioStart = Clock::now();
-    if (!readFullyAt(xplane_fd_, record.data(), size, offset)) {
-        return false;
-    }
-    if (profile) {
-        profile->io_time_ms += msSince(ioStart);
-        ++profile->pread_calls;
-        profile->actual_read_bytes += size;
-        profile->requested_record_bytes += size;
-    }
-
-    const auto decodeStart = Clock::now();
-    std::vector<float> plane(header_.ny * header_.nz);
-    const bool ok = decodeXPlane2D(
-        record.data(),
-        size,
-        plane.data(),
-        header_.ny,
-        header_.nz
-    );
-    if (profile) {
-        profile->decode_time_ms += msSince(decodeStart);
-    }
-    if (!ok) return false;
-
-    for (uint64_t y = 0; y < header_.ny; ++y) {
-        for (uint64_t z = 0; z < header_.nz; ++z) {
-            output[y * header_.nz + z] =
-                plane[z * header_.ny + y];
+            close(fd);
         }
     }
 
-    if (profile) {
-        profile->selected_strategy = RzfpReadStrategy::XPlaneSidecar;
-        profile->strategy_reason = "compressed X-plane sidecar";
+tryY:
+    // Try Y sidecar (v2 only)
+    {
+        const std::string ypPath = path_ + ".yp";
+        int fd = open(ypPath.c_str(), O_RDONLY);
+        if (fd >= 0) {
+            AxisPlaneHeader hdr{};
+            if (readFullyAt(fd, &hdr, sizeof(hdr), 0) &&
+                validateAxisPlaneHeader(hdr, header_.nx, header_.ny, header_.nz) &&
+                hdr.axis == static_cast<uint8_t>(PlaneAxis::Y)) {
+                uint64_t pc = hdr.plane_count;
+                sidecar_offsets_[1].resize(pc);
+                sidecar_sizes_[1].resize(pc);
+                std::vector<AxisPlaneIndexEntry> entries(pc);
+                if (readFullyAt(fd, entries.data(), pc * sizeof(AxisPlaneIndexEntry), sizeof(AxisPlaneHeader))) {
+                    for (uint64_t i = 0; i < pc; ++i) {
+                        sidecar_offsets_[1][i] = entries[i].offset;
+                        sidecar_sizes_[1][i] = entries[i].compressed_size;
+                    }
+                    sidecar_fd_[1] = fd;
+                    has_sidecar_[1] = true;
+                    goto tryZ;
+                }
+            }
+            close(fd);
+        }
     }
-    return true;
+
+tryZ:
+    // Try Z sidecar (v2 only)
+    {
+        const std::string zpPath = path_ + ".zp";
+        int fd = open(zpPath.c_str(), O_RDONLY);
+        if (fd >= 0) {
+            AxisPlaneHeader hdr{};
+            if (readFullyAt(fd, &hdr, sizeof(hdr), 0) &&
+                validateAxisPlaneHeader(hdr, header_.nx, header_.ny, header_.nz) &&
+                hdr.axis == static_cast<uint8_t>(PlaneAxis::Z)) {
+                uint64_t pc = hdr.plane_count;
+                sidecar_offsets_[2].resize(pc);
+                sidecar_sizes_[2].resize(pc);
+                std::vector<AxisPlaneIndexEntry> entries(pc);
+                if (readFullyAt(fd, entries.data(), pc * sizeof(AxisPlaneIndexEntry), sizeof(AxisPlaneHeader))) {
+                    for (uint64_t i = 0; i < pc; ++i) {
+                        sidecar_offsets_[2][i] = entries[i].offset;
+                        sidecar_sizes_[2][i] = entries[i].compressed_size;
+                    }
+                    sidecar_fd_[2] = fd;
+                    has_sidecar_[2] = true;
+                    return;
+                }
+            }
+            close(fd);
+        }
+    }
 }
 
-bool RzfpReader::readXPlanesBatchFromSidecar(
+bool RzfpReader::readAxisPlanesBatchFromSidecar(
+    PlaneAxis axis,
     const std::vector<SliceBatchRequest>& requests,
     const RzfpReaderConfig& config,
     RzfpReadProfile& profile
 ) {
-    if (xplane_fd_ < 0 || requests.empty()) return false;
+    const int ai = static_cast<int>(axis);
+    if (!has_sidecar_[ai] || sidecar_fd_[ai] < 0 || requests.empty()) return false;
 
-    // Group requests by plane_index to deduplicate same-plane reads
-    struct XTask {
+    const auto& offsets = sidecar_offsets_[ai];
+    const auto& sizes   = sidecar_sizes_[ai];
+    const int fd = sidecar_fd_[ai];
+
+    // Output dimensions for decode and scatter
+    uint64_t dimA = 0, dimB = 0;
+    switch (axis) {
+        case PlaneAxis::X: dimA = header_.ny; dimB = header_.nz; break;
+        case PlaneAxis::Y: dimA = header_.nx; dimB = header_.nz; break;
+        case PlaneAxis::Z: dimA = header_.nx; dimB = header_.ny; break;
+    }
+
+    // Group requests by plane_index to deduplicate
+    struct STask {
         uint64_t offset = 0;
         uint32_t size = 0;
         std::vector<float*> outputs;
     };
-    std::unordered_map<uint64_t, XTask> planeMap;
+    std::unordered_map<uint64_t, STask> planeMap;
 
     for (const auto& request : requests) {
-        if (request.index >= xplane_offsets_.size()) return false;
+        if (request.index >= offsets.size()) return false;
         auto& task = planeMap[request.index];
-        task.offset = xplane_offsets_[request.index];
-        task.size = xplane_sizes_[request.index];
+        task.offset = offsets[request.index];
+        task.size   = sizes[request.index];
         task.outputs.push_back(request.output);
-        profile.requested_record_bytes += xplane_sizes_[request.index];
+        profile.requested_record_bytes += sizes[request.index];
     }
 
-    std::vector<XTask> tasks;
+    std::vector<STask> tasks;
     tasks.reserve(planeMap.size());
-    for (auto& kv : planeMap) {
-        tasks.push_back(std::move(kv.second));
-    }
+    for (auto& kv : planeMap) tasks.push_back(std::move(kv.second));
 
-    std::sort(
-        tasks.begin(),
-        tasks.end(),
-        [](const XTask& a, const XTask& b) {
-            if (a.offset != b.offset) return a.offset < b.offset;
-            return a.size > b.size;
-        }
-    );
+    std::sort(tasks.begin(), tasks.end(),
+              [](const STask& a, const STask& b) {
+                  if (a.offset != b.offset) return a.offset < b.offset;
+                  return a.size > b.size;
+              });
 
     const uint64_t readWindow = config.hdd.read_window_bytes > 0
-        ? config.hdd.read_window_bytes
-        : 512ULL * MiB;
+        ? config.hdd.read_window_bytes : 512ULL * MiB;
     const uint64_t maxGap = config.hdd.max_gap_bytes > 0
-        ? config.hdd.max_gap_bytes
-        : 8ULL * MiB;
+        ? config.hdd.max_gap_bytes : 8ULL * MiB;
     const int decodeThreads = std::max(1, config.decode_threads);
 
     ThreadPool pool(static_cast<size_t>(decodeThreads), false);
@@ -1688,9 +1695,9 @@ bool RzfpReader::readXPlanesBatchFromSidecar(
         uint64_t windowEnd = windowStart + tasks[i].size;
         size_t j = i + 1;
         while (j < tasks.size()) {
-            const uint64_t offset = tasks[j].offset;
-            const uint64_t end = offset + tasks[j].size;
-            if (offset > windowEnd + maxGap) break;
+            const uint64_t off = tasks[j].offset;
+            const uint64_t end = off + tasks[j].size;
+            if (off > windowEnd + maxGap) break;
             if (end - windowStart > readWindow) break;
             windowEnd = std::max(windowEnd, end);
             ++j;
@@ -1699,13 +1706,8 @@ bool RzfpReader::readXPlanesBatchFromSidecar(
         const uint64_t windowSize = windowEnd - windowStart;
         window.resize(static_cast<size_t>(windowSize));
         const auto ioStart = Clock::now();
-        if (!readFullyAt(
-                xplane_fd_,
-                window.data(),
-                windowSize,
-                windowStart)) {
-            std::cerr << "Error: RZFP sidecar batch read failed at offset "
-                      << windowStart << std::endl;
+        if (!readFullyAt(fd, window.data(), windowSize, windowStart)) {
+            std::cerr << "Error: sidecar batch read failed offset=" << windowStart << std::endl;
             return false;
         }
         profile.io_time_ms += msSince(ioStart);
@@ -1713,75 +1715,70 @@ bool RzfpReader::readXPlanesBatchFromSidecar(
         profile.actual_read_bytes += windowSize;
 
         const size_t count = j - i;
-        std::vector<std::vector<float>> planes(
-            count,
-            std::vector<float>(header_.ny * header_.nz)
-        );
-        const int threadsToUse = static_cast<int>(
-            std::min<size_t>(decodeThreads, count)
-        );
+        std::vector<std::vector<float>> planes(count,
+            std::vector<float>(static_cast<size_t>(dimA * dimB)));
+        const int threadsToUse = static_cast<int>(std::min<size_t>(decodeThreads, count));
         bool decodeOk = true;
         const auto decodeStart = Clock::now();
 
+        auto decodeFn = [&](size_t k) {
+            return decodeXPlane2D(
+                window.data() + (tasks[k].offset - windowStart),
+                tasks[k].size,
+                planes[k - i].data(),
+                dimA, dimB);
+        };
+
         if (threadsToUse <= 1) {
-            for (size_t k = i; k < j; ++k) {
-                const auto& task = tasks[k];
-                if (!decodeXPlane2D(
-                        window.data() + (task.offset - windowStart),
-                        task.size,
-                        planes[k - i].data(),
-                        header_.ny,
-                        header_.nz)) {
-                    decodeOk = false;
-                    break;
-                }
+            for (size_t k = i; k < j && decodeOk; ++k) {
+                if (!decodeFn(k)) decodeOk = false;
             }
         } else {
             std::vector<std::future<bool>> futures;
-            const size_t perThread =
-                (count + static_cast<size_t>(threadsToUse) - 1) /
-                static_cast<size_t>(threadsToUse);
+            const size_t perTh = (count + static_cast<size_t>(threadsToUse) - 1) / static_cast<size_t>(threadsToUse);
             for (int t = 0; t < threadsToUse; ++t) {
-                const size_t start =
-                    i + static_cast<size_t>(t) * perThread;
-                const size_t end = std::min(start + perThread, j);
+                const size_t start = i + static_cast<size_t>(t) * perTh;
+                const size_t end = std::min(start + perTh, j);
                 if (start >= end) break;
                 futures.push_back(pool.submit([&, start, end]() {
-                    bool ok = true;
-                    for (size_t k = start; k < end && ok; ++k) {
-                        const auto& task = tasks[k];
-                        ok = decodeXPlane2D(
-                            window.data() +
-                                (task.offset - windowStart),
-                            task.size,
-                            planes[k - i].data(),
-                            header_.ny,
-                            header_.nz
-                        );
+                    for (size_t k = start; k < end; ++k) {
+                        if (!decodeXPlane2D(
+                                window.data() + (tasks[k].offset - windowStart),
+                                tasks[k].size, planes[k - i].data(), dimA, dimB))
+                            return false;
                     }
-                    return ok;
+                    return true;
                 }));
             }
-            for (auto& future : futures) {
-                if (!future.get()) decodeOk = false;
-            }
+            for (auto& f : futures) { if (!f.get()) decodeOk = false; }
         }
 
         if (!decodeOk) {
-            std::cerr << "Error: RZFP sidecar batch decode failed"
-                      << std::endl;
+            std::cerr << "Error: sidecar batch decode failed" << std::endl;
             return false;
         }
 
+        // Scatter decoded planes to outputs with correct layout per axis
         for (size_t k = i; k < j; ++k) {
-            const auto& task = tasks[k];
             const auto& plane = planes[k - i];
-            for (float* output : task.outputs) {
-                for (uint64_t y = 0; y < header_.ny; ++y) {
-                    for (uint64_t z = 0; z < header_.nz; ++z) {
-                        output[y * header_.nz + z] =
-                            plane[z * header_.ny + y];
-                    }
+            for (float* out : tasks[k].outputs) {
+                switch (axis) {
+                case PlaneAxis::X:
+                    // X: output[y * nz + z]  ←  plane[z * ny + y] (transpose)
+                    for (uint64_t y = 0; y < header_.ny; ++y)
+                        for (uint64_t z = 0; z < header_.nz; ++z)
+                            out[y * header_.nz + z] = plane[z * header_.ny + y];
+                    break;
+                case PlaneAxis::Y:
+                    // Y: output[x * nz + z]  ←  plane[x * nz + z] (direct)
+                    std::memcpy(out, plane.data(),
+                                static_cast<size_t>(header_.nx * header_.nz) * sizeof(float));
+                    break;
+                case PlaneAxis::Z:
+                    // Z: output[x * ny + y]  ←  plane[x * ny + y] (direct)
+                    std::memcpy(out, plane.data(),
+                                static_cast<size_t>(header_.nx * header_.ny) * sizeof(float));
+                    break;
                 }
             }
         }
@@ -1790,7 +1787,7 @@ bool RzfpReader::readXPlanesBatchFromSidecar(
     }
 
     profile.selected_strategy = RzfpReadStrategy::XPlaneSidecar;
-    profile.strategy_reason = "compressed X-plane sidecar batch";
+    profile.strategy_reason = "compressed axis-plane sidecar";
     return true;
 }
 
@@ -1891,25 +1888,36 @@ bool RzfpReader::readSlicesBatch(
             );
         }
     } else {
-        std::vector<SliceBatchRequest> xRequests;
-        xRequests.reserve(requests.size());
-        for (const auto& request : requests) {
-            if (has_xplane_ && request.axis == SliceAxis::X) {
-                xRequests.push_back(request);
-            } else {
-                fallback.push_back(request);
+        // Try each axis sidecar individually
+        for (int ai = 0; ai < 3; ++ai) {
+            if (!has_sidecar_[ai]) continue;
+            PlaneAxis paxis = static_cast<PlaneAxis>(ai);
+            SliceAxis saxis = axisToSliceAxis(paxis);
+
+            std::vector<SliceBatchRequest> sidecarReqs;
+            sidecarReqs.reserve(requests.size());
+            for (const auto& request : requests) {
+                if (request.axis == saxis) {
+                    sidecarReqs.push_back(request);
+                }
+            }
+            if (!sidecarReqs.empty()) {
+                if (readAxisPlanesBatchFromSidecar(paxis, sidecarReqs, config, *profile)) {
+                    continue; // handled, don't fall back
+                }
+                // Fall back to main format
+                fallback.insert(fallback.end(), sidecarReqs.begin(), sidecarReqs.end());
             }
         }
-        if (!xRequests.empty() &&
-            !readXPlanesBatchFromSidecar(
-                xRequests,
-                config,
-                *profile)) {
-            fallback.insert(
-                fallback.end(),
-                xRequests.begin(),
-                xRequests.end()
-            );
+        // Remaining requests (axes without sidecar) go to fallback
+        for (const auto& request : requests) {
+            bool handled = false;
+            for (int ai = 0; ai < 3; ++ai) {
+                if (has_sidecar_[ai] && request.axis == axisToSliceAxis(static_cast<PlaneAxis>(ai))) {
+                    handled = true; break;
+                }
+            }
+            if (!handled) fallback.push_back(request);
         }
     }
 

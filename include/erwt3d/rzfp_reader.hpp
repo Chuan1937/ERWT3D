@@ -2,6 +2,9 @@
 
 #include "rzfp_format.hpp"
 #include "rzfp_xplane_codec.hpp"
+#include "axis_plane.hpp"
+
+#include <array>
 #include "device_profile.hpp"
 #include "io_profile.hpp"
 #include "ssd/ssd_config.hpp"
@@ -187,7 +190,8 @@ public:
     const DeviceProfile& deviceProfile() const { return device_profile_; }
     uint64_t fileIdentity() const { return file_identity_; }
     uint64_t payloadBytes() const { return payload_bytes_; }
-    bool hasXPlaneSidecar() const { return has_xplane_; }
+    bool hasXPlaneSidecar() const { return has_sidecar_[0]; }
+    bool hasAxisSidecar(PlaneAxis axis) const { return has_sidecar_[static_cast<int>(axis)]; }
 
     const DeviceProfile& ensureDeviceProfile(
         const DeviceCalibrationConfig& config = {}
@@ -277,15 +281,15 @@ private:
     DeviceProfile device_profile_;
     bool device_profile_ready_ = false;
 
-    // Optional 2D X-plane sidecar.
-    bool has_xplane_ = false;
-    int xplane_fd_ = -1;
-    std::vector<uint64_t> xplane_offsets_;
-    std::vector<uint32_t> xplane_sizes_;
+    // Optional axis-plane sidecars (X, Y, Z).
+    std::array<bool, 3> has_sidecar_{false, false, false};
+    std::array<int, 3> sidecar_fd_{-1, -1, -1};
+    std::array<std::vector<uint64_t>, 3> sidecar_offsets_;
+    std::array<std::vector<uint32_t>, 3> sidecar_sizes_;
 
-    bool openXPlaneSidecar();
-    bool readXPlaneFromSidecar(uint64_t x, float* output, RzfpReadProfile* profile);
-    bool readXPlanesBatchFromSidecar(
+    void openAxisSidecars_();
+    bool readAxisPlanesBatchFromSidecar(
+        PlaneAxis axis,
         const std::vector<SliceBatchRequest>& requests,
         const RzfpReaderConfig& config,
         RzfpReadProfile& profile

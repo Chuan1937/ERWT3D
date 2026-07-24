@@ -154,10 +154,106 @@ void testRoundTrip(PlaneAxis axis, uint64_t planeIndex) {
     CHECK(maxRelErr < 0.001, "max_relative_error < 1e-3");
 }
 
+void testReaderRoundTrip() {
+    // The sidecars already exist from testRoundTrip calls.
+    // Open the reader and verify it detects and uses them.
+    RzfpReader reader(rzfpPath());
+    CHECK(reader.ok(), "reader opens");
+
+    CHECK(!reader.hasAxisSidecar(PlaneAxis::X), "no X sidecar");
+    CHECK(reader.hasAxisSidecar(PlaneAxis::Y), "reader detects Y sidecar");
+    CHECK(reader.hasAxisSidecar(PlaneAxis::Z), "reader detects Z sidecar");
+
+    // Read Y=5 through the reader (via .yp sidecar)
+    std::vector<float> outY(kNx * kNz);
+    CHECK(reader.readSlice(SliceAxis::Y, 5, outY.data()), "read Y=5 via sidecar");
+
+    int yv = 0;
+    for (uint64_t x = 0; x < kNx; ++x) {
+        for (uint64_t z = 0; z < kNz; ++z) {
+            float expected = static_cast<float>(x * 10000 + 5 * 100 + z);
+            float got = outY[x * kNz + z];
+            double denom = std::max(std::abs(static_cast<double>(expected)), 1e-10);
+            double relErr = std::abs(static_cast<double>(got - expected)) / denom;
+            if (relErr > 0.001 && yv < 3) { yv++; }
+        }
+    }
+    CHECK(yv == 0, "reader Y values correct");
+
+    // Read Z=3 through the reader (via .zp sidecar)
+    std::vector<float> outZ(kNx * kNy);
+    CHECK(reader.readSlice(SliceAxis::Z, 3, outZ.data()), "read Z=3 via sidecar");
+
+    int zv = 0;
+    for (uint64_t x = 0; x < kNx; ++x) {
+        for (uint64_t y = 0; y < kNy; ++y) {
+            float expected = static_cast<float>(x * 10000 + y * 100 + 3);
+            float got = outZ[x * kNy + y];
+            double denom = std::max(std::abs(static_cast<double>(expected)), 1e-10);
+            double relErr = std::abs(static_cast<double>(got - expected)) / denom;
+            if (relErr > 0.001 && zv < 3) { zv++; }
+        }
+    }
+    CHECK(zv == 0, "reader Z values correct");
+
+    // Mixed batch: X + Y + Z simultaneously
+    std::vector<float> outX(kNy * kNz);
+    std::vector<RzfpReader::SliceBatchRequest> batch = {
+        {SliceAxis::X, 0, outX.data()},
+        {SliceAxis::Y, 5, outY.data()},
+        {SliceAxis::Z, 3, outZ.data()},
+    };
+
+    HDDReadWindowConfig wcfg;
+    wcfg.read_window_bytes = 128 * 1024 * 1024;
+    wcfg.max_gap_bytes = 8 * 1024 * 1024;
+    CHECK(reader.readSlicesBatch(batch, 2, 256, wcfg), "mixed batch");
+
+    // Verify X from batch
+    int xv = 0;
+    for (uint64_t y = 0; y < kNy; ++y) {
+        for (uint64_t z = 0; z < kNz; ++z) {
+            float expected = static_cast<float>(0 * 10000 + y * 100 + z);
+            float got = outX[y * kNz + z];
+            double denom = std::max(std::abs(static_cast<double>(expected)), 1e-10);
+            double relErr = std::abs(static_cast<double>(got - expected)) / denom;
+            if (relErr > 0.001 && xv < 3) { xv++; }
+        }
+    }
+    CHECK(xv == 0, "batch X correct");
+
+    // Verify Y from batch
+    yv = 0;
+    for (uint64_t x = 0; x < kNx; ++x) {
+        for (uint64_t z = 0; z < kNz; ++z) {
+            float expected = static_cast<float>(x * 10000 + 5 * 100 + z);
+            float got = outY[x * kNz + z];
+            double denom = std::max(std::abs(static_cast<double>(expected)), 1e-10);
+            double relErr = std::abs(static_cast<double>(got - expected)) / denom;
+            if (relErr > 0.001 && yv < 3) { yv++; }
+        }
+    }
+    CHECK(yv == 0, "batch Y correct");
+
+    // Verify Z from batch
+    zv = 0;
+    for (uint64_t x = 0; x < kNx; ++x) {
+        for (uint64_t y = 0; y < kNy; ++y) {
+            float expected = static_cast<float>(x * 10000 + y * 100 + 3);
+            float got = outZ[x * kNy + y];
+            double denom = std::max(std::abs(static_cast<double>(expected)), 1e-10);
+            double relErr = std::abs(static_cast<double>(got - expected)) / denom;
+            if (relErr > 0.001 && zv < 3) { zv++; }
+        }
+    }
+    CHECK(zv == 0, "batch Z correct");
+}
+
 int main() {
     prepareInput();
     testRoundTrip(PlaneAxis::Y, 5);
     testRoundTrip(PlaneAxis::Z, 3);
+    testReaderRoundTrip();
     std::filesystem::remove_all(kTmpDir);
 
     std::cout << "Passed: " << testsPassed << "/" << (testsPassed + testsFailed) << "\n";
