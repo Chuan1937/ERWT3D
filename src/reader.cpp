@@ -11,6 +11,7 @@
 #include <vector>
 #include <cstring>
 #include <chrono>
+#include <climits>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -1021,7 +1022,7 @@ void ERWT3DReader::openAxisPlaneSidecars_() {
         if (fd < 0) continue;
 
         AxisPlaneHeader hdr{};
-        if (pread(fd, &hdr, sizeof(hdr), 0) != sizeof(hdr) ||
+        if (!readFullyAt(fd, &hdr, sizeof(hdr), 0) ||
             !validateAxisPlaneHeader(hdr, header_.nx, header_.ny, header_.nz) ||
             hdr.axis != static_cast<uint8_t>(axis) ||
             hdr.compression != AXISPLANE_COMPRESSION_LZ4) {
@@ -1029,15 +1030,33 @@ void ERWT3DReader::openAxisPlaneSidecars_() {
             continue;
         }
 
-        uint64_t pc = hdr.plane_count;
-        std::vector<AxisPlaneIndexEntry> idx(static_cast<size_t>(pc));
-        if (pread(fd, idx.data(), static_cast<size_t>(pc * sizeof(AxisPlaneIndexEntry)),
-                  static_cast<off_t>(hdr.index_offset)) !=
-            static_cast<ssize_t>(pc * sizeof(AxisPlaneIndexEntry))) {
+        const uint64_t planeCount = hdr.plane_count;
+        const uint64_t chunksPerPlane =
+            hdr.chunks_per_plane == 0 ? 1 : hdr.chunks_per_plane;
+        if (planeCount == 0 ||
+            planeCount > UINT64_MAX / chunksPerPlane) {
+            close(fd);
+            continue;
+        }
+        const uint64_t expectedChunks = planeCount * chunksPerPlane;
+        if ((hdr.total_chunks != 0 && hdr.total_chunks != expectedChunks) ||
+            expectedChunks > SIZE_MAX / sizeof(AxisPlaneIndexEntry)) {
             close(fd);
             continue;
         }
 
+        const size_t indexBytes =
+            static_cast<size_t>(expectedChunks) *
+            sizeof(AxisPlaneIndexEntry);
+        std::vector<AxisPlaneIndexEntry> idx(
+            static_cast<size_t>(expectedChunks));
+        if (!readFullyAt(fd, idx.data(), indexBytes, hdr.index_offset)) {
+            close(fd);
+            continue;
+        }
+
+        hdr.chunks_per_plane = static_cast<uint32_t>(chunksPerPlane);
+        hdr.total_chunks = expectedChunks;
         apHeader_[ai] = hdr;
         apIndex_[ai] = std::move(idx);
         apFd_[ai] = fd;
@@ -1055,12 +1074,20 @@ bool ERWT3DReader::tryReadBatchAxisPlaneSidecar_(
 
     const auto& hdr = apHeader_[ai];
     const auto& idx = apIndex_[ai];
-    int fd = apFd_[ai];
+    const int fd = apFd_[ai];
+    const uint64_t chunksPerPlane = hdr.chunks_per_plane;
+    const AxisPlaneShape shape =
+        makeAxisPlaneShape(axis, header_.nx, header_.ny, header_.nz);
+    if (chunksPerPlane == 0 ||
+        shape.plane_bytes > SIZE_MAX ||
+        shape.plane_bytes > static_cast<uint64_t>(INT_MAX) *
+                                chunksPerPlane) {
+        return false;
+    }
 
     struct Task {
-        uint64_t offset;
-        uint32_t compressedSize;
-        uint32_t rawSize;
+        uint64_t planeIndex = 0;
+        uint64_t firstOffset = 0;
         std::vector<size_t> requestIndices;
     };
     std::unordered_map<uint64_t, Task> planeMap;
@@ -1069,15 +1096,17 @@ bool ERWT3DReader::tryReadBatchAxisPlaneSidecar_(
     for (size_t i = 0; i < requests.size(); ++i) {
         handled[i] = false;
         if (requests[i].axis != axisToSliceAxis(axis)) continue;
-        uint64_t pi = requests[i].index;
-        if (pi >= hdr.plane_count) continue;
+        const uint64_t planeIndex = requests[i].index;
+        if (planeIndex >= hdr.plane_count) continue;
+        if (planeIndex > UINT64_MAX / chunksPerPlane) return false;
+        const uint64_t base = planeIndex * chunksPerPlane;
+        if (base >= idx.size()) return false;
 
         anyHit = true;
-        auto& t = planeMap[pi];
-        t.offset = idx[static_cast<size_t>(pi)].offset;
-        t.compressedSize = idx[static_cast<size_t>(pi)].compressed_size;
-        t.rawSize = idx[static_cast<size_t>(pi)].raw_size;
-        t.requestIndices.push_back(i);
+        auto& task = planeMap[planeIndex];
+        task.planeIndex = planeIndex;
+        task.firstOffset = idx[static_cast<size_t>(base)].offset;
+        task.requestIndices.push_back(i);
     }
     if (!anyHit) return false;
 
@@ -1085,35 +1114,67 @@ bool ERWT3DReader::tryReadBatchAxisPlaneSidecar_(
     tasks.reserve(planeMap.size());
     for (auto& kv : planeMap) tasks.push_back(std::move(kv.second));
     std::sort(tasks.begin(), tasks.end(),
-              [](const Task& a, const Task& b) { return a.offset < b.offset; });
+              [](const Task& a, const Task& b) {
+                  return a.firstOffset < b.firstOffset;
+              });
 
     adviseSequential(fd);
 
-    for (const auto& t : tasks) {
-        if (apCompBuf_.size() < t.compressedSize)
-            apCompBuf_.resize(t.compressedSize);
-        ssize_t n = pread(fd, apCompBuf_.data(), t.compressedSize,
-                          static_cast<off_t>(t.offset));
-        if (n != static_cast<ssize_t>(t.compressedSize)) return false;
-
-        if (apRawBuf_.size() < t.rawSize) apRawBuf_.resize(t.rawSize);
-#ifdef ERWT3D_HAVE_LZ4
-        int dec = LZ4_decompress_safe(
-            reinterpret_cast<const char*>(apCompBuf_.data()),
-            reinterpret_cast<char*>(apRawBuf_.data()),
-            static_cast<int>(t.compressedSize),
-            static_cast<int>(t.rawSize));
-        if (dec != static_cast<int>(t.rawSize)) return false;
-#else
-        return false;
-#endif
-
-        const float* src = reinterpret_cast<const float*>(apRawBuf_.data());
-        for (size_t ri : t.requestIndices) {
-            float* dst = requests[ri].output;
-            std::memcpy(dst, src, static_cast<size_t>(t.rawSize));
-            handled[ri] = true;
+    for (const auto& task : tasks) {
+        const uint64_t base = task.planeIndex * chunksPerPlane;
+        if (base > idx.size() ||
+            chunksPerPlane > idx.size() - static_cast<size_t>(base) ||
+            task.requestIndices.empty()) {
+            return false;
         }
+
+        float* const primary = requests[task.requestIndices.front()].output;
+        auto* const primaryBytes = reinterpret_cast<uint8_t*>(primary);
+        uint64_t decodedBytes = 0;
+
+        for (uint64_t chunk = 0; chunk < chunksPerPlane; ++chunk) {
+            const auto& entry =
+                idx[static_cast<size_t>(base + chunk)];
+            if (entry.compressed_size == 0 || entry.raw_size == 0 ||
+                entry.compressed_size > static_cast<uint32_t>(INT_MAX) ||
+                entry.raw_size > static_cast<uint32_t>(INT_MAX) ||
+                entry.raw_size > shape.plane_bytes ||
+                decodedBytes > shape.plane_bytes - entry.raw_size) {
+                return false;
+            }
+
+            if (apCompBuf_.size() < entry.compressed_size)
+                apCompBuf_.resize(entry.compressed_size);
+            if (!readFullyAt(
+                    fd,
+                    apCompBuf_.data(),
+                    entry.compressed_size,
+                    entry.offset)) {
+                return false;
+            }
+
+#ifdef ERWT3D_HAVE_LZ4
+            const int decoded = LZ4_decompress_safe(
+                reinterpret_cast<const char*>(apCompBuf_.data()),
+                reinterpret_cast<char*>(primaryBytes + decodedBytes),
+                static_cast<int>(entry.compressed_size),
+                static_cast<int>(entry.raw_size));
+            if (decoded != static_cast<int>(entry.raw_size)) return false;
+#else
+            return false;
+#endif
+            decodedBytes += entry.raw_size;
+        }
+
+        if (decodedBytes != shape.plane_bytes) return false;
+        for (size_t n = 1; n < task.requestIndices.size(); ++n) {
+            std::memcpy(
+                requests[task.requestIndices[n]].output,
+                primary,
+                static_cast<size_t>(shape.plane_bytes));
+        }
+        for (size_t requestIndex : task.requestIndices)
+            handled[requestIndex] = true;
     }
 
     return true;
@@ -1230,33 +1291,74 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
         // Fall through to SB if panel miss
     }
 
-    // Try Y/Z axis-plane sidecar fast path (LZ4 compressed, v2)
+    // Try generic axis-plane sidecar fast path (LZ4 compressed, v2).
     for (int ai = 0; ai < 3; ++ai) {
         if (!apAvailable_[ai]) continue;
-        PlaneAxis pax = static_cast<PlaneAxis>(ai);
-        if (axis != axisToSliceAxis(pax)) continue;
-        if (index >= apHeader_[ai].plane_count) continue;
+        const PlaneAxis planeAxis = static_cast<PlaneAxis>(ai);
+        if (axis != axisToSliceAxis(planeAxis)) continue;
 
-        const auto& entry = apIndex_[ai][static_cast<size_t>(index)];
-        if (apCompBuf_.size() < entry.compressed_size)
-            apCompBuf_.resize(entry.compressed_size);
-        ssize_t n = pread(apFd_[ai], apCompBuf_.data(), entry.compressed_size,
-                          static_cast<off_t>(entry.offset));
-        if (n != static_cast<ssize_t>(entry.compressed_size)) break;
+        const auto& hdr = apHeader_[ai];
+        const auto& sidecarIndex = apIndex_[ai];
+        if (index >= hdr.plane_count || hdr.chunks_per_plane == 0)
+            continue;
+        if (index > UINT64_MAX / hdr.chunks_per_plane) break;
+        const uint64_t base = index * hdr.chunks_per_plane;
+        if (base > sidecarIndex.size() ||
+            hdr.chunks_per_plane >
+                sidecarIndex.size() - static_cast<size_t>(base)) {
+            break;
+        }
 
-        if (apRawBuf_.size() < entry.raw_size) apRawBuf_.resize(entry.raw_size);
+        const AxisPlaneShape shape = makeAxisPlaneShape(
+            planeAxis, header_.nx, header_.ny, header_.nz);
+        auto* const outputBytes = reinterpret_cast<uint8_t*>(output);
+        uint64_t decodedBytes = 0;
+        bool sidecarOk = true;
+
+        for (uint64_t chunk = 0;
+             chunk < hdr.chunks_per_plane;
+             ++chunk) {
+            const auto& entry =
+                sidecarIndex[static_cast<size_t>(base + chunk)];
+            if (entry.compressed_size == 0 || entry.raw_size == 0 ||
+                entry.compressed_size > static_cast<uint32_t>(INT_MAX) ||
+                entry.raw_size > static_cast<uint32_t>(INT_MAX) ||
+                entry.raw_size > shape.plane_bytes ||
+                decodedBytes > shape.plane_bytes - entry.raw_size) {
+                sidecarOk = false;
+                break;
+            }
+
+            if (apCompBuf_.size() < entry.compressed_size)
+                apCompBuf_.resize(entry.compressed_size);
+            if (!readFullyAt(
+                    apFd_[ai],
+                    apCompBuf_.data(),
+                    entry.compressed_size,
+                    entry.offset)) {
+                sidecarOk = false;
+                break;
+            }
+
 #ifdef ERWT3D_HAVE_LZ4
-        int dec = LZ4_decompress_safe(
-            reinterpret_cast<const char*>(apCompBuf_.data()),
-            reinterpret_cast<char*>(apRawBuf_.data()),
-            static_cast<int>(entry.compressed_size),
-            static_cast<int>(entry.raw_size));
-        if (dec != static_cast<int>(entry.raw_size)) break;
+            const int decoded = LZ4_decompress_safe(
+                reinterpret_cast<const char*>(apCompBuf_.data()),
+                reinterpret_cast<char*>(outputBytes + decodedBytes),
+                static_cast<int>(entry.compressed_size),
+                static_cast<int>(entry.raw_size));
+            if (decoded != static_cast<int>(entry.raw_size)) {
+                sidecarOk = false;
+                break;
+            }
 #else
-        break;
+            sidecarOk = false;
+            break;
 #endif
-        std::memcpy(output, apRawBuf_.data(), entry.raw_size);
-        return true;
+            decodedBytes += entry.raw_size;
+        }
+
+        if (sidecarOk && decodedBytes == shape.plane_bytes) return true;
+        break;
     }
 
     SBTaskPlan plan;
