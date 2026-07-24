@@ -104,6 +104,7 @@ if(ERWT3D_ENABLE_RZFP)
     list(APPEND LIB_SOURCES
         src/relative_error.cpp
         src/rzfp_codec.cpp
+        src/rzfp_axis_leaf.cpp
         src/rzfp_writer.cpp
         src/rzfp_reader.cpp
         src/rzfp_strategy.cpp
@@ -195,6 +196,9 @@ if(ERWT3D_ENABLE_RZFP)
 
     add_executable(erwt3d_rzfp_xplane_gen tools/erwt3d_rzfp_xplane_gen.cpp)
     target_link_libraries(erwt3d_rzfp_xplane_gen PRIVATE erwt3d)
+
+    add_executable(erwt3d_rzfp_axis_repack tools/erwt3d_rzfp_axis_repack.cpp)
+    target_link_libraries(erwt3d_rzfp_axis_repack PRIVATE erwt3d)
 
     add_executable(erwt3d_axis_plane_gen tools/erwt3d_axis_plane_gen.cpp)
     target_link_libraries(erwt3d_axis_plane_gen PRIVATE erwt3d)
