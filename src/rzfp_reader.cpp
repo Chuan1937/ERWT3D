@@ -1715,74 +1715,98 @@ bool RzfpReader::readAxisPlanesBatchFromSidecar(
         profile.actual_read_bytes += windowSize;
 
         const size_t count = j - i;
-        std::vector<std::vector<float>> planes(count,
-            std::vector<float>(static_cast<size_t>(dimA * dimB)));
-        const int threadsToUse = static_cast<int>(std::min<size_t>(decodeThreads, count));
+        std::vector<std::vector<float>> xPlanes;
+        if (axis == PlaneAxis::X) {
+            xPlanes.assign(
+                count,
+                std::vector<float>(
+                    static_cast<size_t>(dimA * dimB)));
+        }
+
+        const int threadsToUse = static_cast<int>(
+            std::min<size_t>(decodeThreads, count));
         bool decodeOk = true;
         const auto decodeStart = Clock::now();
 
-        auto decodeFn = [&](size_t k) {
-            return decodeXPlane2D(
-                window.data() + (tasks[k].offset - windowStart),
-                tasks[k].size,
-                planes[k - i].data(),
-                dimA, dimB);
+        auto decodeTarget = [&](size_t taskIndex) -> float* {
+            if (axis == PlaneAxis::X)
+                return xPlanes[taskIndex - i].data();
+            return tasks[taskIndex].outputs.front();
         };
 
         if (threadsToUse <= 1) {
             for (size_t k = i; k < j && decodeOk; ++k) {
-                if (!decodeFn(k)) decodeOk = false;
+                if (!decodeXPlane2D(
+                        window.data() +
+                            (tasks[k].offset - windowStart),
+                        tasks[k].size,
+                        decodeTarget(k),
+                        dimA,
+                        dimB)) {
+                    decodeOk = false;
+                }
             }
         } else {
             std::vector<std::future<bool>> futures;
-            const size_t perTh = (count + static_cast<size_t>(threadsToUse) - 1) / static_cast<size_t>(threadsToUse);
-            for (int t = 0; t < threadsToUse; ++t) {
-                const size_t start = i + static_cast<size_t>(t) * perTh;
-                const size_t end = std::min(start + perTh, j);
+            const size_t perThread =
+                (count + static_cast<size_t>(threadsToUse) - 1) /
+                static_cast<size_t>(threadsToUse);
+            for (int thread = 0; thread < threadsToUse; ++thread) {
+                const size_t start =
+                    i + static_cast<size_t>(thread) * perThread;
+                const size_t end = std::min(start + perThread, j);
                 if (start >= end) break;
                 futures.push_back(pool.submit([&, start, end]() {
                     for (size_t k = start; k < end; ++k) {
                         if (!decodeXPlane2D(
-                                window.data() + (tasks[k].offset - windowStart),
-                                tasks[k].size, planes[k - i].data(), dimA, dimB))
+                                window.data() +
+                                    (tasks[k].offset - windowStart),
+                                tasks[k].size,
+                                decodeTarget(k),
+                                dimA,
+                                dimB)) {
                             return false;
+                        }
                     }
                     return true;
                 }));
             }
-            for (auto& f : futures) { if (!f.get()) decodeOk = false; }
+            for (auto& future : futures) {
+                if (!future.get()) decodeOk = false;
+            }
         }
 
         if (!decodeOk) {
-            std::cerr << "Error: sidecar batch decode failed" << std::endl;
+            std::cerr << "Error: sidecar batch decode failed"
+                      << std::endl;
             return false;
         }
+        profile.decode_time_ms += msSince(decodeStart);
 
-        // Scatter decoded planes to outputs with correct layout per axis
+        const auto scatterStart = Clock::now();
+        const size_t planeBytes =
+            static_cast<size_t>(dimA * dimB) * sizeof(float);
         for (size_t k = i; k < j; ++k) {
-            const auto& plane = planes[k - i];
-            for (float* out : tasks[k].outputs) {
-                switch (axis) {
-                case PlaneAxis::X:
-                    // X: output[y * nz + z]  ←  plane[z * ny + y] (transpose)
-                    for (uint64_t y = 0; y < header_.ny; ++y)
-                        for (uint64_t z = 0; z < header_.nz; ++z)
-                            out[y * header_.nz + z] = plane[z * header_.ny + y];
-                    break;
-                case PlaneAxis::Y:
-                    // Y: output[x * nz + z]  ←  plane[x * nz + z] (direct)
-                    std::memcpy(out, plane.data(),
-                                static_cast<size_t>(header_.nx * header_.nz) * sizeof(float));
-                    break;
-                case PlaneAxis::Z:
-                    // Z: output[x * ny + y]  ←  plane[x * ny + y] (direct)
-                    std::memcpy(out, plane.data(),
-                                static_cast<size_t>(header_.nx * header_.ny) * sizeof(float));
-                    break;
+            float* const primary = tasks[k].outputs.front();
+            if (axis == PlaneAxis::X) {
+                const auto& plane = xPlanes[k - i];
+                for (uint64_t y = 0; y < header_.ny; ++y) {
+                    for (uint64_t z = 0; z < header_.nz; ++z) {
+                        primary[y * header_.nz + z] =
+                            plane[z * header_.ny + y];
+                    }
                 }
             }
+            for (size_t outputIndex = 1;
+                 outputIndex < tasks[k].outputs.size();
+                 ++outputIndex) {
+                std::memcpy(
+                    tasks[k].outputs[outputIndex],
+                    primary,
+                    planeBytes);
+            }
         }
-        profile.decode_time_ms += msSince(decodeStart);
+        profile.scatter_time_ms += msSince(scatterStart);
         i = j;
     }
 
@@ -2047,90 +2071,58 @@ bool RzfpReader::readContestRound(
         results->resize(groups.size());
     }
 
-    std::vector<SliceBatchRequest> yz_requests;
-    uint64_t yzLogicalSlices = 0;
-    std::vector<SliceBatchRequest> x_requests;
-
-    for (size_t g = 0; g < groups.size(); ++g) {
-        const auto& group = groups[g];
-        if (group.axis == SliceAxis::X) {
-            for (size_t i = 0; i < group.indices.size(); ++i) {
-                x_requests.push_back({group.axis, group.indices[i], group.outputs[i]});
-            }
-        } else {
-            yzLogicalSlices += group.indices.size();
-            for (size_t i = 0; i < group.indices.size(); ++i) {
-                yz_requests.push_back({group.axis, group.indices[i], group.outputs[i]});
-            }
-        }
+    size_t requestCount = 0;
+    for (const auto& group : groups) {
+        if (group.indices.size() != group.outputs.size()) return false;
+        requestCount += group.indices.size();
     }
 
-    double xReadMs = 0.0;
-    if (!x_requests.empty()) {
-        RzfpReaderConfig xConfig = config;
-        RzfpReadProfile xProfile;
-        xConfig.profile = &xProfile;
-
-        const auto tx0 = Clock::now();
-        if (!readSlicesBatch(x_requests, xConfig)) return false;
-        xReadMs = msSince(tx0);
-
-        if (results) {
-            for (size_t g = 0; g < groups.size(); ++g) {
-                if (groups[g].axis != SliceAxis::X) continue;
-                RzfpRoundReadResult& r = (*results)[g];
-                r.read_time_ms = xReadMs;
-                r.io_time_ms = xProfile.io_time_ms;
-                r.decode_time_ms = xProfile.decode_time_ms;
-                r.scatter_time_ms = xProfile.scatter_time_ms;
-                r.unique_leaves = xProfile.unique_leaves;
-                r.duplicate_leaf_requests = xProfile.duplicate_leaf_requests;
-                r.logical_leaf_requests = xProfile.logical_leaf_requests;
-                r.planned_read_bytes = xProfile.actual_read_bytes;
-                r.actual_read_bytes = xProfile.actual_read_bytes;
-                r.eliminated_read_bytes = xProfile.eliminated_record_bytes;
-                r.read_reduction_ratio = xProfile.dedupReductionRatio();
-                r.selected_strategy = xProfile.selected_strategy;
-                r.strategy_reason = xProfile.strategy_reason;
-                r.round_plan_built = false;
-                r.round_unique_superblocks = xProfile.unique_superblocks;
-                r.round_planned_preads = xProfile.pread_calls;
-                r.codec_profile = xProfile.codec_profile;
-            }
+    std::vector<SliceBatchRequest> requests;
+    requests.reserve(requestCount);
+    for (const auto& group : groups) {
+        for (size_t i = 0; i < group.indices.size(); ++i) {
+            requests.push_back(
+                {group.axis, group.indices[i], group.outputs[i]});
         }
     }
+    if (requests.empty()) return true;
 
-    if (yz_requests.empty()) return true;
+    RzfpReaderConfig roundConfig = config;
+    RzfpReadProfile roundProfile;
+    roundConfig.profile = &roundProfile;
 
-    RzfpReaderConfig yzConfig = config;
-    RzfpReadProfile yzProfile;
-    yzConfig.profile = &yzProfile;
-
-    const auto t0 = Clock::now();
-    if (!readSlicesBatch(yz_requests, yzConfig)) return false;
-    const double totalReadMs = msSince(t0);
+    const auto readStart = Clock::now();
+    if (!readSlicesBatch(requests, roundConfig)) return false;
+    const double readTimeMs = msSince(readStart);
 
     if (results) {
         for (size_t g = 0; g < groups.size(); ++g) {
-            if (groups[g].axis == SliceAxis::X) continue;
-            RzfpRoundReadResult& r = (*results)[g];
-            r.read_time_ms = totalReadMs;
-            r.io_time_ms = yzProfile.io_time_ms;
-            r.decode_time_ms = yzProfile.decode_time_ms;
-            r.scatter_time_ms = yzProfile.scatter_time_ms;
-            r.unique_leaves = yzProfile.unique_leaf_requests;
-            r.logical_leaf_requests = yzProfile.logical_leaf_requests;
-            r.duplicate_leaf_requests = yzProfile.duplicate_leaf_requests;
-            r.planned_read_bytes = yzProfile.unique_record_bytes;
-            r.actual_read_bytes = yzProfile.actual_read_bytes;
-            r.eliminated_read_bytes = yzProfile.eliminated_record_bytes;
-            r.read_reduction_ratio = yzProfile.dedupReductionRatio();
-            r.selected_strategy = yzProfile.selected_strategy;
-            r.strategy_reason = yzProfile.strategy_reason;
-            r.round_plan_built = false;
-            r.round_unique_superblocks = yzProfile.unique_superblocks;
-            r.round_planned_preads = yzProfile.pread_calls;
-            r.codec_profile = yzProfile.codec_profile;
+            RzfpRoundReadResult& result = (*results)[g];
+            result.read_time_ms = readTimeMs;
+            result.io_time_ms = roundProfile.io_time_ms;
+            result.decode_time_ms = roundProfile.decode_time_ms;
+            result.scatter_time_ms = roundProfile.scatter_time_ms;
+            result.unique_leaves = roundProfile.unique_leaf_requests;
+            result.duplicate_leaf_requests =
+                roundProfile.duplicate_leaf_requests;
+            result.logical_leaf_requests =
+                roundProfile.logical_leaf_requests;
+            result.planned_read_bytes =
+                roundProfile.unique_record_bytes != 0
+                    ? roundProfile.unique_record_bytes
+                    : roundProfile.actual_read_bytes;
+            result.actual_read_bytes = roundProfile.actual_read_bytes;
+            result.eliminated_read_bytes =
+                roundProfile.eliminated_record_bytes;
+            result.read_reduction_ratio =
+                roundProfile.dedupReductionRatio();
+            result.selected_strategy = roundProfile.selected_strategy;
+            result.strategy_reason = roundProfile.strategy_reason;
+            result.round_plan_built = true;
+            result.round_unique_superblocks =
+                roundProfile.unique_superblocks;
+            result.round_planned_preads = roundProfile.pread_calls;
+            result.codec_profile = roundProfile.codec_profile;
         }
     }
 
