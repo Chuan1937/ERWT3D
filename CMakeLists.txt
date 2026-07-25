@@ -94,6 +94,7 @@ set(LIB_SOURCES
     src/contest_positions.cpp
     src/contest_groups.cpp
     src/file_format_detect.cpp
+    src/embedded_sections.cpp
     src/io_profile.cpp
     src/unified_read_config.cpp
     src/ssd/ssd_extent_planner.cpp

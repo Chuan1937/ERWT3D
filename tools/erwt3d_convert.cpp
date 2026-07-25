@@ -7,21 +7,62 @@
 #include "erwt3d/raw_x_aux.hpp"
 #include "erwt3d/memory_budget.hpp"
 #include "erwt3d/file_format_detect.hpp"
+#include "erwt3d/lz4_axis_plane_writer.hpp"
+#include "erwt3d/rzfp_axis_leaf.hpp"
+#include "erwt3d/embedded_sections.hpp"
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <vector>
 #include <sys/stat.h>
 
 namespace {
 
 using Clock = std::chrono::steady_clock;
 constexpr uint64_t GiB = 1024ULL * 1024ULL * 1024ULL;
+constexpr double StorageBudget = 1.50;
+
+uint64_t fileSizeOrZero(const std::string& path) {
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec)) return 0;
+    return std::filesystem::file_size(path, ec);
+}
+
+void removeIfPresent(const std::string& path) {
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
+void removeAuxiliaryFiles(const std::string& path) {
+    removeIfPresent(path + ".xp");
+    removeIfPresent(path + ".yp");
+    removeIfPresent(path + ".zp");
+    removeIfPresent(erwt3d::rzfpAxisLeafPath(path, erwt3d::PlaneAxis::X));
+    removeIfPresent(erwt3d::rzfpAxisLeafPath(path, erwt3d::PlaneAxis::Y));
+    removeIfPresent(erwt3d::rzfpAxisLeafPath(path, erwt3d::PlaneAxis::Z));
+}
+
+bool installPackage(const std::string& workPath, const std::string& outputPath) {
+    std::error_code ec;
+    std::filesystem::rename(workPath, outputPath, ec);
+    if (ec) {
+        std::cerr << "Error: cannot install final package: "
+                  << ec.message() << "\n";
+        return false;
+    }
+    // Old multi-file conversions with the same output name must not influence
+    // discovery or storage accounting after a successful single-file install.
+    removeAuxiliaryFiles(outputPath);
+    return true;
+}
 
 }
 
@@ -71,11 +112,11 @@ int main(int argc, char* argv[]) {
                 << "  --memory-limit-mb auto|N  Memory limit in MiB (default: auto)\n"
                 << "  --to-raw              Convert ERWT3D/RZFP back to raw float32\n\n"
                 << "Auto-selected candidates:\n"
-                << "  A) LZ4 + embedded XP stride=2  (best when LZ4 compresses well)\n"
-                << "  B) Pure RZFP                    (best when LZ4 ratio > 0.80)\n\n"
+                << "  A) LZ4 + embedded Y/Z whole-plane sections\n"
+                << "  B) RZFP + embedded X/Y/Z axis-leaf sections\n\n"
                 << "Internal policy:\n"
                 << "  RZFP error: contest_bound=1e-3, internal_bound=7.5e-4\n"
-                << "  XP stride=2 fixed, no Raw X Aux\n"
+                << "  One self-contained output file; no runtime sidecars\n"
                 << "  Storage budget: 1.50x hard limit\n";
             return 0;
         } else {
@@ -176,7 +217,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Phase 1: Sampling and planning...\n";
     erwt3d::PlannerWorkload workload;
     erwt3d::PlannerResult plan = erwt3d::planFormat(
-        inputPath, nx, ny, nz, threads, 1.50, workload);
+        inputPath, nx, ny, nz, threads, StorageBudget, workload);
 
     if (!plan.recommended.feasible) {
         std::cerr << "Error: no feasible format found: " << plan.recommended.reason << "\n";
@@ -204,20 +245,16 @@ int main(int argc, char* argv[]) {
 
     std::cout << "Phase 2: Converting...\n";
     const auto convertStart = Clock::now();
+    const std::string workPath = outputPath + ".packing.tmp";
+    const std::string legacyPath = outputPath + ".legacy.tmp";
+    removeIfPresent(workPath);
+    removeIfPresent(legacyPath);
+    removeAuxiliaryFiles(workPath);
 
     if (rec.main_format == erwt3d::MainFormat::LZ4) {
-        bool hasXp = (rec.sidecar_format == erwt3d::SidecarFormat::LZ4_XPlane);
-        uint32_t xpStride = rec.sidecar_stride;
-
-        {
-            std::error_code ec;
-            std::filesystem::remove(outputPath, ec);
-            std::filesystem::remove(outputPath + ".xp", ec);
-        }
-
         erwt3d::RawXAuxStats auxStats;
         if (!erwt3d::writeERWT3DFromFile(
-                outputPath, inputPath, nx, ny, nz,
+                workPath, inputPath, nx, ny, nz,
                 64, 64, 64, 4, 4, 4,
                 threads, resolvedMemory.mib,
                 0, 0,
@@ -229,28 +266,93 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        if (hasXp && xpStride > 0) {
-            std::cout << "Generating embedded LZ4 XP (stride=" << xpStride << ")...\n";
-            erwt3d::Lz4XpSidecarStats xpStats;
-            if (!erwt3d::writeLz4XpSidecar(
-                    inputPath, outputPath, nx, ny, nz,
-                    xpStride, 256, 1.50, true, &xpStats)) {
-                std::cerr << "Error: embedded XP generation failed\n";
-                std::filesystem::remove(outputPath);
-                return 1;
+        struct AxisCandidate {
+            erwt3d::PlaneAxis axis{};
+            erwt3d::EmbeddedSectionType type{};
+            std::string path;
+            uint64_t bytes = 0;
+        };
+        std::vector<AxisCandidate> candidates;
+        for (const auto axis : {erwt3d::PlaneAxis::Y, erwt3d::PlaneAxis::Z}) {
+            erwt3d::Lz4AxisPlaneWriterStats axisStats;
+            std::cout << "Generating LZ4 "
+                      << (axis == erwt3d::PlaneAxis::Y ? "Y" : "Z")
+                      << " whole-plane section...\n";
+            if (!erwt3d::writeLz4AxisPlaneSidecar(
+                    inputPath, workPath, axis, nx, ny, nz,
+                    128 * 1024, StorageBudget, threads, &axisStats)) {
+                std::cout << "  skipped: section does not fit its storage gate\n";
+                continue;
             }
-            std::cout << "Embedded XP: " << xpStats.sidecar_bytes / (1024*1024) << " MB"
-                      << " ratio=" << std::fixed << std::setprecision(3)
-                      << xpStats.compression_ratio << "x\n";
+            const std::string sidecar =
+                erwt3d::axisPlaneSidecarPath(workPath, axis);
+            candidates.push_back({
+                axis,
+                axis == erwt3d::PlaneAxis::Y
+                    ? erwt3d::EmbeddedSectionType::Lz4AxisPlaneY
+                    : erwt3d::EmbeddedSectionType::Lz4AxisPlaneZ,
+                sidecar,
+                fileSizeOrZero(sidecar),
+            });
         }
 
-        std::error_code ec;
-        uint64_t outBytes = 0;
-        if (std::filesystem::exists(outputPath, ec))
-            outBytes = std::filesystem::file_size(outputPath, ec);
+        const uint64_t mainBytes = fileSizeOrZero(workPath);
+        uint64_t selectedBytes = mainBytes;
+        std::sort(candidates.begin(), candidates.end(),
+                  [](const AxisCandidate& a, const AxisCandidate& b) {
+                      return a.bytes < b.bytes;
+                  });
+        std::vector<erwt3d::EmbeddedSectionInput> sections;
+        for (const auto& candidate : candidates) {
+            if (candidate.bytes != 0 &&
+                selectedBytes <= static_cast<uint64_t>(StorageBudget * rawSize) &&
+                candidate.bytes <=
+                    static_cast<uint64_t>(StorageBudget * rawSize) -
+                        selectedBytes) {
+                sections.push_back({candidate.type, candidate.path});
+                selectedBytes += candidate.bytes;
+            } else {
+                removeIfPresent(candidate.path);
+            }
+        }
+
+        erwt3d::EmbeddedPackageStats packageStats;
+        if (!sections.empty() &&
+            !erwt3d::embedSectionsInPlace(
+                workPath, sections, true, &packageStats)) {
+            std::cerr << "Error: cannot create single-file LZ4 package\n";
+            removeIfPresent(workPath);
+            removeAuxiliaryFiles(workPath);
+            return 1;
+        }
+
+        const uint64_t outBytes = fileSizeOrZero(workPath);
         double storageRatio = rawSize > 0 ? static_cast<double>(outBytes) / rawSize : 0.0;
+        if (outBytes == 0 || storageRatio > StorageBudget) {
+            std::cerr << "Error: final LZ4 package exceeds storage budget: "
+                      << storageRatio << "x\n";
+            removeIfPresent(workPath);
+            return 1;
+        }
+        if (!installPackage(workPath, outputPath)) {
+            removeIfPresent(workPath);
+            return 1;
+        }
 
         std::cout << "LZ4 conversion complete: " << outputPath << "\n"
+                  << "  Embedded axes: "
+                  << (sections.empty() ? "none" : "")
+                  << (std::any_of(
+                          sections.begin(), sections.end(),
+                          [](const auto& s) {
+                              return s.type == erwt3d::EmbeddedSectionType::Lz4AxisPlaneY;
+                          }) ? "Y" : "")
+                  << (std::any_of(
+                          sections.begin(), sections.end(),
+                          [](const auto& s) {
+                              return s.type == erwt3d::EmbeddedSectionType::Lz4AxisPlaneZ;
+                          }) ? "Z" : "")
+                  << "\n"
                   << "  Storage ratio: " << std::fixed << std::setprecision(3) << storageRatio << "x\n";
 
     } else if (rec.main_format == erwt3d::MainFormat::RZFP) {
@@ -266,7 +368,7 @@ int main(int argc, char* argv[]) {
         cfg.physical_order = erwt3d::PhysicalOrder::ZYX;
 
         erwt3d::RzfpWriterStats stats{};
-        if (!erwt3d::writeRzfpFile(inputPath, outputPath, cfg, &stats)) {
+        if (!erwt3d::writeRzfpFile(inputPath, legacyPath, cfg, &stats)) {
             std::cerr << "Error: RZFP conversion failed\n";
             return 1;
         }
@@ -279,13 +381,56 @@ int main(int argc, char* argv[]) {
                       << stats.max_relative_error << "\n"
                       << "  violations=" << stats.violation_count << "\n"
                       << "output removed\n";
-            std::filesystem::remove(outputPath);
+            removeIfPresent(legacyPath);
+            return 1;
+        }
+
+        erwt3d::RzfpAxisLeafRepackStats repackStats;
+        std::cout << "Repacking RZFP into X/Y/Z axis-leaf layout...\n";
+        if (!erwt3d::repackRzfpAxisLeaves(
+                legacyPath, workPath, resolvedMemory.mib, &repackStats)) {
+            std::cerr << "Error: RZFP axis-leaf repack failed\n";
+            removeIfPresent(legacyPath);
+            removeIfPresent(workPath);
+            removeAuxiliaryFiles(workPath);
+            return 1;
+        }
+        removeIfPresent(legacyPath);
+
+        std::vector<erwt3d::EmbeddedSectionInput> sections = {
+            {erwt3d::EmbeddedSectionType::RzfpAxisLeafX,
+             erwt3d::rzfpAxisLeafPath(workPath, erwt3d::PlaneAxis::X)},
+            {erwt3d::EmbeddedSectionType::RzfpAxisLeafY,
+             erwt3d::rzfpAxisLeafPath(workPath, erwt3d::PlaneAxis::Y)},
+            {erwt3d::EmbeddedSectionType::RzfpAxisLeafZ,
+             erwt3d::rzfpAxisLeafPath(workPath, erwt3d::PlaneAxis::Z)},
+        };
+        erwt3d::EmbeddedPackageStats packageStats;
+        if (!erwt3d::embedSectionsInPlace(
+                workPath, sections, true, &packageStats)) {
+            std::cerr << "Error: cannot create single-file RZFP package\n";
+            removeIfPresent(workPath);
+            removeAuxiliaryFiles(workPath);
+            return 1;
+        }
+        const uint64_t outBytes = fileSizeOrZero(workPath);
+        const double storageRatio =
+            rawSize > 0 ? static_cast<double>(outBytes) / rawSize : 0.0;
+        if (outBytes == 0 || storageRatio > StorageBudget) {
+            std::cerr << "Error: final RZFP package exceeds storage budget: "
+                      << storageRatio << "x\n";
+            removeIfPresent(workPath);
+            return 1;
+        }
+        if (!installPackage(workPath, outputPath)) {
+            removeIfPresent(workPath);
             return 1;
         }
 
         std::cout << "RZFP conversion complete: " << outputPath << "\n"
                   << "  Storage ratio: " << std::fixed << std::setprecision(3)
-                  << stats.storage_ratio << "x\n"
+                  << storageRatio << "x\n"
+                  << "  Embedded axes: XYZ\n"
                   << "  Max relative error: " << std::setprecision(10)
                   << stats.max_relative_error << "\n"
                   << "  Violations: " << stats.violation_count << "\n";

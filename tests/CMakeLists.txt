@@ -79,6 +79,9 @@ target_link_libraries(test_rzfp_line_reader PRIVATE erwt3d)
 add_executable(test_embedded_xp test_embedded_xp.cpp)
 target_link_libraries(test_embedded_xp PRIVATE erwt3d)
 
+add_executable(test_embedded_sections test_embedded_sections.cpp)
+target_link_libraries(test_embedded_sections PRIVATE erwt3d)
+
 add_executable(test_contest_output_rzfp test_contest_output_rzfp.cpp)
 target_link_libraries(test_contest_output_rzfp PRIVATE erwt3d)
 
@@ -137,6 +140,7 @@ add_test(NAME large_positional_io COMMAND test_large_positional_io)
 add_test(NAME rzfp_to_raw COMMAND test_rzfp_to_raw)
 add_test(NAME rzfp_line_reader COMMAND test_rzfp_line_reader)
 add_test(NAME embedded_xp COMMAND test_embedded_xp)
+add_test(NAME embedded_sections COMMAND test_embedded_sections)
 add_test(NAME contest_output_rzfp COMMAND test_contest_output_rzfp)
 add_test(NAME test_rzfp_yz_plane COMMAND test_rzfp_yz_plane)
 add_test(NAME test_rzfp_axis_leaf COMMAND test_rzfp_axis_leaf)

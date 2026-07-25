@@ -2,6 +2,7 @@
 #include "erwt3d/morton.hpp"
 #include "erwt3d/raw_layout.hpp"
 #include "erwt3d/raw_x_aux.hpp"
+#include "erwt3d/embedded_sections.hpp"
 #include "erwt3d/thread_pool.hpp"
 #include "erwt3d/sb_task.hpp"
 #include "erwt3d/ssd/ssd_executor.hpp"
@@ -1015,18 +1016,56 @@ bool ERWT3DReader::tryReadBatchXPSidecar_(const std::vector<SliceBatchRequest>& 
 }
 
 void ERWT3DReader::openAxisPlaneSidecars_() {
+    std::vector<EmbeddedSectionInfo> embeddedSections;
+    if (hasEmbeddedSections(header_)) {
+        struct stat st{};
+        if (fstat(fd_, &st) != 0 || st.st_size < 0 ||
+            !readEmbeddedSectionDirectory(
+                fd_,
+                getEmbeddedSectionDirectoryOffset(header_),
+                getEmbeddedSectionDirectoryBytes(header_),
+                static_cast<uint64_t>(st.st_size),
+                embeddedSections)) {
+            return;
+        }
+    }
+
     for (int ai = 0; ai < 3; ++ai) {
         PlaneAxis axis = static_cast<PlaneAxis>(ai);
-        const std::string sp = axisPlaneSidecarPath(path_, axis);
-        int fd = open(sp.c_str(), O_RDONLY);
-        if (fd < 0) continue;
+        const auto embeddedType = static_cast<EmbeddedSectionType>(
+            static_cast<uint32_t>(EmbeddedSectionType::Lz4AxisPlaneX) +
+            static_cast<uint32_t>(ai));
+        const EmbeddedSectionInfo* embedded =
+            findEmbeddedSection(embeddedSections, embeddedType);
+
+        int fd = -1;
+        uint64_t baseOffset = 0;
+        uint64_t sectionBytes = 0;
+        bool ownsFd = false;
+        if (embedded) {
+            fd = fd_;
+            baseOffset = embedded->offset;
+            sectionBytes = embedded->bytes;
+        } else {
+            const std::string sp = axisPlaneSidecarPath(path_, axis);
+            fd = open(sp.c_str(), O_RDONLY | O_CLOEXEC);
+            if (fd < 0) continue;
+            ownsFd = true;
+            struct stat st{};
+            if (fstat(fd, &st) != 0 || st.st_size <= 0) {
+                close(fd);
+                continue;
+            }
+            sectionBytes = static_cast<uint64_t>(st.st_size);
+        }
 
         AxisPlaneHeader hdr{};
-        if (!readFullyAt(fd, &hdr, sizeof(hdr), 0) ||
+        if (sectionBytes < sizeof(hdr) ||
+            !readFullyAt(fd, &hdr, sizeof(hdr), baseOffset) ||
             !validateAxisPlaneHeader(hdr, header_.nx, header_.ny, header_.nz) ||
             hdr.axis != static_cast<uint8_t>(axis) ||
             hdr.compression != AXISPLANE_COMPRESSION_LZ4) {
-            close(fd);
+            if (ownsFd) close(fd);
             continue;
         }
 
@@ -1035,13 +1074,13 @@ void ERWT3DReader::openAxisPlaneSidecars_() {
             hdr.chunks_per_plane == 0 ? 1 : hdr.chunks_per_plane;
         if (planeCount == 0 ||
             planeCount > UINT64_MAX / chunksPerPlane) {
-            close(fd);
+            if (ownsFd) close(fd);
             continue;
         }
         const uint64_t expectedChunks = planeCount * chunksPerPlane;
         if ((hdr.total_chunks != 0 && hdr.total_chunks != expectedChunks) ||
             expectedChunks > SIZE_MAX / sizeof(AxisPlaneIndexEntry)) {
-            close(fd);
+            if (ownsFd) close(fd);
             continue;
         }
 
@@ -1050,8 +1089,26 @@ void ERWT3DReader::openAxisPlaneSidecars_() {
             sizeof(AxisPlaneIndexEntry);
         std::vector<AxisPlaneIndexEntry> idx(
             static_cast<size_t>(expectedChunks));
-        if (!readFullyAt(fd, idx.data(), indexBytes, hdr.index_offset)) {
-            close(fd);
+        if (hdr.index_offset > sectionBytes ||
+            indexBytes > sectionBytes - hdr.index_offset ||
+            !readFullyAt(fd, idx.data(), indexBytes,
+                         baseOffset + hdr.index_offset)) {
+            if (ownsFd) close(fd);
+            continue;
+        }
+
+        bool indexOk = true;
+        for (auto& entry : idx) {
+            if (entry.offset > sectionBytes ||
+                entry.compressed_size > sectionBytes - entry.offset ||
+                entry.offset > UINT64_MAX - baseOffset) {
+                indexOk = false;
+                break;
+            }
+            entry.offset += baseOffset;
+        }
+        if (!indexOk) {
+            if (ownsFd) close(fd);
             continue;
         }
 
@@ -1060,6 +1117,8 @@ void ERWT3DReader::openAxisPlaneSidecars_() {
         apHeader_[ai] = hdr;
         apIndex_[ai] = std::move(idx);
         apFd_[ai] = fd;
+        apBaseOffset_[ai] = baseOffset;
+        apSectionBytes_[ai] = sectionBytes;
         apAvailable_[ai] = true;
     }
 }

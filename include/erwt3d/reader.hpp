@@ -131,6 +131,8 @@ private:
     
     // Generic axis-plane sidecars (Y, Z) — LZ4 compressed, v2 header
     std::array<int, 3> apFd_{-1, -1, -1};
+    std::array<uint64_t, 3> apBaseOffset_{0, 0, 0};
+    std::array<uint64_t, 3> apSectionBytes_{0, 0, 0};
     std::array<bool, 3> apAvailable_{false, false, false};
     std::array<AxisPlaneHeader, 3> apHeader_{};
     std::array<std::vector<AxisPlaneIndexEntry>, 3> apIndex_;

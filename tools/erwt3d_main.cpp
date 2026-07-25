@@ -28,7 +28,9 @@ static std::string trim(const std::string& s) {
 static std::string resolveBinary(const std::string& cmd) {
     if (cmd.find("erwt3d_") == 0 || cmd.find('/') != std::string::npos)
         return cmd;
-    if (cmd == "bench-contest" || cmd == "bench_contest" || cmd == "contest")
+    if (cmd == "contest")
+        return "erwt3d_contest";
+    if (cmd == "bench-contest" || cmd == "bench_contest")
         return "erwt3d_bench_contest";
     if (cmd == "bench-line" || cmd == "bench_line")
         return "erwt3d_bench_line";
@@ -51,7 +53,7 @@ static bool isKnownCommand(const std::string& s) {
         // also accept prefixed names
         "erwt3d_convert", "erwt3d_verify", "erwt3d_slice",
         "erwt3d_line", "erwt3d_info", "erwt3d_bench",
-        "erwt3d_bench_contest", "erwt3d_precompute_x",
+        "erwt3d_bench_contest", "erwt3d_contest", "erwt3d_precompute_x",
         "erwt3d_bench_line",
     };
     return cmds.find(s) != cmds.end();
@@ -298,7 +300,8 @@ static void printUsage(const char* prog) {
               << "    key = value\n\n"
               << "  command key=value key=value\n\n"
               << "Commands:\n"
-              << "  convert       Raw ↔ ERWT3D conversion\n"
+              << "  convert       Raw ↔ single-file optimized package\n"
+              << "  contest       Unified 330-slice production entry\n"
               << "  verify        Correctness verification\n"
               << "  slice         Single slice read\n"
               << "  line          Single line read\n"

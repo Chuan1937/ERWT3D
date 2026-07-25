@@ -299,6 +299,8 @@ private:
 
     bool axis_leaf_available_ = false;
     std::array<int, 3> axis_leaf_fd_{-1, -1, -1};
+    std::array<uint64_t, 3> axis_leaf_base_offset_{0, 0, 0};
+    std::array<uint64_t, 3> axis_leaf_section_bytes_{0, 0, 0};
     std::array<RzfpAxisLeafHeader, 3> axis_leaf_headers_{};
     std::array<std::vector<RzfpAxisLeafSlabIndex>, 3>
         axis_leaf_indexes_;

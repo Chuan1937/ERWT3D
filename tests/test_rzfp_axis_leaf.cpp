@@ -1,6 +1,7 @@
 #include "erwt3d/rzfp_axis_leaf.hpp"
 #include "erwt3d/rzfp_reader.hpp"
 #include "erwt3d/rzfp_writer.hpp"
+#include "erwt3d/embedded_sections.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -138,6 +139,28 @@ int main() {
         repackStats.storage_ratio > 0.0 &&
             repackStats.storage_ratio < 20.0,
         "axis-leaf storage accounting");
+    check(
+        erwt3d::embedSectionsInPlace(
+            axis,
+            {
+                {
+                    erwt3d::EmbeddedSectionType::RzfpAxisLeafX,
+                    erwt3d::rzfpAxisLeafPath(
+                        axis, erwt3d::PlaneAxis::X),
+                },
+                {
+                    erwt3d::EmbeddedSectionType::RzfpAxisLeafY,
+                    erwt3d::rzfpAxisLeafPath(
+                        axis, erwt3d::PlaneAxis::Y),
+                },
+                {
+                    erwt3d::EmbeddedSectionType::RzfpAxisLeafZ,
+                    erwt3d::rzfpAxisLeafPath(
+                        axis, erwt3d::PlaneAxis::Z),
+                },
+            },
+            true),
+        "embed axis-leaf replicas");
 
     erwt3d::RzfpReader legacyReader(legacy);
     erwt3d::RzfpReader axisReader(axis);
@@ -193,17 +216,12 @@ int main() {
         "axis strategy selected");
     check(profile.pread_calls == 1, "same-slab one pread");
 
-    const std::string missing =
-        erwt3d::rzfpAxisLeafPath(
-            axis,
-            erwt3d::PlaneAxis::Z);
-    const std::string hidden = missing + ".hidden";
     check(
-        rename(missing.c_str(), hidden.c_str()) == 0,
-        "hide sidecar");
-    erwt3d::RzfpReader corruptReader(axis);
-    check(!corruptReader.ok(), "missing sidecar rejected");
-    rename(hidden.c_str(), missing.c_str());
+        access(
+            erwt3d::rzfpAxisLeafPath(
+                axis, erwt3d::PlaneAxis::X).c_str(),
+            F_OK) != 0,
+        "external replicas removed");
 
     unlink(raw.c_str());
     unlink(legacy.c_str());

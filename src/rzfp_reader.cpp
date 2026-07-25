@@ -9,6 +9,7 @@
 #include "erwt3d/raw_x_aux.hpp"
 #include "erwt3d/ssd/ssd_extent_planner.hpp"
 #include "erwt3d/ssd/ssd_config.hpp"
+#include "erwt3d/embedded_sections.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -1418,14 +1419,16 @@ bool RzfpReader::dropPayloadCache() {
         bool ok = true;
         for (int axis = 0; axis < 3; ++axis) {
             const auto& header = axis_leaf_headers_[axis];
-            struct stat st{};
             if (axis_leaf_fd_[axis] < 0 ||
-                fstat(axis_leaf_fd_[axis], &st) != 0 ||
+                header.payload_offset >
+                    axis_leaf_section_bytes_[axis] ||
                 posix_fadvise(
                     axis_leaf_fd_[axis],
-                    static_cast<off_t>(header.payload_offset),
                     static_cast<off_t>(
-                        static_cast<uint64_t>(st.st_size) -
+                        axis_leaf_base_offset_[axis] +
+                        header.payload_offset),
+                    static_cast<off_t>(
+                        axis_leaf_section_bytes_[axis] -
                         header.payload_offset),
                     POSIX_FADV_DONTNEED) != 0) {
                 ok = false;
@@ -1500,33 +1503,79 @@ bool RzfpReader::openAxisLeafReplicas_() {
         return false;
     }
 
+    std::vector<EmbeddedSectionInfo> embeddedSections;
+    if (hasEmbeddedSections(header_) &&
+        !readEmbeddedSectionDirectory(
+            fd_,
+            getEmbeddedSectionDirectoryOffset(header_),
+            getEmbeddedSectionDirectoryBytes(header_),
+            file_size_,
+            embeddedSections)) {
+        return false;
+    }
+
+    const auto closeOpened = [this](int count) {
+        for (int closeIndex = 0;
+             closeIndex < count;
+             ++closeIndex) {
+            if (axis_leaf_fd_[closeIndex] >= 0 &&
+                axis_leaf_fd_[closeIndex] != fd_) {
+                close(axis_leaf_fd_[closeIndex]);
+            }
+            axis_leaf_fd_[closeIndex] = -1;
+        }
+    };
+
     for (int ai = 0; ai < 3; ++ai) {
         const PlaneAxis axis =
             static_cast<PlaneAxis>(ai);
-        const std::string sidecarPath =
-            rzfpAxisLeafPath(path_, axis);
-        const int fd = open(
-            sidecarPath.c_str(),
-            O_RDONLY | O_CLOEXEC);
-        if (fd < 0) {
-            for (int closeIndex = 0;
-                 closeIndex < ai;
-                 ++closeIndex) {
-                close(axis_leaf_fd_[closeIndex]);
-                axis_leaf_fd_[closeIndex] = -1;
+        const auto embeddedType = static_cast<EmbeddedSectionType>(
+            static_cast<uint32_t>(
+                EmbeddedSectionType::RzfpAxisLeafX) +
+            static_cast<uint32_t>(ai));
+        const EmbeddedSectionInfo* embedded =
+            findEmbeddedSection(
+                embeddedSections,
+                embeddedType);
+
+        int fd = -1;
+        uint64_t baseOffset = 0;
+        uint64_t sectionBytes = 0;
+        bool ownsFd = false;
+        if (embedded) {
+            fd = fd_;
+            baseOffset = embedded->offset;
+            sectionBytes = embedded->bytes;
+        } else {
+            const std::string sidecarPath =
+                rzfpAxisLeafPath(path_, axis);
+            fd = open(
+                sidecarPath.c_str(),
+                O_RDONLY | O_CLOEXEC);
+            if (fd < 0) {
+                closeOpened(ai);
+                return false;
             }
-            return false;
+            ownsFd = true;
+            struct stat st{};
+            if (fstat(fd, &st) != 0 ||
+                st.st_size <= 0) {
+                close(fd);
+                closeOpened(ai);
+                return false;
+            }
+            sectionBytes =
+                static_cast<uint64_t>(st.st_size);
         }
 
         RzfpAxisLeafHeader sidecar{};
-        struct stat st{};
         bool ok =
-            fstat(fd, &st) == 0 &&
+            sectionBytes >= sizeof(sidecar) &&
             readFullyAt(
                 fd,
                 &sidecar,
                 sizeof(sidecar),
-                0) &&
+                baseOffset) &&
             validateRzfpAxisLeafHeader(
                 sidecar,
                 header_,
@@ -1538,11 +1587,11 @@ bool RzfpReader::openAxisLeafReplicas_() {
                 sizeof(RzfpAxisLeafSlabIndex);
             ok =
                 sidecar.payload_offset <=
-                    static_cast<uint64_t>(st.st_size) &&
+                    sectionBytes &&
                 sidecar.index_offset <=
-                    static_cast<uint64_t>(st.st_size) &&
+                    sectionBytes &&
                 indexBytes <=
-                    static_cast<uint64_t>(st.st_size) -
+                    sectionBytes -
                     sidecar.index_offset;
         }
 
@@ -1556,7 +1605,7 @@ bool RzfpReader::openAxisLeafReplicas_() {
                 indexes.data(),
                 indexes.size() *
                     sizeof(RzfpAxisLeafSlabIndex),
-                sidecar.index_offset);
+                baseOffset + sidecar.index_offset);
         }
         if (ok) {
             uint64_t previousEnd =
@@ -1564,9 +1613,9 @@ bool RzfpReader::openAxisLeafReplicas_() {
             for (const auto& index : indexes) {
                 if (index.offset != previousEnd ||
                     index.offset >
-                        static_cast<uint64_t>(st.st_size) ||
+                        sectionBytes ||
                     index.bytes >
-                        static_cast<uint64_t>(st.st_size) -
+                        sectionBytes -
                         index.offset) {
                     ok = false;
                     break;
@@ -1575,23 +1624,32 @@ bool RzfpReader::openAxisLeafReplicas_() {
                     index.offset + index.bytes;
             }
             if (previousEnd !=
-                static_cast<uint64_t>(st.st_size)) {
+                sectionBytes) {
                 ok = false;
             }
         }
 
-        if (!ok) {
-            close(fd);
-            for (int closeIndex = 0;
-                 closeIndex < ai;
-                 ++closeIndex) {
-                close(axis_leaf_fd_[closeIndex]);
-                axis_leaf_fd_[closeIndex] = -1;
+        if (ok) {
+            for (auto& index : indexes) {
+                if (index.offset >
+                    UINT64_MAX - baseOffset) {
+                    ok = false;
+                    break;
+                }
+                index.offset += baseOffset;
             }
+        }
+
+        if (!ok) {
+            if (ownsFd) close(fd);
+            closeOpened(ai);
             return false;
         }
 
         axis_leaf_fd_[ai] = fd;
+        axis_leaf_base_offset_[ai] = baseOffset;
+        axis_leaf_section_bytes_[ai] =
+            sectionBytes;
         axis_leaf_headers_[ai] = sidecar;
         axis_leaf_indexes_[ai] =
             std::move(indexes);

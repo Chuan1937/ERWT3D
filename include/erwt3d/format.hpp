@@ -22,6 +22,9 @@ constexpr uint64_t FLAG_PHYSICAL_ORDER_YZX = 1ULL << 6;
 constexpr uint64_t FLAG_HAS_RAW_X_AUX = 1ULL << 7;
 constexpr uint64_t FLAG_HAS_XP_EMBEDDED = 1ULL << 8;
 constexpr uint64_t FLAG_HAS_RZFP_AXIS_LEAF = 1ULL << 9;
+// The optimized auxiliary files are appended to the primary file and described
+// by an EmbeddedSectionDirectory at the end of the package.
+constexpr uint64_t FLAG_HAS_EMBEDDED_SECTIONS = 1ULL << 10;
 
 constexpr uint32_t RAW_X_AUX_VERSION = 1;
 
@@ -99,6 +102,19 @@ inline uint64_t getLeafBytes(const ERWT3DHeader& header) {
 
 inline uint64_t getRawSize(const ERWT3DHeader& header) {
     return header.nx * header.ny * header.nz * sizeof(float);
+}
+
+inline bool hasEmbeddedSections(const ERWT3DHeader& h) {
+    return (h.flags & FLAG_HAS_EMBEDDED_SECTIONS) != 0;
+}
+inline uint64_t getEmbeddedSectionDirectoryOffset(const ERWT3DHeader& h) {
+    return h.reserved[11];
+}
+inline uint64_t getEmbeddedSectionDirectoryBytes(const ERWT3DHeader& h) {
+    return h.reserved[12];
+}
+inline uint64_t getEmbeddedPackageBytes(const ERWT3DHeader& h) {
+    return h.reserved[13];
 }
 
 inline uint64_t getSuperGridX(const ERWT3DHeader& header) {

@@ -208,6 +208,7 @@ int main(int argc, char* argv[]) {
     std::string outputDir;
     std::string positionsFile;
     int threads = 8;
+    bool threadsExplicit = false;
     uint64_t seed = 20260511;
     std::string memoryLimit = "auto";
     uint64_t readWindowMb = 0;
@@ -228,7 +229,9 @@ int main(int argc, char* argv[]) {
         } else if (std::strcmp(argv[i], "--positions-file") == 0) {
             const char* v = next(); if (!v) return 1; positionsFile = v;
         } else if (std::strcmp(argv[i], "--threads") == 0) {
-            const char* v = next(); if (!v) return 1; threads = std::stoi(v);
+            const char* v = next(); if (!v) return 1;
+            threads = std::stoi(v);
+            threadsExplicit = true;
         } else if (std::strcmp(argv[i], "--seed") == 0) {
             const char* v = next(); if (!v) return 1; seed = std::stoull(v);
         } else if (std::strcmp(argv[i], "--memory-limit-mb") == 0) {
@@ -245,10 +248,10 @@ int main(int argc, char* argv[]) {
                 << "  --output-dir DIR       Output directory (required)\n"
                 << "  --positions-file PATH  CSV/TXT coordinate file (official mode)\n"
                 << "  --seed N               Random seed for test mode (default: 20260511)\n"
-                << "  --threads N            Thread count (default: 8)\n"
+                << "  --threads N            Thread count (default: auto; 8 normally, 6 for large RZFP on non-WSL)\n"
                 << "  --memory-limit-mb auto|N    Memory limit MB (default: auto=70% MemAvailable)\n"
                 << "  --read-window-mb N          Max read window MB (0=auto, max 128, default: 0)\n"
-                << "  --io-profile auto|hdd|ssd|wsl-ssd   IO profile (default: auto=HDD)\n\n"
+                << "  --io-profile auto|hdd|ssd|wsl-ssd   IO profile (default: format/device aware)\n\n"
                 << "Official mode (--positions-file):\n"
                 << "  X/Y/Z random: 100 each, no duplicates\n"
                 << "  X/Y/Z continuous: 10 each, strictly consecutive\n\n"
@@ -290,6 +293,7 @@ int main(int argc, char* argv[]) {
 
     uint64_t nx = 0, ny = 0, nz = 0;
     double storageRatio = 0.0;
+    bool rzfpAxisLeaf = false;
 
     if (fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D) {
         erwt3d::ERWT3DReader reader(inputPath);
@@ -310,6 +314,7 @@ int main(int argc, char* argv[]) {
         }
         const auto& header = reader.header();
         nx = header.nx; ny = header.ny; nz = header.nz;
+        rzfpAxisLeaf = erwt3d::hasRzfpAxisLeaf(header);
         struct stat st{};
         uint64_t fileBytes = 0;
         if (stat(inputPath.c_str(), &st) == 0) fileBytes = st.st_size;
@@ -353,7 +358,6 @@ int main(int argc, char* argv[]) {
               << "  File:          " << inputPath << "\n"
               << "  Dims:          " << nx << " x " << ny << " x " << nz << "\n"
               << "  Format:        " << fmtName << "\n"
-              << "  Threads:       " << threads << "\n"
               << "  Storage ratio: " << std::fixed << std::setprecision(3) << storageRatio << "x\n"
               << "============================================================\n\n";
 
@@ -389,6 +393,23 @@ int main(int argc, char* argv[]) {
                 ? "auto-lz4-on-hdd-large-window"
                 : "auto-rzfp-hdd-large-window-cache";
         }
+    }
+
+    constexpr uint64_t kLargeRzfpThreshold =
+        32ULL * 1024 * 1024 * 1024;
+    const uint64_t rawDataBytes =
+        nx * ny * nz * sizeof(float);
+    if (!threadsExplicit &&
+        fmt == erwt3d::OptimizedFileFormat::RZFP &&
+        rzfpAxisLeaf &&
+        rawDataBytes >= kLargeRzfpThreshold &&
+        !unifiedCfg.wsl_detected) {
+        threads = 6;
+        std::cout << "Auto threads: 6 (large RZFP axis-leaf on non-WSL)\n";
+    } else {
+        std::cout << "Threads: " << threads
+                  << (threadsExplicit ? " (user)" : " (auto)")
+                  << "\n";
     }
 
     std::cout << "IO profile: " << ioProfileStr
@@ -494,8 +515,7 @@ int main(int argc, char* argv[]) {
         // Format-aware cap: large RZFP benefits from bounded threads/working-set.
         // 16 threads → SMT contention; >4GB inflates batch planning without gain.
         const uint64_t rawBytes = rzfpHeader.nx * rzfpHeader.ny * rzfpHeader.nz * sizeof(float);
-        constexpr uint64_t kLargeThreshold = 32ULL * 1024 * 1024 * 1024;
-        if (rawBytes >= kLargeThreshold) {
+        if (rawBytes >= kLargeRzfpThreshold) {
             const int cappedT = std::min(threads, 8);
             const uint64_t cappedM = std::min<uint64_t>(actualMemoryLimitMib, 4096);
             if (cappedT != threads || cappedM != actualMemoryLimitMib) {
