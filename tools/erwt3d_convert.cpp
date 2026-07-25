@@ -64,6 +64,15 @@ bool installPackage(const std::string& workPath, const std::string& outputPath) 
     return true;
 }
 
+bool hasCanonicalPackageExtension(const std::string& path) {
+    static const std::string extension = ".erwt3d";
+    return path.size() >= extension.size() &&
+           path.compare(
+               path.size() - extension.size(),
+               extension.size(),
+               extension) == 0;
+}
+
 }
 
 int main(int argc, char* argv[]) {
@@ -111,6 +120,8 @@ int main(int argc, char* argv[]) {
                 << "  --threads N           Thread count (default: 8)\n"
                 << "  --memory-limit-mb auto|N  Memory limit in MiB (default: auto)\n"
                 << "  --to-raw              Convert ERWT3D/RZFP back to raw float32\n\n"
+                << "New optimized files must use the canonical .erwt3d extension.\n"
+                << "The internal LZ4/RZFP format is selected automatically and stored in the header.\n\n"
                 << "Auto-selected candidates:\n"
                 << "  A) LZ4 + embedded Y/Z whole-plane sections\n"
                 << "  B) RZFP + embedded X/Y/Z axis-leaf sections\n\n"
@@ -132,6 +143,14 @@ int main(int argc, char* argv[]) {
 
     if (erwt3d::pathsReferToSameFile(inputPath, outputPath)) {
         std::cerr << "Error: input and output refer to the same file\n";
+        return 1;
+    }
+
+    if (!toRaw && !hasCanonicalPackageExtension(outputPath)) {
+        std::cerr
+            << "Error: unified optimized output must end with .erwt3d\n"
+            << "  requested: " << outputPath << "\n"
+            << "  example:   data.erwt3d\n";
         return 1;
     }
 
