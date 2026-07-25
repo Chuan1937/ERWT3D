@@ -642,6 +642,13 @@ int main(int argc, char* argv[]) {
     const bool conversionSSD =
         conversionDevice.io_profile == erwt3d::IOProfileType::SSD ||
         conversionDevice.io_profile == erwt3d::IOProfileType::WSL_SSD;
+    const bool conversionRotational =
+        erwt3d::detectRotationalFromPath(outputParent.string());
+    // HDD staging is a physical-device optimization, not a codec/read-strategy
+    // choice. In particular, an SSD explicitly using the HDD large-window
+    // read profile must never enter this conversion path.
+    const bool hddStagingEnabled =
+        !conversionSSD && conversionRotational;
     const int resolvedAxisWorkers =
         axisWorkers > 0
             ? axisWorkers
@@ -654,6 +661,10 @@ int main(int argc, char* argv[]) {
         << " -> "
         << erwt3d::ioProfileTypeName(conversionDevice.io_profile)
         << " (" << conversionDevice.resolved_profile_reason << ")"
+        << "\nConversion output rotational: "
+        << (conversionRotational ? "yes" : "no")
+        << "\nHDD RAM staging: "
+        << (hddStagingEnabled ? "eligible" : "disabled")
         << "\nRZFP axis workers: " << resolvedAxisWorkers
         << (axisWorkers > 0 ? " (user)" : " (auto)")
         << "\n";
@@ -783,7 +794,7 @@ int main(int argc, char* argv[]) {
     std::string conversionInputPath = inputPath;
     uint64_t conversionMemoryMiB = resolvedMemory.mib;
     if (rec.main_format == erwt3d::MainFormat::LZ4 &&
-        !conversionSSD &&
+        hddStagingEnabled &&
         stageInputForHdd(
             inputPath,
             rawSize,
@@ -1052,7 +1063,7 @@ int main(int argc, char* argv[]) {
         std::string repackInputPath = legacyPath;
         uint64_t repackMemoryMiB = resolvedMemory.mib;
         const uint64_t legacyBytes = fileSizeOrZero(legacyPath);
-        if (!conversionSSD &&
+        if (hddStagingEnabled &&
             stageInputForHdd(
                 legacyPath,
                 legacyBytes,
