@@ -61,6 +61,9 @@ struct EmbeddedPackageStats {
     uint64_t padding_bytes = 0;
     uint64_t directory_bytes = 0;
     uint64_t package_bytes = 0;
+    uint64_t reflink_bytes = 0;
+    uint64_t kernel_copy_bytes = 0;
+    uint64_t buffered_copy_bytes = 0;
 };
 
 bool readEmbeddedSectionDirectory(
@@ -81,6 +84,14 @@ bool embedSectionsInPlace(
     const std::string& primaryPath,
     const std::vector<EmbeddedSectionInput>& inputs,
     bool removeSources,
+    EmbeddedPackageStats* stats = nullptr);
+
+// Creates destinationPath from sourcePath using a same-filesystem reflink when
+// available, then copy_file_range, then a bounded buffered fallback.  The
+// destination must not already exist.
+bool copyFileEfficient(
+    const std::string& sourcePath,
+    const std::string& destinationPath,
     EmbeddedPackageStats* stats = nullptr);
 
 } // namespace erwt3d

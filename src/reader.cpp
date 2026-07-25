@@ -1043,7 +1043,13 @@ void ERWT3DReader::openAxisPlaneSidecars_() {
         uint64_t sectionBytes = 0;
         bool ownsFd = false;
         if (embedded) {
-            fd = fd_;
+            // Keep a separate open-file description per embedded axis.  The
+            // kernel tracks readahead state on the open-file description, so
+            // sharing fd_ made X/main, Y and Z disturb each other's access
+            // pattern even though their byte ranges do not overlap.
+            fd = open(path_.c_str(), O_RDONLY | O_CLOEXEC);
+            if (fd < 0) continue;
+            ownsFd = true;
             baseOffset = embedded->offset;
             sectionBytes = embedded->bytes;
         } else {

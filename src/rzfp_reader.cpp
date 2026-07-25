@@ -1543,7 +1543,17 @@ bool RzfpReader::openAxisLeafReplicas_() {
         uint64_t sectionBytes = 0;
         bool ownsFd = false;
         if (embedded) {
-            fd = fd_;
+            // Preserve the old multi-file cache/readahead isolation.  Separate
+            // opens of the package share page-cache pages but have independent
+            // open-file-description readahead state for X, Y and Z.
+            fd = open(
+                path_.c_str(),
+                O_RDONLY | O_CLOEXEC);
+            if (fd < 0) {
+                closeOpened(ai);
+                return false;
+            }
+            ownsFd = true;
             baseOffset = embedded->offset;
             sectionBytes = embedded->bytes;
         } else {

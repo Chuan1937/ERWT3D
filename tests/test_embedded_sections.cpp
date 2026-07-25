@@ -92,8 +92,28 @@ int main() {
     check(
         stats.package_bytes == std::filesystem::file_size(package),
         "package size recorded");
+    check(
+        stats.reflink_bytes +
+                stats.kernel_copy_bytes +
+                stats.buffered_copy_bytes ==
+            stats.section_bytes,
+        "all section bytes use a recorded copy path");
 
-    erwt3d::ERWT3DReader reader(package);
+    const std::string copiedPackage =
+        dir + "/copied.erwt3d";
+    erwt3d::EmbeddedPackageStats copyStats;
+    check(
+        erwt3d::copyFileEfficient(
+            package,
+            copiedPackage,
+            &copyStats),
+        "fast-copy completed package");
+    check(
+        copyStats.package_bytes ==
+            std::filesystem::file_size(copiedPackage),
+        "fast-copy size");
+
+    erwt3d::ERWT3DReader reader(copiedPackage);
     check(
         erwt3d::hasEmbeddedSections(reader.getHeader()),
         "embedded flag visible");

@@ -202,6 +202,7 @@ public:
     uint64_t payloadBytes() const { return payload_bytes_; }
     bool hasXPlaneSidecar() const { return has_sidecar_[0]; }
     bool hasAxisSidecar(PlaneAxis axis) const { return has_sidecar_[static_cast<int>(axis)]; }
+    bool hasAxisLeafReplicas() const { return axis_leaf_available_; }
 
     const DeviceProfile& ensureDeviceProfile(
         const DeviceCalibrationConfig& config = {}

@@ -9,6 +9,11 @@
 #include <cstring>
 #include <fcntl.h>
 #include <limits>
+#if defined(__linux__)
+#include <linux/fs.h>
+#include <sys/ioctl.h>
+#include <sys/syscall.h>
+#endif
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -71,6 +76,108 @@ bool validType(uint32_t value) {
         return true;
     }
     return false;
+}
+
+enum class CopyMethod {
+    Reflink,
+    KernelCopy,
+    BufferedCopy,
+};
+
+bool copyFileRangeEfficient(
+    int sourceFd,
+    uint64_t sourceBytes,
+    int destinationFd,
+    uint64_t destinationOffset,
+    std::vector<uint8_t>& buffer,
+    CopyMethod& method)
+{
+    uint64_t destinationEnd = 0;
+    if (!addChecked(
+            destinationOffset,
+            sourceBytes,
+            destinationEnd) ||
+        destinationEnd > static_cast<uint64_t>(
+            std::numeric_limits<off_t>::max()) ||
+        ftruncate(
+            destinationFd,
+            static_cast<off_t>(destinationEnd)) != 0) {
+        return false;
+    }
+
+#if defined(__linux__) && defined(FICLONERANGE)
+    file_clone_range clone{};
+    clone.src_fd = sourceFd;
+    clone.src_offset = 0;
+    clone.src_length = sourceBytes;
+    clone.dest_offset = destinationOffset;
+    if (ioctl(destinationFd, FICLONERANGE, &clone) == 0) {
+        method = CopyMethod::Reflink;
+        return true;
+    }
+#endif
+
+    uint64_t copied = 0;
+#if defined(__linux__) && defined(SYS_copy_file_range)
+    bool kernelCopyAvailable = true;
+    off_t sourceOffset = 0;
+    off_t outputOffset =
+        static_cast<off_t>(destinationOffset);
+    while (copied < sourceBytes && kernelCopyAvailable) {
+        const size_t chunk = static_cast<size_t>(
+            std::min<uint64_t>(
+                sourceBytes - copied,
+                1ULL << 30));
+        const ssize_t n = static_cast<ssize_t>(syscall(
+            SYS_copy_file_range,
+            sourceFd,
+            &sourceOffset,
+            destinationFd,
+            &outputOffset,
+            chunk,
+            0));
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 &&
+            (errno == EXDEV ||
+             errno == EINVAL ||
+             errno == ENOSYS ||
+             errno == EOPNOTSUPP)) {
+            kernelCopyAvailable = false;
+            break;
+        }
+        if (n <= 0) {
+            kernelCopyAvailable = false;
+            break;
+        }
+        copied += static_cast<uint64_t>(n);
+    }
+    if (copied == sourceBytes) {
+        method = CopyMethod::KernelCopy;
+        return true;
+    }
+#endif
+
+    while (copied < sourceBytes) {
+        const size_t chunk = static_cast<size_t>(
+            std::min<uint64_t>(
+                buffer.size(),
+                sourceBytes - copied));
+        if (!readFullyAt(
+                sourceFd,
+                buffer.data(),
+                chunk,
+                copied) ||
+            !writeFullyAt(
+                destinationFd,
+                buffer.data(),
+                chunk,
+                destinationOffset + copied)) {
+            return false;
+        }
+        copied += chunk;
+    }
+    method = CopyMethod::BufferedCopy;
+    return true;
 }
 
 struct PrimaryHeader {
@@ -276,6 +383,9 @@ bool embedSectionsInPlace(
     uint64_t cursor = originalBytes;
     uint64_t paddingBytes = 0;
     uint64_t sectionBytes = 0;
+    uint64_t reflinkBytes = 0;
+    uint64_t kernelCopyBytes = 0;
+    uint64_t bufferedCopyBytes = 0;
     bool ok = true;
 
     for (auto& source : sources) {
@@ -298,16 +408,27 @@ bool embedSectionsInPlace(
             ok = false;
             break;
         }
-        uint64_t copied = 0;
-        while (copied < source.bytes) {
-            const size_t chunk = static_cast<size_t>(
-                std::min<uint64_t>(buffer.size(), source.bytes - copied));
-            if (!readFullyAt(source.fd, buffer.data(), chunk, copied) ||
-                !writeFullyAt(primaryFd, buffer.data(), chunk, cursor + copied)) {
-                ok = false;
-                break;
-            }
-            copied += chunk;
+        CopyMethod copyMethod = CopyMethod::BufferedCopy;
+        if (!copyFileRangeEfficient(
+                source.fd,
+                source.bytes,
+                primaryFd,
+                cursor,
+                buffer,
+                copyMethod)) {
+            ok = false;
+            break;
+        }
+        switch (copyMethod) {
+        case CopyMethod::Reflink:
+            reflinkBytes += source.bytes;
+            break;
+        case CopyMethod::KernelCopy:
+            kernelCopyBytes += source.bytes;
+            break;
+        case CopyMethod::BufferedCopy:
+            bufferedCopyBytes += source.bytes;
+            break;
         }
         if (!ok || !addChecked(cursor, source.bytes, cursor) ||
             !addChecked(sectionBytes, source.bytes, sectionBytes)) {
@@ -374,6 +495,79 @@ bool embedSectionsInPlace(
         stats->padding_bytes = paddingBytes;
         stats->directory_bytes = directoryBytes;
         stats->package_bytes = packageBytes;
+        stats->reflink_bytes = reflinkBytes;
+        stats->kernel_copy_bytes = kernelCopyBytes;
+        stats->buffered_copy_bytes = bufferedCopyBytes;
+    }
+    return true;
+}
+
+bool copyFileEfficient(
+    const std::string& sourcePath,
+    const std::string& destinationPath,
+    EmbeddedPackageStats* stats)
+{
+    if (stats) *stats = {};
+    if (sourcePath.empty() ||
+        destinationPath.empty() ||
+        sourcePath == destinationPath) {
+        return false;
+    }
+
+    const int sourceFd = open(
+        sourcePath.c_str(),
+        O_RDONLY | O_CLOEXEC);
+    if (sourceFd < 0) return false;
+    struct stat sourceStat{};
+    if (fstat(sourceFd, &sourceStat) != 0 ||
+        sourceStat.st_size <= 0) {
+        close(sourceFd);
+        return false;
+    }
+
+    const int destinationFd = open(
+        destinationPath.c_str(),
+        O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC,
+        0644);
+    if (destinationFd < 0) {
+        close(sourceFd);
+        return false;
+    }
+
+    const uint64_t bytes =
+        static_cast<uint64_t>(sourceStat.st_size);
+    std::vector<uint8_t> buffer(16U * 1024U * 1024U);
+    CopyMethod method = CopyMethod::BufferedCopy;
+    const bool ok =
+        copyFileRangeEfficient(
+            sourceFd,
+            bytes,
+            destinationFd,
+            0,
+            buffer,
+            method) &&
+        fsync(destinationFd) == 0;
+    close(destinationFd);
+    close(sourceFd);
+
+    if (!ok) {
+        (void)unlink(destinationPath.c_str());
+        return false;
+    }
+    if (stats) {
+        stats->source_bytes = bytes;
+        stats->package_bytes = bytes;
+        switch (method) {
+        case CopyMethod::Reflink:
+            stats->reflink_bytes = bytes;
+            break;
+        case CopyMethod::KernelCopy:
+            stats->kernel_copy_bytes = bytes;
+            break;
+        case CopyMethod::BufferedCopy:
+            stats->buffered_copy_bytes = bytes;
+            break;
+        }
     }
     return true;
 }

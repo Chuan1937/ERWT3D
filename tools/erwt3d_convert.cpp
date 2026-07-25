@@ -22,7 +22,9 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <fcntl.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 namespace {
 
@@ -71,6 +73,175 @@ bool hasCanonicalPackageExtension(const std::string& path) {
                path.size() - extension.size(),
                extension.size(),
                extension) == 0;
+}
+
+void printPackageCopyStats(const erwt3d::EmbeddedPackageStats& stats) {
+    constexpr uint64_t MiB = 1024ULL * 1024ULL;
+    std::cout
+        << "  Package assembly: reflink="
+        << stats.reflink_bytes / MiB
+        << " MiB, kernel-copy="
+        << stats.kernel_copy_bytes / MiB
+        << " MiB, buffered-copy="
+        << stats.buffered_copy_bytes / MiB
+        << " MiB\n";
+}
+
+template <typename Header>
+bool readHeaderAtStart(const std::string& path, Header& header) {
+    const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    const ssize_t n = pread(fd, &header, sizeof(header), 0);
+    close(fd);
+    return n == static_cast<ssize_t>(sizeof(header));
+}
+
+bool clearExternalXpFlag(const std::string& path) {
+    const int fd = open(path.c_str(), O_RDWR | O_CLOEXEC);
+    if (fd < 0) return false;
+    erwt3d::ERWT3DHeader header{};
+    bool ok =
+        pread(fd, &header, sizeof(header), 0) ==
+            static_cast<ssize_t>(sizeof(header)) &&
+        erwt3d::validateHeader(header);
+    if (ok && erwt3d::hasXPSidecar(header)) {
+        header.flags &= ~erwt3d::FLAG_HAS_XP_SIDECAR;
+        ok = pwrite(fd, &header, sizeof(header), 0) ==
+             static_cast<ssize_t>(sizeof(header));
+    }
+    close(fd);
+    return ok;
+}
+
+bool packageExistingOptimizedFile(
+    const std::string& inputPath,
+    const std::string& outputPath,
+    erwt3d::OptimizedFileFormat format)
+{
+    const std::string workPath = outputPath + ".packing.tmp";
+    removeIfPresent(workPath);
+    removeAuxiliaryFiles(workPath);
+
+    erwt3d::EmbeddedPackageStats primaryCopyStats;
+    if (!erwt3d::copyFileEfficient(
+            inputPath,
+            workPath,
+            &primaryCopyStats)) {
+        std::cerr << "Error: cannot create package working file\n";
+        return false;
+    }
+    std::cout << "Fast packaging existing optimized data...\n";
+    printPackageCopyStats(primaryCopyStats);
+
+    uint64_t rawBytes = 0;
+    bool alreadyEmbedded = false;
+    std::vector<erwt3d::EmbeddedSectionInput> sections;
+
+    if (format == erwt3d::OptimizedFileFormat::LZ4_ERWT3D) {
+        erwt3d::ERWT3DHeader header{};
+        if (!readHeaderAtStart(inputPath, header) ||
+            !erwt3d::validateHeader(header) ||
+            !clearExternalXpFlag(workPath)) {
+            removeIfPresent(workPath);
+            return false;
+        }
+        rawBytes = erwt3d::getRawSize(header);
+        alreadyEmbedded = erwt3d::hasEmbeddedSections(header);
+        if (!alreadyEmbedded) {
+            for (const auto axis : {
+                     erwt3d::PlaneAxis::Y,
+                     erwt3d::PlaneAxis::Z}) {
+                const std::string path =
+                    erwt3d::axisPlaneSidecarPath(inputPath, axis);
+                if (!std::filesystem::is_regular_file(path)) continue;
+                sections.push_back({
+                    axis == erwt3d::PlaneAxis::Y
+                        ? erwt3d::EmbeddedSectionType::Lz4AxisPlaneY
+                        : erwt3d::EmbeddedSectionType::Lz4AxisPlaneZ,
+                    path,
+                });
+            }
+        }
+    } else if (format == erwt3d::OptimizedFileFormat::RZFP) {
+        erwt3d::RzfpFileHeader header{};
+        if (!readHeaderAtStart(inputPath, header) ||
+            !erwt3d::validateRzfpHeader(header)) {
+            removeIfPresent(workPath);
+            return false;
+        }
+        rawBytes = erwt3d::rzfpRawSize(header);
+        alreadyEmbedded = erwt3d::hasEmbeddedSections(header);
+        if (!alreadyEmbedded &&
+            erwt3d::hasRzfpAxisLeaf(header)) {
+            for (const auto axis : {
+                     erwt3d::PlaneAxis::X,
+                     erwt3d::PlaneAxis::Y,
+                     erwt3d::PlaneAxis::Z}) {
+                const std::string path =
+                    erwt3d::rzfpAxisLeafPath(inputPath, axis);
+                if (!std::filesystem::is_regular_file(path)) {
+                    std::cerr
+                        << "Error: missing RZFP axis-leaf file "
+                        << path << "\n";
+                    removeIfPresent(workPath);
+                    return false;
+                }
+                sections.push_back({
+                    static_cast<erwt3d::EmbeddedSectionType>(
+                        static_cast<uint32_t>(
+                            erwt3d::EmbeddedSectionType::RzfpAxisLeafX) +
+                        static_cast<uint32_t>(axis)),
+                    path,
+                });
+            }
+        }
+    } else {
+        removeIfPresent(workPath);
+        return false;
+    }
+
+    if (!alreadyEmbedded && !sections.empty()) {
+        erwt3d::EmbeddedPackageStats packageStats;
+        if (!erwt3d::embedSectionsInPlace(
+                workPath,
+                sections,
+                false,
+                &packageStats)) {
+            std::cerr << "Error: optimized section packaging failed\n";
+            removeIfPresent(workPath);
+            return false;
+        }
+        printPackageCopyStats(packageStats);
+    } else if (!alreadyEmbedded && sections.empty()) {
+        std::cout
+            << "Warning: input has no optimized axis sections; "
+               "the primary file will be preserved as a single-file package\n";
+    }
+
+    const uint64_t packageBytes = fileSizeOrZero(workPath);
+    const double ratio =
+        rawBytes == 0
+            ? 0.0
+            : static_cast<double>(packageBytes) /
+                  static_cast<double>(rawBytes);
+    if (packageBytes == 0 || ratio > StorageBudget) {
+        std::cerr
+            << "Error: packaged file exceeds storage budget: "
+            << ratio << "x\n";
+        removeIfPresent(workPath);
+        return false;
+    }
+    if (!installPackage(workPath, outputPath)) {
+        removeIfPresent(workPath);
+        return false;
+    }
+    std::cout
+        << "Single-file package complete: "
+        << outputPath
+        << "\n  Storage ratio: "
+        << std::fixed << std::setprecision(3)
+        << ratio << "x\n";
+    return true;
 }
 
 }
@@ -122,6 +293,8 @@ int main(int argc, char* argv[]) {
                 << "  --to-raw              Convert ERWT3D/RZFP back to raw float32\n\n"
                 << "New optimized files must use the canonical .erwt3d extension.\n"
                 << "The internal LZ4/RZFP format is selected automatically and stored in the header.\n\n"
+                << "If --input is an existing optimized file, its external axis files are\n"
+                << "packaged directly without recompression or axis repacking.\n\n"
                 << "Auto-selected candidates:\n"
                 << "  A) LZ4 + embedded Y/Z whole-plane sections\n"
                 << "  B) RZFP + embedded X/Y/Z axis-leaf sections\n\n"
@@ -191,6 +364,18 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         std::cout << "Conversion complete: " << outputPath << "\n";
+        return 0;
+    }
+
+    const erwt3d::OptimizedFileFormat existingFormat =
+        erwt3d::detectOptimizedFileFormat(inputPath);
+    if (existingFormat != erwt3d::OptimizedFileFormat::Unknown) {
+        if (!packageExistingOptimizedFile(
+                inputPath,
+                outputPath,
+                existingFormat)) {
+            return 1;
+        }
         return 0;
     }
 
@@ -344,6 +529,9 @@ int main(int argc, char* argv[]) {
             removeAuxiliaryFiles(workPath);
             return 1;
         }
+        if (!sections.empty()) {
+            printPackageCopyStats(packageStats);
+        }
 
         const uint64_t outBytes = fileSizeOrZero(workPath);
         double storageRatio = rawSize > 0 ? static_cast<double>(outBytes) / rawSize : 0.0;
@@ -432,6 +620,7 @@ int main(int argc, char* argv[]) {
             removeAuxiliaryFiles(workPath);
             return 1;
         }
+        printPackageCopyStats(packageStats);
         const uint64_t outBytes = fileSizeOrZero(workPath);
         const double storageRatio =
             rawSize > 0 ? static_cast<double>(outBytes) / rawSize : 0.0;

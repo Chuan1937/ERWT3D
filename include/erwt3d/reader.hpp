@@ -94,6 +94,9 @@ void setProfileIO(bool enable) { profileIO_ = enable; }
     const IOProfile& lastProfile() const { return lastProfile_; }
 
     bool rawXAuxAvailable() const { return rawXAuxAvailable_; }
+    bool hasAxisPlaneSection(PlaneAxis axis) const {
+        return apAvailable_[static_cast<int>(axis)];
+    }
 
 private:
     std::string path_;

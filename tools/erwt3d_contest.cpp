@@ -420,6 +420,20 @@ int main(int argc, char* argv[]) {
 
     if (fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D) {
         auto reader = std::make_shared<erwt3d::ERWT3DReader>(inputPath);
+        std::cout << "Fast-path axes:";
+        bool anyAxis = false;
+        for (const auto axis : {
+                 erwt3d::PlaneAxis::X,
+                 erwt3d::PlaneAxis::Y,
+                 erwt3d::PlaneAxis::Z}) {
+            if (!reader->hasAxisPlaneSection(axis)) continue;
+            std::cout << ' ' << erwt3d::axisLabel(axis);
+            anyAxis = true;
+        }
+        if (!anyAxis) std::cout << " none";
+        std::cout << (erwt3d::hasEmbeddedSections(reader->getHeader())
+                          ? " (embedded)\n"
+                          : " (external/legacy)\n");
 
         size_t memoryLimitMB = actualMemoryLimitMib;
 
@@ -484,6 +498,13 @@ int main(int argc, char* argv[]) {
             std::cerr << "Error: cannot open RZFP file\n";
             return 1;
         }
+        std::cout << "Fast path: "
+                  << (rzfpReader->hasAxisLeafReplicas()
+                          ? "XYZ axis-leaf"
+                          : "legacy RZFP")
+                  << (erwt3d::hasEmbeddedSections(rzfpReader->header())
+                          ? " (embedded)\n"
+                          : " (external/legacy)\n");
 
         const auto& rzfpHeader = rzfpReader->header();
         uint64_t largestOutputBytes = std::max({rzfpHeader.ny * rzfpHeader.nz * sizeof(float),
