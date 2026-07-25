@@ -17,6 +17,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -28,12 +29,14 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 #include <fcntl.h>
 #if defined(__linux__)
 #include <sched.h>
 #endif
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 
 namespace {
@@ -125,6 +128,173 @@ void removeAuxiliaryFiles(const std::string& path) {
     removeIfPresent(erwt3d::rzfpAxisLeafPath(path, erwt3d::PlaneAxis::X));
     removeIfPresent(erwt3d::rzfpAxisLeafPath(path, erwt3d::PlaneAxis::Y));
     removeIfPresent(erwt3d::rzfpAxisLeafPath(path, erwt3d::PlaneAxis::Z));
+}
+
+class TemporaryRawStage {
+public:
+    TemporaryRawStage() = default;
+    ~TemporaryRawStage() {
+        if (!path_.empty()) removeIfPresent(path_);
+    }
+
+    TemporaryRawStage(const TemporaryRawStage&) = delete;
+    TemporaryRawStage& operator=(const TemporaryRawStage&) = delete;
+
+    bool active() const { return !path_.empty(); }
+    const std::string& path() const { return path_; }
+    void setPath(std::string path) { path_ = std::move(path); }
+
+private:
+    std::string path_;
+};
+
+bool writeAllFd(int fd, const char* data, size_t bytes) {
+    size_t done = 0;
+    while (done < bytes) {
+        const ssize_t n = write(fd, data + done, bytes - done);
+        if (n > 0) {
+            done += static_cast<size_t>(n);
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        return false;
+    }
+    return true;
+}
+
+bool stageInputForHdd(
+    const std::string& inputPath,
+    uint64_t inputSize,
+    uint64_t memoryLimitMiB,
+    uint64_t maxStageBytes,
+    uint64_t additionalWorkingMiB,
+    const char* label,
+    TemporaryRawStage& stage)
+{
+#if !defined(__linux__)
+    (void)inputPath;
+    (void)inputSize;
+    (void)memoryLimitMiB;
+    (void)maxStageBytes;
+    (void)additionalWorkingMiB;
+    (void)label;
+    (void)stage;
+    return false;
+#else
+    constexpr uint64_t MiB = 1ULL << 20;
+    constexpr uint64_t MinStageBytes = 1ULL << 30;
+    constexpr uint64_t TmpfsHeadroomBytes = 512ULL << 20;
+
+    if (inputSize < MinStageBytes || inputSize > maxStageBytes) return false;
+
+    const uint64_t inputMiB =
+        inputSize / MiB + (inputSize % MiB != 0 ? 1 : 0);
+    if (inputMiB >
+            std::numeric_limits<uint64_t>::max() - additionalWorkingMiB ||
+        memoryLimitMiB < inputMiB + additionalWorkingMiB) {
+        std::cout
+            << "HDD RAM staging disabled for " << label
+            << ": memory budget needs at least "
+            << (inputMiB + additionalWorkingMiB)
+            << " MiB including conversion working memory\n";
+        return false;
+    }
+
+    struct statvfs fs{};
+    if (statvfs("/dev/shm", &fs) != 0) {
+        std::cout
+            << "HDD RAM staging disabled: cannot inspect /dev/shm: "
+            << std::strerror(errno) << "\n";
+        return false;
+    }
+    const uint64_t fragmentBytes =
+        fs.f_frsize != 0 ? static_cast<uint64_t>(fs.f_frsize)
+                         : static_cast<uint64_t>(fs.f_bsize);
+    const uint64_t availableBytes =
+        fragmentBytes != 0 &&
+                static_cast<uint64_t>(fs.f_bavail) >
+                    std::numeric_limits<uint64_t>::max() / fragmentBytes
+            ? std::numeric_limits<uint64_t>::max()
+            : static_cast<uint64_t>(fs.f_bavail) * fragmentBytes;
+    if (availableBytes < inputSize ||
+        availableBytes - inputSize < TmpfsHeadroomBytes) {
+        std::cout
+            << "HDD RAM staging disabled: /dev/shm has "
+            << availableBytes / MiB
+            << " MiB free; needs "
+            << (inputSize + TmpfsHeadroomBytes) / MiB
+            << " MiB\n";
+        return false;
+    }
+
+    char stageTemplate[] = "/dev/shm/erwt3d-hdd-stage-XXXXXX";
+    const int outputFd = mkstemp(stageTemplate);
+    if (outputFd < 0) {
+        std::cout
+            << "HDD RAM staging disabled: mkstemp failed: "
+            << std::strerror(errno) << "\n";
+        return false;
+    }
+    const int inputFd = open(inputPath.c_str(), O_RDONLY | O_CLOEXEC);
+    if (inputFd < 0) {
+        std::cout
+            << "HDD RAM staging disabled: cannot open raw input: "
+            << std::strerror(errno) << "\n";
+        close(outputFd);
+        removeIfPresent(stageTemplate);
+        return false;
+    }
+
+    posix_fadvise(inputFd, 0, 0, POSIX_FADV_SEQUENTIAL);
+    constexpr size_t CopyBytes = 16ULL << 20;
+    std::vector<char> buffer(CopyBytes);
+    uint64_t copied = 0;
+    bool ok = true;
+    const auto start = Clock::now();
+    while (copied < inputSize) {
+        const size_t request = static_cast<size_t>(
+            std::min<uint64_t>(buffer.size(), inputSize - copied));
+        ssize_t n = read(inputFd, buffer.data(), request);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) {
+            ok = false;
+            break;
+        }
+        if (!writeAllFd(
+                outputFd,
+                buffer.data(),
+                static_cast<size_t>(n))) {
+            ok = false;
+            break;
+        }
+        copied += static_cast<uint64_t>(n);
+    }
+    close(inputFd);
+    if (close(outputFd) != 0) ok = false;
+
+    if (!ok || copied != inputSize) {
+        std::cout
+            << "HDD RAM staging failed after "
+            << copied / MiB
+            << " MiB; falling back to direct HDD reads\n";
+        removeIfPresent(stageTemplate);
+        return false;
+    }
+
+    stage.setPath(stageTemplate);
+    const double seconds = secondsSince(start);
+    std::cout
+        << "HDD RAM staging (" << label << "): copied "
+        << copied / MiB
+        << " MiB once in "
+        << seconds
+        << "s ("
+        << (seconds > 0.0
+                ? static_cast<double>(copied) / MiB / seconds
+                : 0.0)
+        << " MiB/s); subsequent conversion passes use tmpfs\n";
+    return true;
+#endif
 }
 
 bool installPackage(const std::string& workPath, const std::string& outputPath) {
@@ -472,6 +642,13 @@ int main(int argc, char* argv[]) {
     const bool conversionSSD =
         conversionDevice.io_profile == erwt3d::IOProfileType::SSD ||
         conversionDevice.io_profile == erwt3d::IOProfileType::WSL_SSD;
+    const bool conversionRotational =
+        erwt3d::detectRotationalFromPath(outputParent.string());
+    // HDD staging is a physical-device optimization, not a codec/read-strategy
+    // choice. In particular, an SSD explicitly using the HDD large-window
+    // read profile must never enter this conversion path.
+    const bool hddStagingEnabled =
+        !conversionSSD && conversionRotational;
     const int resolvedAxisWorkers =
         axisWorkers > 0
             ? axisWorkers
@@ -484,6 +661,10 @@ int main(int argc, char* argv[]) {
         << " -> "
         << erwt3d::ioProfileTypeName(conversionDevice.io_profile)
         << " (" << conversionDevice.resolved_profile_reason << ")"
+        << "\nConversion output rotational: "
+        << (conversionRotational ? "yes" : "no")
+        << "\nHDD RAM staging: "
+        << (hddStagingEnabled ? "eligible" : "disabled")
         << "\nRZFP axis workers: " << resolvedAxisWorkers
         << (axisWorkers > 0 ? " (user)" : " (auto)")
         << "\n";
@@ -609,13 +790,38 @@ int main(int argc, char* argv[]) {
     removeIfPresent(legacyPath);
     removeAuxiliaryFiles(workPath);
 
+    TemporaryRawStage hddRawStage;
+    std::string conversionInputPath = inputPath;
+    uint64_t conversionMemoryMiB = resolvedMemory.mib;
+    if (rec.main_format == erwt3d::MainFormat::LZ4 &&
+        hddStagingEnabled &&
+        stageInputForHdd(
+            inputPath,
+            rawSize,
+            resolvedMemory.mib,
+            24ULL * GiB,
+            rawSize / (1ULL << 20) +
+                (rawSize % (1ULL << 20) != 0 ? 1 : 0) +
+                2048,
+            "LZ4 raw",
+            hddRawStage)) {
+        conversionInputPath = hddRawStage.path();
+        constexpr uint64_t MiB = 1ULL << 20;
+        const uint64_t stagedMiB =
+            rawSize / MiB + (rawSize % MiB != 0 ? 1 : 0);
+        conversionMemoryMiB =
+            resolvedMemory.mib > stagedMiB
+                ? resolvedMemory.mib - stagedMiB
+                : 1;
+    }
+
     if (rec.main_format == erwt3d::MainFormat::LZ4) {
         const auto mainStart = Clock::now();
         erwt3d::RawXAuxStats auxStats;
         if (!erwt3d::writeERWT3DFromFile(
-                workPath, inputPath, nx, ny, nz,
+                workPath, conversionInputPath, nx, ny, nz,
                 64, 64, 64, 4, 4, 4,
-                threads, resolvedMemory.mib,
+                threads, conversionMemoryMiB,
                 0, 0,
                 true,
                 erwt3d::RawXAuxMode::Off,
@@ -642,11 +848,14 @@ int main(int argc, char* argv[]) {
         constexpr uint64_t MiB = 1ULL << 20;
         const uint64_t rawMiB =
             rawSize / MiB + (rawSize % MiB != 0 ? 1 : 0);
+        const uint64_t parallelPlaneCopies =
+            hddRawStage.active() ? 3 : 2;
         const uint64_t parallelPlaneMemoryMiB =
             rawMiB >
-                    (std::numeric_limits<uint64_t>::max() - 1024) / 2
+                    (std::numeric_limits<uint64_t>::max() - 1024) /
+                        parallelPlaneCopies
                 ? std::numeric_limits<uint64_t>::max()
-                : 2 * rawMiB + 1024;
+                : parallelPlaneCopies * rawMiB + 1024;
         const bool parallelPlaneResources =
             threads >= 2 &&
             resolvedMemory.mib >= parallelPlaneMemoryMiB;
@@ -686,7 +895,7 @@ int main(int argc, char* argv[]) {
                 erwt3d::Lz4AxisPlaneWriterStats axisStats;
                 candidate.written =
                     erwt3d::writeLz4AxisPlaneSidecar(
-                        inputPath,
+                        conversionInputPath,
                         workPath,
                         axis,
                         nx,
@@ -735,7 +944,7 @@ int main(int argc, char* argv[]) {
                 candidates.push_back(buildPlane(
                     axis,
                     threads,
-                    resolvedMemory.mib));
+                    conversionMemoryMiB));
             }
         }
         for (const auto& candidate : candidates) {
@@ -850,13 +1059,37 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
+        TemporaryRawStage rzfpLegacyStage;
+        std::string repackInputPath = legacyPath;
+        uint64_t repackMemoryMiB = resolvedMemory.mib;
+        const uint64_t legacyBytes = fileSizeOrZero(legacyPath);
+        if (hddStagingEnabled &&
+            stageInputForHdd(
+                legacyPath,
+                legacyBytes,
+                resolvedMemory.mib,
+                32ULL * GiB,
+                8192,
+                "RZFP legacy",
+                rzfpLegacyStage)) {
+            repackInputPath = rzfpLegacyStage.path();
+            constexpr uint64_t MiB = 1ULL << 20;
+            const uint64_t stagedMiB =
+                legacyBytes / MiB +
+                (legacyBytes % MiB != 0 ? 1 : 0);
+            repackMemoryMiB =
+                resolvedMemory.mib > stagedMiB
+                    ? resolvedMemory.mib - stagedMiB
+                    : 1;
+        }
+
         erwt3d::RzfpAxisLeafRepackStats repackStats;
         const auto repackStart = Clock::now();
         std::cout << "Repacking RZFP into X/Y/Z axis-leaf layout...\n";
         if (!erwt3d::repackRzfpAxisLeaves(
-                legacyPath,
+                repackInputPath,
                 workPath,
-                resolvedMemory.mib,
+                repackMemoryMiB,
                 &repackStats,
                 resolvedAxisWorkers)) {
             std::cerr << "Error: RZFP axis-leaf repack failed\n";
