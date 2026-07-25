@@ -143,7 +143,8 @@ bool writeLz4YZSidecar(
     uint32_t chunkElements,
     double storageBudget,
     int threads,
-    Lz4AxisPlaneWriterStats* stats
+    Lz4AxisPlaneWriterStats* stats,
+    uint64_t memoryLimitMiB
 ) {
     if (axis != PlaneAxis::Y && axis != PlaneAxis::Z) return false;
     if (nx == 0 || ny == 0 || nz == 0 || storageBudget <= 0.0) return false;
@@ -193,12 +194,52 @@ bool writeLz4YZSidecar(
         return false;
     }
 
-    constexpr uint64_t kMaxInputSlabBytes = 512ULL << 20;
+    constexpr uint64_t MiB = 1ULL << 20;
+    constexpr uint64_t kLegacyInputSlabBytes = 512ULL << 20;
+    constexpr uint64_t kWholePlaneHeadroom = 512ULL << 20;
     constexpr uint64_t kMaxSinglePlaneBytes = 128ULL << 20;
-    const bool singleRecord = (shape.plane_bytes <= kMaxSinglePlaneBytes);
+    const uint64_t memoryBudgetBytes =
+        memoryLimitMiB == 0 ||
+                memoryLimitMiB >
+                    std::numeric_limits<uint64_t>::max() / MiB
+            ? std::numeric_limits<uint64_t>::max()
+            : memoryLimitMiB * MiB;
+    uint64_t wholePlaneBytes = 0;
+    const bool wholePlaneFits =
+        checkedAdd(rawBytes, kWholePlaneHeadroom, wholePlaneBytes) &&
+        memoryBudgetBytes >= wholePlaneBytes;
+    const bool singleRecord =
+        shape.plane_bytes <= kMaxSinglePlaneBytes &&
+        (memoryLimitMiB == 0 || wholePlaneFits);
+
+    uint64_t slabBudgetBytes = kLegacyInputSlabBytes;
+    if (!singleRecord && memoryLimitMiB != 0) {
+        slabBudgetBytes = std::max<uint64_t>(
+            64ULL * MiB,
+            memoryBudgetBytes - memoryBudgetBytes / 4);
+    }
+    uint64_t rowBytes = 0;
+    if (!checkedMul(shape.dim_b, sizeof(float), rowBytes) ||
+        rowBytes == 0) {
+        return false;
+    }
+    const uint64_t maxRowsByCodec =
+        static_cast<uint64_t>(INT_MAX) / rowBytes;
+    if (maxRowsByCodec == 0) return false;
+    const uint64_t requestedRows =
+        singleRecord
+            ? nx
+            : std::max<uint64_t>(
+                  1,
+                  static_cast<uint64_t>(chunkElements) /
+                      shape.dim_b);
 
     const uint64_t slabRows64 = std::max<uint64_t>(1, std::min<uint64_t>(
-        nx, std::max<uint64_t>(1, kMaxInputSlabBytes / inputSlabBytes)));
+        std::min({
+            nx,
+            maxRowsByCodec,
+            requestedRows}),
+        std::max<uint64_t>(1, slabBudgetBytes / inputSlabBytes)));
 
     const uint32_t chunksPerPlane = singleRecord ? 1u :
         static_cast<uint32_t>((nx + slabRows64 - 1) / slabRows64);
@@ -317,8 +358,144 @@ bool writeLz4YZSidecar(
             }
         }
     } else {
-        // 原有的 chunked 路径保留，用于超大 plane
-        return false; // 当前不实现
+        // Memory-bounded mode. Each source X slab is read once, then its Y
+        // or Z fragments are compressed independently. A plane's chunk index
+        // stays in X order, so the reader decodes directly into the output.
+        for (uint32_t chunk = 0;
+             chunk < chunksPerPlane;
+             ++chunk) {
+            const uint64_t x0 =
+                static_cast<uint64_t>(chunk) * slabRows64;
+            const uint64_t rows = std::min(slabRows64, nx - x0);
+            uint64_t slabElements = 0;
+            uint64_t slabBytes = 0;
+            if (!checkedMul(rows, inputSlabElements, slabElements) ||
+                !checkedMul(slabElements, sizeof(float), slabBytes) ||
+                slabElements > std::numeric_limits<size_t>::max() ||
+                slabBytes > std::numeric_limits<size_t>::max()) {
+                return false;
+            }
+            slab.resize(static_cast<size_t>(slabElements));
+            if (!preadAll(
+                    rawFd.get(),
+                    slab.data(),
+                    static_cast<size_t>(slabBytes),
+                    x0 * inputSlabBytes)) {
+                return false;
+            }
+
+            uint64_t chunkElements64 = 0;
+            uint64_t chunkBytes64 = 0;
+            if (!checkedMul(rows, shape.dim_b, chunkElements64) ||
+                !checkedMul(
+                    chunkElements64,
+                    sizeof(float),
+                    chunkBytes64) ||
+                chunkElements64 >
+                    std::numeric_limits<size_t>::max() ||
+                chunkBytes64 >
+                    static_cast<uint64_t>(INT_MAX)) {
+                return false;
+            }
+            const int rawChunkBytes =
+                static_cast<int>(chunkBytes64);
+            const uint64_t inFlight = std::max<uint64_t>(
+                1,
+                static_cast<uint64_t>(workerCount) * 2);
+
+            for (uint64_t firstPlane = 0;
+                 firstPlane < shape.plane_count;
+                 firstPlane += inFlight) {
+                const uint64_t endPlane = std::min(
+                    shape.plane_count,
+                    firstPlane + inFlight);
+                std::vector<std::future<std::vector<uint8_t>>> futures;
+                futures.reserve(
+                    static_cast<size_t>(endPlane - firstPlane));
+                for (uint64_t p = firstPlane;
+                     p < endPlane;
+                     ++p) {
+                    futures.push_back(pool.submit(
+                        [&, p, rows, rawChunkBytes] {
+                            std::vector<float> chunkData(
+                                static_cast<size_t>(
+                                    rows * shape.dim_b));
+                            if (axis == PlaneAxis::Y) {
+                                for (uint64_t lx = 0;
+                                     lx < rows;
+                                     ++lx) {
+                                    const float* src =
+                                        slab.data() +
+                                        (lx * ny + p) * nz;
+                                    std::copy_n(
+                                        src,
+                                        nz,
+                                        chunkData.data() + lx * nz);
+                                }
+                            } else {
+                                for (uint64_t lx = 0;
+                                     lx < rows;
+                                     ++lx) {
+                                    const float* xs =
+                                        slab.data() + lx * ny * nz;
+                                    for (uint64_t y = 0;
+                                         y < ny;
+                                         ++y) {
+                                        chunkData[lx * ny + y] =
+                                            xs[y * nz + p];
+                                    }
+                                }
+                            }
+                            const int bound =
+                                LZ4_compressBound(rawChunkBytes);
+                            std::vector<uint8_t> compressed(
+                                static_cast<size_t>(bound));
+                            const int compressedBytes =
+                                LZ4_compress_default(
+                                    reinterpret_cast<const char*>(
+                                        chunkData.data()),
+                                    reinterpret_cast<char*>(
+                                        compressed.data()),
+                                    rawChunkBytes,
+                                    bound);
+                            if (compressedBytes <= 0) {
+                                return std::vector<uint8_t>{};
+                            }
+                            compressed.resize(
+                                static_cast<size_t>(
+                                    compressedBytes));
+                            return compressed;
+                        }));
+                }
+
+                for (uint64_t p = firstPlane;
+                     p < endPlane;
+                     ++p) {
+                    auto compressed =
+                        futures[static_cast<size_t>(
+                            p - firstPlane)].get();
+                    if (compressed.empty()) return false;
+                    const uint64_t indexId =
+                        p * chunksPerPlane + chunk;
+                    auto& entry =
+                        index[static_cast<size_t>(indexId)];
+                    entry.offset = payloadCursor;
+                    entry.compressed_size =
+                        static_cast<uint32_t>(compressed.size());
+                    entry.raw_size =
+                        static_cast<uint32_t>(rawChunkBytes);
+                    if (!pwriteAll(
+                            outFd.get(),
+                            compressed.data(),
+                            compressed.size(),
+                            payloadCursor)) {
+                        return false;
+                    }
+                    payloadCursor += compressed.size();
+                    payloadBytes += compressed.size();
+                }
+            }
+        }
     }
 
     header.total_storage_bytes = payloadBytes;
@@ -362,7 +539,8 @@ bool writeLz4AxisPlaneSidecar(
     uint32_t chunkElements,
     double storageBudget,
     int threads,
-    Lz4AxisPlaneWriterStats* stats
+    Lz4AxisPlaneWriterStats* stats,
+    uint64_t memoryLimitMiB
 ) {
     if (stats) {
         *stats = Lz4AxisPlaneWriterStats {};
@@ -414,7 +592,8 @@ bool writeLz4AxisPlaneSidecar(
             chunkElements,
             storageBudget,
             threads,
-            stats);
+            stats,
+            memoryLimitMiB);
     } catch (...) {
         if (stats) stats->written = false;
         return false;
@@ -429,6 +608,7 @@ bool writeLz4AxisPlaneSidecar(
     (void)chunkElements;
     (void)storageBudget;
     (void)threads;
+    (void)memoryLimitMiB;
     return false;
 #endif
 }
