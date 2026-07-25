@@ -10,6 +10,9 @@
 #include "erwt3d/file_format_detect.hpp"
 #include "erwt3d/io_profile.hpp"
 #include "erwt3d/unified_read_config.hpp"
+#include "erwt3d/ssd_cold/rzfp_cold_executor.hpp"
+#include "erwt3d/ssd_cold/lz4_cold_executor.hpp"
+#include "erwt3d/ssd_cold/cold_profile.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -214,6 +217,14 @@ int main(int argc, char* argv[]) {
     uint64_t readWindowMb = 0;
     std::string ioProfileStr = "auto";
 
+    std::string ssdColdBackend = "auto";
+    int ssdColdReadThreads = 0;
+    int ssdColdDecodeThreads = 0;
+    int ssdColdQueueDepth = 0;
+    uint64_t ssdColdMaxGapKb = 0;
+    uint64_t ssdColdMaxExtentMb = 0;
+    std::string ssdColdWriteMode = "auto";
+
     for (int i = 1; i < argc; ++i) {
         const auto next = [&]() -> const char* {
             if (i + 1 >= argc) {
@@ -240,6 +251,20 @@ int main(int argc, char* argv[]) {
             const char* v = next(); if (!v) return 1; readWindowMb = std::stoull(v);
         } else if (std::strcmp(argv[i], "--io-profile") == 0) {
             const char* v = next(); if (!v) return 1; ioProfileStr = v;
+        } else if (std::strcmp(argv[i], "--ssd-cold-backend") == 0) {
+            const char* v = next(); if (!v) return 1; ssdColdBackend = v;
+        } else if (std::strcmp(argv[i], "--ssd-cold-read-threads") == 0) {
+            const char* v = next(); if (!v) return 1; ssdColdReadThreads = std::stoi(v);
+        } else if (std::strcmp(argv[i], "--ssd-cold-decode-threads") == 0) {
+            const char* v = next(); if (!v) return 1; ssdColdDecodeThreads = std::stoi(v);
+        } else if (std::strcmp(argv[i], "--ssd-cold-queue-depth") == 0) {
+            const char* v = next(); if (!v) return 1; ssdColdQueueDepth = std::stoi(v);
+        } else if (std::strcmp(argv[i], "--ssd-cold-max-gap-kb") == 0) {
+            const char* v = next(); if (!v) return 1; ssdColdMaxGapKb = std::stoull(v);
+        } else if (std::strcmp(argv[i], "--ssd-cold-max-extent-mb") == 0) {
+            const char* v = next(); if (!v) return 1; ssdColdMaxExtentMb = std::stoull(v);
+        } else if (std::strcmp(argv[i], "--ssd-cold-write-mode") == 0) {
+            const char* v = next(); if (!v) return 1; ssdColdWriteMode = v;
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             std::cerr
                 << "Usage: erwt3d_contest --input DATA.erwt3d --output-dir DIR [options]\n\n"
@@ -251,7 +276,14 @@ int main(int argc, char* argv[]) {
                 << "  --threads N            Thread count (default: auto; 8 normally, 6 for large RZFP on non-WSL)\n"
                 << "  --memory-limit-mb auto|N    Memory limit MB (default: auto=70% MemAvailable)\n"
                 << "  --read-window-mb N          Max read window MB (0=auto, max 128, default: 0)\n"
-                << "  --io-profile auto|hdd|ssd|wsl-ssd   IO profile (default: format/device aware)\n\n"
+                << "  --io-profile auto|hdd|ssd|wsl-ssd   IO profile (default: format/device aware)\n"
+                << "  --ssd-cold-backend auto|pread|io_uring  SSD cold I/O backend\n"
+                << "  --ssd-cold-read-threads N               SSD cold read threads\n"
+                << "  --ssd-cold-decode-threads N             SSD cold decode threads\n"
+                << "  --ssd-cold-queue-depth N                SSD cold I/O queue depth\n"
+                << "  --ssd-cold-max-gap-kb N                 SSD cold max gap KB for extent merging\n"
+                << "  --ssd-cold-max-extent-mb N              SSD cold max extent MB\n"
+                << "  --ssd-cold-write-mode auto|deferred|bounded  Write mode\n\n"
                 << "Official mode (--positions-file):\n"
                 << "  X/Y/Z random: 100 each, no duplicates\n"
                 << "  X/Y/Z continuous: 10 each, strictly consecutive\n\n"
@@ -445,6 +477,10 @@ int main(int argc, char* argv[]) {
     if (unifiedCfg.wsl_detected) std::cout << "WSL detected: yes\n";
     std::cout << "Filesystem: " << unifiedCfg.filesystem_type << "\n\n";
 
+    bool triedColdExecutor = false;
+    bool coldExecutorSuccess = false;
+    std::string coldExecutorError;
+
     if (fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D) {
         auto reader = std::make_shared<erwt3d::ERWT3DReader>(inputPath);
         std::cout << "Fast-path axes:";
@@ -461,6 +497,45 @@ int main(int argc, char* argv[]) {
         std::cout << (erwt3d::hasEmbeddedSections(reader->getHeader())
                           ? " (embedded)\n"
                           : " (external/legacy)\n");
+
+        if (resolvedSSD && lz4AxisPlanes) {
+            triedColdExecutor = true;
+            std::cout << "Trying LZ4 SSD cold executor...\n";
+
+            erwt3d::ssd_cold::Lz4ColdConfig coldCfg;
+            coldCfg.memory_limit_mb = actualMemoryLimitMib;
+            coldCfg.read_threads = ssdColdReadThreads > 0 ? ssdColdReadThreads : std::max(2, threads / 2);
+            coldCfg.decode_threads = ssdColdDecodeThreads > 0 ? ssdColdDecodeThreads : std::max(4, threads - 2);
+            coldCfg.write_threads = 2;
+            coldCfg.max_gap_bytes = ssdColdMaxGapKb > 0 ? ssdColdMaxGapKb << 10 : 64ULL << 10;
+            coldCfg.max_extent_bytes = ssdColdMaxExtentMb > 0 ? ssdColdMaxExtentMb << 20 : 4ULL << 20;
+            coldCfg.write_mode = ssdColdWriteMode;
+            coldCfg.queue_depth = ssdColdQueueDepth > 0 ? ssdColdQueueDepth : 8;
+            if (ssdColdBackend == "io_uring") coldCfg.io_backend = erwt3d::ssd_cold::ColdIOBackend::IOUring;
+            else if (ssdColdBackend == "pread") coldCfg.io_backend = erwt3d::ssd_cold::ColdIOBackend::Pread;
+
+            erwt3d::ssd_cold::ColdProfile coldProf;
+            if (erwt3d::ssd_cold::executeLz4AxisPlaneColdSSD(inputPath, positions, outputDir, coldCfg, &coldProf)) {
+                coldExecutorSuccess = true;
+                std::cout << "LZ4 SSD cold executor completed successfully.\n";
+                const std::string scorePath = outputDir + "/contest_score.csv";
+                erwt3d::ContestUnifiedProfile profile;
+                profile.process_e2e_ms = coldProf.process_e2e_ms;
+                profile.t_composite_ms = coldProf.process_e2e_ms / 6.0;
+                profile.total_write_ms = coldProf.write_time_ms;
+                writeScoreCsv(scorePath, inputPath, fmtName, nx, ny, nz, storageRatio,
+                              threads, resolvedMem.mode, actualMemoryLimitMib,
+                              resolvedReadWindowMib, "cold-lz4+", positions, profile,
+                              ioProfileStr, erwt3d::ioProfileTypeName(unifiedCfg.io_profile),
+                              "lz4-axis-plane-cold", unifiedCfg.filesystem_type,
+                              unifiedCfg.wsl_detected);
+                std::cout << "\nScore written to " << scorePath << "\n";
+                return 0;
+            } else {
+                coldExecutorError = "LZ4 cold executor failed, falling back to standard path";
+                std::cerr << coldExecutorError << "\n";
+            }
+        }
 
         size_t memoryLimitMB = actualMemoryLimitMib;
 
@@ -505,6 +580,47 @@ int main(int argc, char* argv[]) {
         }
 
     } else {
+        // RZFP path: try SSD cold executor first if applicable
+        if (resolvedSSD && rzfpAxisLeaf) {
+            triedColdExecutor = true;
+            std::cout << "Trying RZFP SSD cold executor...\n";
+
+            erwt3d::ssd_cold::RzfpColdConfig coldCfg;
+            coldCfg.memory_limit_mb = actualMemoryLimitMib;
+            coldCfg.read_threads = ssdColdReadThreads > 0 ? ssdColdReadThreads : std::max(2, threads / 2);
+            coldCfg.decode_threads = ssdColdDecodeThreads > 0 ? ssdColdDecodeThreads : std::max(4, threads - 2);
+            coldCfg.write_threads = 2;
+            coldCfg.max_gap_bytes = ssdColdMaxGapKb > 0 ? ssdColdMaxGapKb << 10 : 256ULL << 10;
+            coldCfg.max_extent_bytes = ssdColdMaxExtentMb > 0 ? ssdColdMaxExtentMb << 20 : 16ULL << 20;
+            coldCfg.write_mode = ssdColdWriteMode;
+            coldCfg.queue_depth = ssdColdQueueDepth > 0 ? ssdColdQueueDepth : 8;
+            if (ssdColdBackend == "io_uring") coldCfg.io_backend = erwt3d::ssd_cold::ColdIOBackend::IOUring;
+            else if (ssdColdBackend == "pread") coldCfg.io_backend = erwt3d::ssd_cold::ColdIOBackend::Pread;
+
+            erwt3d::ssd_cold::ColdProfile coldProf;
+            if (erwt3d::ssd_cold::executeRzfpAxisLeafColdSSD(inputPath, positions, outputDir, coldCfg, &coldProf)) {
+                coldExecutorSuccess = true;
+                std::cout << "RZFP SSD cold executor completed successfully.\n";
+                const std::string scorePath = outputDir + "/contest_score.csv";
+                erwt3d::ContestUnifiedProfile profile;
+                profile.process_e2e_ms = coldProf.process_e2e_ms;
+                profile.t_composite_ms = coldProf.process_e2e_ms / 6.0;
+                profile.total_write_ms = coldProf.write_time_ms;
+                profile.merged_read_ms = coldProf.io_time_ms + coldProf.decode_time_ms;
+                writeScoreCsv(scorePath, inputPath, fmtName, nx, ny, nz, storageRatio,
+                              threads, resolvedMem.mode, actualMemoryLimitMib,
+                              resolvedReadWindowMib, "cold-rzfp+", positions, profile,
+                              ioProfileStr, erwt3d::ioProfileTypeName(unifiedCfg.io_profile),
+                              "rzfp-axis-leaf-cold", unifiedCfg.filesystem_type,
+                              unifiedCfg.wsl_detected);
+                std::cout << "\nScore written to " << scorePath << "\n";
+                return 0;
+            } else {
+                coldExecutorError = "RZFP cold executor failed, falling back to standard path";
+                std::cerr << coldExecutorError << "\n";
+            }
+        }
+
         // RZFP path: dummy readFn since executeContestGroupsMerged is used
         readFn = [](erwt3d::SliceAxis, const std::vector<uint64_t>&,
                     std::vector<std::vector<float>>&) -> bool {

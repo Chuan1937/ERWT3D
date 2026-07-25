@@ -11,22 +11,24 @@ namespace ssd_cold {
 struct ColdExtent {
     uint64_t file_offset = 0;
     uint64_t size = 0;
-    size_t first_record = 0;
-    size_t record_count = 0;
+    size_t first_slab = 0;
+    size_t slab_count = 0;
+    int fd = -1;
 };
 
 struct ColdExtentPlanConfig {
     uint64_t max_gap_bytes = 64ULL << 10;
-    uint64_t max_extent_bytes = 4ULL << 20;
+    uint64_t max_extent_bytes = 16ULL << 20;
     double estimated_bandwidth_mb_s = 3000.0;
     double io_submission_cost_us = 10.0;
     double max_read_amplification = 1.30;
     bool cross_section_merge = false;
+    bool cross_fd_merge = false;
 };
 
 struct ColdExtentPlan {
     std::vector<ColdExtent> extents;
-    const std::vector<ColdLeafRecord>* records = nullptr;
+    const std::vector<ColdSlabRequest>* slabs = nullptr;
 
     uint64_t planned_read_bytes = 0;
     uint64_t gap_bytes = 0;
@@ -35,7 +37,7 @@ struct ColdExtentPlan {
 };
 
 ColdExtentPlan buildColdExtentPlan(
-    const std::vector<ColdLeafRecord>& records,
+    const std::vector<ColdSlabRequest>& slabs,
     const ColdExtentPlanConfig& config);
 
 } // namespace ssd_cold

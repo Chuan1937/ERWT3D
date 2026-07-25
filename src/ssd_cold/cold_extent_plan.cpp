@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstring>
 
 namespace erwt3d {
 namespace ssd_cold {
@@ -10,7 +9,7 @@ namespace ssd_cold {
 namespace {
 
 static uint64_t gapPenaltyNS(uint64_t gapBytes, double bwMbS) {
-    if (bwMbS <= 0) bwMbS = 1000.0;
+    if (bwMbS <= 0) bwMbS = 3000.0;
     double gbPerSec = bwMbS / 1000.0;
     double sec = static_cast<double>(gapBytes) / (gbPerSec * 1e9);
     return static_cast<uint64_t>(sec * 1e9);
@@ -19,23 +18,23 @@ static uint64_t gapPenaltyNS(uint64_t gapBytes, double bwMbS) {
 } // anonymous namespace
 
 ColdExtentPlan buildColdExtentPlan(
-    const std::vector<ColdLeafRecord>& records,
+    const std::vector<ColdSlabRequest>& slabs,
     const ColdExtentPlanConfig& config)
 {
     ColdExtentPlan plan;
-    plan.records = &records;
-    plan.extent_count_before_merge = records.size();
+    plan.slabs = &slabs;
+    plan.extent_count_before_merge = slabs.size();
 
-    if (records.empty()) return plan;
+    if (slabs.empty()) return plan;
 
-    for (const auto& r : records) {
-        plan.planned_read_bytes += r.record_size;
+    for (const auto& s : slabs) {
+        plan.planned_read_bytes += s.slab_bytes;
     }
 
-    std::vector<size_t> sortedIdx(records.size());
-    for (size_t i = 0; i < records.size(); ++i) sortedIdx[i] = i;
+    std::vector<size_t> sortedIdx(slabs.size());
+    for (size_t i = 0; i < slabs.size(); ++i) sortedIdx[i] = i;
     std::sort(sortedIdx.begin(), sortedIdx.end(), [&](size_t a, size_t b) {
-        return records[a].file_offset < records[b].file_offset;
+        return slabs[a].file_offset < slabs[b].file_offset;
     });
 
     const double bwMbS = config.estimated_bandwidth_mb_s;
@@ -45,21 +44,24 @@ ColdExtentPlan buildColdExtentPlan(
 
     size_t i = 0;
     while (i < sortedIdx.size()) {
-        const auto& first = records[sortedIdx[i]];
+        const auto& first = slabs[sortedIdx[i]];
         uint64_t extentStart = first.file_offset;
-        uint64_t extentEnd = first.file_offset + first.record_size;
+        uint64_t extentEnd = first.file_offset + first.slab_bytes;
         size_t extentCount = 1;
+        int extentFd = first.fd;
 
         size_t j = i + 1;
         while (j < sortedIdx.size()) {
-            const auto& next = records[sortedIdx[j]];
+            const auto& next = slabs[sortedIdx[j]];
 
             if (!config.cross_section_merge && next.source != first.source) break;
+            if (!config.cross_fd_merge && next.fd != extentFd) break;
 
-            uint64_t gap = (next.file_offset > extentEnd) ? (next.file_offset - extentEnd) : 0;
+            uint64_t gap = (next.file_offset > extentEnd)
+                ? (next.file_offset - extentEnd) : 0;
 
             if (gap == 0) {
-                extentEnd = std::max(extentEnd, next.file_offset + next.record_size);
+                extentEnd = std::max(extentEnd, next.file_offset + next.slab_bytes);
                 extentCount++;
                 j++;
                 continue;
@@ -70,7 +72,7 @@ ColdExtentPlan buildColdExtentPlan(
             uint64_t gapCostNS = gapPenaltyNS(gap, bwMbS);
             if (gapCostNS >= ioSubmitCostNS) break;
 
-            uint64_t newEnd = next.file_offset + next.record_size;
+            uint64_t newEnd = next.file_offset + next.slab_bytes;
             uint64_t newSize = newEnd - extentStart;
             if (newSize > maxExtent) break;
 
@@ -85,15 +87,15 @@ ColdExtentPlan buildColdExtentPlan(
             extentEnd = extentStart + maxExtent;
             extentSize = maxExtent;
             size_t k = j - 1;
-            while (k > i && records[sortedIdx[k]].file_offset +
-                   records[sortedIdx[k]].record_size > extentEnd) {
+            while (k > i && slabs[sortedIdx[k]].file_offset +
+                   slabs[sortedIdx[k]].slab_bytes > extentEnd) {
                 k--;
             }
             if (k > i) {
                 j = k + 1;
                 extentCount = j - i;
-                extentEnd = records[sortedIdx[j - 1]].file_offset +
-                            records[sortedIdx[j - 1]].record_size;
+                extentEnd = slabs[sortedIdx[j - 1]].file_offset +
+                            slabs[sortedIdx[j - 1]].slab_bytes;
                 extentSize = extentEnd - extentStart;
             }
         }
@@ -101,15 +103,16 @@ ColdExtentPlan buildColdExtentPlan(
         ColdExtent ext;
         ext.file_offset = extentStart;
         ext.size = extentSize;
-        ext.first_record = i;
-        ext.record_count = extentCount;
+        ext.first_slab = i;
+        ext.slab_count = extentCount;
+        ext.fd = extentFd;
         plan.extents.push_back(ext);
 
         i = j;
     }
 
     uint64_t totalRecordBytes = 0;
-    for (const auto& r : records) totalRecordBytes += r.record_size;
+    for (const auto& s : slabs) totalRecordBytes += s.slab_bytes;
 
     uint64_t totalReadBytes = 0;
     for (const auto& e : plan.extents) totalReadBytes += e.size;
