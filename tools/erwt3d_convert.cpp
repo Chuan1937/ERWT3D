@@ -292,7 +292,7 @@ bool stageInputForHdd(
         << (seconds > 0.0
                 ? static_cast<double>(copied) / MiB / seconds
                 : 0.0)
-        << " MiB/s); subsequent LZ4/Y/Z scans use tmpfs\n";
+        << " MiB/s); subsequent conversion passes use tmpfs\n";
     return true;
 #endif
 }
