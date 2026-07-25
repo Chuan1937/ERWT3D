@@ -180,7 +180,7 @@ ColdRequestPlanResult buildColdRequestPlan(
                 return result;
             }
 
-            payloadBases[ai] = embOffset + alHeaders[ai].payload_offset;
+            payloadBases[ai] = embOffset;
         }
     } else if (std::memcmp(magic, "ERWT3D\0", 7) == 0) {
         result.is_rzfp = false;

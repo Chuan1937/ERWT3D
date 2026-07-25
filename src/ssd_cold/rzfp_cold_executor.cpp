@@ -30,10 +30,6 @@ static double msSince(Clock::time_point t) {
     return std::chrono::duration<double, std::milli>(Clock::now() - t).count();
 }
 
-static uint64_t alignedSize(uint64_t s) {
-    return (s + 4095) & ~static_cast<uint64_t>(4095);
-}
-
 static uint64_t readPeakRss() {
     FILE* f = fopen("/proc/self/status", "r");
     if (!f) return 0;
@@ -162,9 +158,16 @@ bool executeRzfpAxisLeafColdSSD(
 
     if (profile->read_amplification > 1.50) {
         std::cerr << "[RZFP-COLD] read amplification " << profile->read_amplification
-                  << " exceeds 1.50 — probable routing error, abort\n";
+                  << " exceeds 1.50 — routing error\n";
         return false;
     }
+
+    const uint64_t largestOutputBytes = std::max({ny * nz * sizeof(float),
+                                                   nx * nz * sizeof(float),
+                                                   nx * ny * sizeof(float)});
+
+    std::vector<std::vector<float>> allOutputs(330);
+    for (auto& o : allOutputs) o.resize(largestOutputBytes / sizeof(float), 0.0f);
 
     struct GroupEntry {
         SliceAxis axis;
@@ -179,14 +182,6 @@ bool executeRzfpAxisLeafColdSSD(
         {SliceAxis::Y, "y_continuous", &positions.y_continuous},
         {SliceAxis::Z, "z_continuous", &positions.z_continuous},
     };
-
-    const uint64_t largestOutputBytes = std::max({ny * nz * sizeof(float),
-                                                   nx * nz * sizeof(float),
-                                                   nx * ny * sizeof(float)});
-    const uint64_t totalOutputBytes = 330ULL * largestOutputBytes;
-
-    std::vector<std::vector<float>> allOutputs(330);
-    for (auto& o : allOutputs) o.resize(largestOutputBytes / sizeof(float), 0.0f);
 
     std::vector<std::string> outputFiles(330);
     {
@@ -209,51 +204,58 @@ bool executeRzfpAxisLeafColdSSD(
     const auto& rzfpHdr = planResult.rzfp_header;
     const auto& descriptors = planResult.descriptors;
 
-    auto tIO = Clock::now();
     std::atomic<bool> allOk{true};
     std::atomic<uint64_t> totalDecodedLeaves{0};
     std::atomic<uint64_t> totalDecodeErrors{0};
-    std::atomic<uint64_t> totalSlabReadBytes{0};
-    std::atomic<uint64_t> slabReadCalls{0};
+    std::atomic<uint64_t> totalReadBytes{0};
+    std::atomic<uint64_t> totalReadCalls{0};
+    std::atomic<double> totalIOMs{0.0};
+    std::atomic<double> totalDecMs{0.0};
 
     const int decodeThreads = std::max(1, config.decode_threads);
     ThreadPool decodePool(static_cast<size_t>(decodeThreads));
     std::vector<RzfpCodec> threadCodecs(static_cast<size_t>(decodeThreads));
     std::deque<std::future<bool>> decodeFutures;
 
-    std::vector<uint8_t> readBuf;
-    readBuf.reserve(static_cast<size_t>(config.max_extent_bytes));
-
     for (size_t ei = 0; ei < extentPlan.extents.size() && allOk; ++ei) {
         const auto& ext = extentPlan.extents[ei];
-        if (ext.size > readBuf.size()) readBuf.resize(static_cast<size_t>(ext.size));
 
-        ssize_t nr = pread(ext.fd, readBuf.data(), static_cast<size_t>(ext.size),
+        uint64_t allocSize = (ext.size + 4095) & ~static_cast<uint64_t>(4095);
+        uint8_t* extBuf = static_cast<uint8_t*>(std::aligned_alloc(4096, static_cast<size_t>(allocSize)));
+        if (!extBuf) { allOk = false; break; }
+
+        auto tPread = Clock::now();
+        ssize_t nr = pread(ext.fd, extBuf, static_cast<size_t>(ext.size),
                            static_cast<off_t>(ext.file_offset));
+        double ioMs = msSince(tPread);
+        totalIOMs = totalIOMs + ioMs;
+
         if (nr != static_cast<ssize_t>(ext.size)) {
-            std::cerr << "[RZFP-COLD] pread failed for extent at " << ext.file_offset
-                      << " size " << ext.size << "\n";
+            std::free(extBuf);
+            std::cerr << "[RZFP-COLD] pread failed\n";
             allOk = false; break;
         }
-        totalSlabReadBytes += ext.size;
-        slabReadCalls++;
+        totalReadBytes += ext.size;
+        totalReadCalls++;
 
-        for (size_t si = ext.first_slab; si < ext.first_slab + ext.slab_count && allOk; ++si) {
-            if (si >= plan.slab_requests.size()) continue;
-            const auto& slab = plan.slab_requests[si];
+        for (size_t sli = ext.first_slab; sli < ext.first_slab + ext.slab_count && allOk; ++sli) {
+            if (sli >= plan.slab_requests.size()) continue;
+            const auto& slab = plan.slab_requests[sli];
 
             uint64_t relOff = slab.file_offset - ext.file_offset;
             if (relOff + slab.slab_bytes > ext.size) continue;
 
-            const uint8_t* slabData = readBuf.data() + relOff;
+            const uint8_t* slabData = extBuf + relOff;
             const uint64_t slabSize = slab.slab_bytes;
 
-            size_t color = si % static_cast<size_t>(decodeThreads);
+            size_t color = sli % static_cast<size_t>(decodeThreads);
             decodeFutures.push_back(decodePool.submit(
-                [&threadCodecs, color, slabData, slabSize, &slab, &descriptors,
+                [extBuf, &threadCodecs, color, slabData, slabSize, &slab, &descriptors,
                  &rzfpHdr, nx, ny, nz, leafX, leafY, leafZ, &allOutputs,
-                 &groups, &allOk, &totalDecodedLeaves, &totalDecodeErrors]() -> bool {
+                 &allOk, &totalDecodedLeaves, &totalDecodeErrors,
+                 &totalDecMs]() -> bool {
 
+                    auto tDecStart = Clock::now();
                     RzfpCodec& codec = threadCodecs[color];
                     uint64_t offset = 0;
 
@@ -265,13 +267,15 @@ bool executeRzfpAxisLeafColdSSD(
                         offset += sizeof(uint32_t);
 
                         if (descriptorId >= descriptors.size()) {
-                            totalDecodeErrors++; offset = slabSize; break;
+                            totalDecodeErrors++;
+                            break;
                         }
 
                         const auto desc = descriptors[descriptorId];
                         const uint16_t recSize = descriptorSizeVal(desc);
                         if (recSize > slabSize - offset) {
-                            totalDecodeErrors++; offset = slabSize; break;
+                            totalDecodeErrors++;
+                            break;
                         }
 
                         uint64_t gx = 0, gy = 0, gz = 0;
@@ -322,14 +326,18 @@ bool executeRzfpAxisLeafColdSSD(
                         offset += recSize;
                     }
 
+                    totalDecMs = totalDecMs + msSince(tDecStart);
                     return offset == slabSize;
                 }));
 
             while (decodeFutures.size() >= static_cast<size_t>(decodeThreads * 2)) {
-                if (!decodeFutures.front().get()) { allOk = false; }
+                if (!decodeFutures.front().get()) allOk = false;
                 decodeFutures.pop_front();
             }
         }
+
+        auto freeExt = [extBuf]() { std::free(extBuf); };
+        decodeFutures.push_back(decodePool.submit([freeExt]() -> bool { freeExt(); return true; }));
     }
 
     while (!decodeFutures.empty()) {
@@ -338,13 +346,12 @@ bool executeRzfpAxisLeafColdSSD(
     }
     decodePool.waitAll();
 
-    auto tDecode = Clock::now();
-    profile->io_time_ms = msSince(tIO);
-    profile->decode_time_ms = msSince(tDecode) - profile->io_time_ms;
+    profile->io_time_ms = totalIOMs;
+    profile->decode_time_ms = totalDecMs;
     profile->decoded_leaf_count = totalDecodedLeaves;
     profile->decoder_error_count = totalDecodeErrors;
-    profile->actual_read_bytes = totalSlabReadBytes;
-    profile->pread_calls = slabReadCalls;
+    profile->actual_read_bytes = totalReadBytes;
+    profile->pread_calls = totalReadCalls;
 
     if (!allOk) {
         std::cerr << "[RZFP-COLD] decode errors: " << totalDecodeErrors << "\n";
@@ -382,6 +389,7 @@ bool executeRzfpAxisLeafColdSSD(
               << " preads=" << profile->pread_calls
               << " slabs=" << profile->unique_leaf_records
               << " leaves=" << profile->decoded_leaf_count
+              << " errors=" << profile->decoder_error_count
               << " rss=" << profile->peak_rss_mib << "MiB\n";
 
     return true;
