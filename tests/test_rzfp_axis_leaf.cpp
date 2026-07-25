@@ -133,8 +133,9 @@ int main() {
             legacy,
             axis,
             256,
-            &repackStats),
-        "axis-leaf repack");
+            &repackStats,
+            3),
+        "parallel axis-leaf repack");
     check(
         repackStats.storage_ratio > 0.0 &&
             repackStats.storage_ratio < 20.0,
