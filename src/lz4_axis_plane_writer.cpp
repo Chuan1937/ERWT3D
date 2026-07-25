@@ -215,7 +215,7 @@ bool writeLz4YZSidecar(
     uint64_t slabBudgetBytes = kLegacyInputSlabBytes;
     if (!singleRecord && memoryLimitMiB != 0) {
         slabBudgetBytes = std::max<uint64_t>(
-            64ULL * MiB,
+            inputSlabBytes,
             memoryBudgetBytes - memoryBudgetBytes / 4);
     }
     uint64_t rowBytes = 0;
