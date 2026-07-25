@@ -8,6 +8,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <filesystem>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -584,7 +585,8 @@ bool repackRzfpAxisLeaves(
     const std::string& inputPath,
     const std::string& outputPath,
     size_t memoryLimitMiB,
-    RzfpAxisLeafRepackStats* outputStats
+    RzfpAxisLeafRepackStats* outputStats,
+    int axisWorkers
 ) {
     if (inputPath == outputPath) {
         std::cerr
@@ -675,17 +677,59 @@ bool repackRzfpAxisLeaves(
         PlaneAxis::Y,
         PlaneAxis::Z
     };
-    for (size_t i = 0; i < axes.size() && ok; ++i) {
-        ok = buildAxisReplica(
-            sourceFd,
-            outputPath,
-            header,
-            sbIndex,
-            descriptors,
-            axes[i],
-            descHash,
-            memoryLimitMiB,
-            stats.replica_bytes[i]);
+    axisWorkers = std::max(1, std::min(axisWorkers, 3));
+    if (axisWorkers == 1) {
+        for (size_t i = 0; i < axes.size() && ok; ++i) {
+            ok = buildAxisReplica(
+                sourceFd,
+                outputPath,
+                header,
+                sbIndex,
+                descriptors,
+                axes[i],
+                descHash,
+                memoryLimitMiB,
+                stats.replica_bytes[i]);
+        }
+    } else {
+        struct AxisBuildResult {
+            size_t index = 0;
+            uint64_t bytes = 0;
+            bool ok = false;
+        };
+        for (size_t first = 0;
+             first < axes.size() && ok;
+             first += static_cast<size_t>(axisWorkers)) {
+            const size_t end = std::min(
+                axes.size(),
+                first + static_cast<size_t>(axisWorkers));
+            std::vector<std::future<AxisBuildResult>> futures;
+            futures.reserve(end - first);
+            for (size_t i = first; i < end; ++i) {
+                futures.push_back(std::async(
+                    std::launch::async,
+                    [&, i]() {
+                        AxisBuildResult result;
+                        result.index = i;
+                        result.ok = buildAxisReplica(
+                            sourceFd,
+                            outputPath,
+                            header,
+                            sbIndex,
+                            descriptors,
+                            axes[i],
+                            descHash,
+                            memoryLimitMiB,
+                            result.bytes);
+                        return result;
+                    }));
+            }
+            for (auto& future : futures) {
+                const AxisBuildResult result = future.get();
+                stats.replica_bytes[result.index] = result.bytes;
+                if (!result.ok) ok = false;
+            }
+        }
     }
 
     if (ok) {
