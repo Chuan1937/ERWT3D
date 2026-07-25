@@ -509,7 +509,7 @@ int main(int argc, char* argv[]) {
                           ? " (embedded)\n"
                           : " (external/legacy)\n");
 
-        if (resolvedSSD && lz4AxisPlanes) {
+        if (resolvedSSD && lz4AxisPlanes && ssdColdBackend != "auto") {
             triedColdExecutor = true;
             std::cout << "Trying LZ4 SSD cold executor...\n";
 
@@ -592,7 +592,7 @@ int main(int argc, char* argv[]) {
 
     } else {
         // RZFP path: try SSD cold executor first if applicable
-        if (resolvedSSD && rzfpAxisLeaf) {
+        if (resolvedSSD && rzfpAxisLeaf && ssdColdBackend != "auto") {
             triedColdExecutor = true;
             std::cout << "Trying RZFP SSD cold executor...\n";
 
