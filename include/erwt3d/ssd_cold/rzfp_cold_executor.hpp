@@ -1,6 +1,7 @@
 #pragma once
 
 #include "erwt3d/ssd_cold/cold_profile.hpp"
+#include "erwt3d/ssd_cold/cold_io_engine.hpp"
 #include "erwt3d/contest_positions.hpp"
 
 #include <cstdint>

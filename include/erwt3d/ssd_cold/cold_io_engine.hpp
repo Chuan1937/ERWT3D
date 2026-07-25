@@ -2,6 +2,7 @@
 
 #include "erwt3d/ssd_cold/cold_extent_plan.hpp"
 #include "erwt3d/ssd_cold/cold_buffer_pool.hpp"
+#include "erwt3d/ssd_cold/cold_request_plan.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -26,9 +27,9 @@ struct ColdIOTask {
     uint64_t offset = 0;
     uint64_t size = 0;
     uint64_t base_offset = 0;
-    size_t first_record = 0;
-    size_t record_count = 0;
-    const std::vector<ColdLeafRecord>* records = nullptr;
+    size_t first_slab = 0;
+    size_t slab_count = 0;
+    const std::vector<ColdSlabRequest>* slabs = nullptr;
 };
 
 struct ColdIOResult {

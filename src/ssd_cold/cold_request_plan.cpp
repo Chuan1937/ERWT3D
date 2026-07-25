@@ -92,6 +92,10 @@ ColdRequestPlanResult buildColdRequestPlan(
         close(testFd);
     }
 
+    std::array<std::vector<RzfpAxisLeafSlabIndex>, 3> slabIndexes;
+    std::array<RzfpAxisLeafHeader, 3> alHeaders{};
+    std::array<uint64_t, 3> payloadBases{};
+
     if (std::memcmp(magic, "ERWT3DR\0", 8) == 0) {
         result.is_rzfp = true;
 
@@ -151,6 +155,27 @@ ColdRequestPlanResult buildColdRequestPlan(
             result.section_sources.push_back(
                 static_cast<ColdRecordSource>(
                     static_cast<int>(ColdRecordSource::RzfpAxisLeafX) + ai));
+        }
+
+        std::array<EmbeddedSectionInfo*, 3> embSecPtr{embSec[0], embSec[1], embSec[2]};
+        for (int ai = 0; ai < 3; ++ai) {
+            const uint64_t embOffset = embSecPtr[ai]->offset;
+            if (pread(result.section_fds[ai], &alHeaders[ai], sizeof(RzfpAxisLeafHeader),
+                      static_cast<off_t>(embOffset)) != static_cast<ssize_t>(sizeof(RzfpAxisLeafHeader))) {
+                result.error = "cannot read axis-leaf header for axis " + std::to_string(ai);
+                return result;
+            }
+
+            const uint64_t idxSize = alHeaders[ai].slab_count * sizeof(RzfpAxisLeafSlabIndex);
+            slabIndexes[ai].resize(alHeaders[ai].slab_count);
+            if (pread(result.section_fds[ai], slabIndexes[ai].data(), idxSize,
+                      static_cast<off_t>(embOffset + alHeaders[ai].index_offset)) !=
+                static_cast<ssize_t>(idxSize)) {
+                result.error = "cannot read axis-leaf index for axis " + std::to_string(ai);
+                return result;
+            }
+
+            payloadBases[ai] = embOffset + alHeaders[ai].payload_offset;
         }
     } else if (std::memcmp(magic, "ERWT3D\0", 7) == 0) {
         result.is_rzfp = false;
@@ -214,30 +239,6 @@ ColdRequestPlanResult buildColdRequestPlan(
         }
     };
 
-    std::array<std::vector<RzfpAxisLeafSlabIndex>, 3> slabIndexes;
-    std::array<RzfpAxisLeafHeader, 3> alHeaders;
-    std::array<uint64_t, 3> payloadBases;
-
-    for (int ai = 0; ai < 3; ++ai) {
-        const uint64_t embOffset = embSec[ai]->offset;
-        if (pread(result.section_fds[ai], &alHeaders[ai], sizeof(RzfpAxisLeafHeader),
-                  static_cast<off_t>(embOffset)) != static_cast<ssize_t>(sizeof(RzfpAxisLeafHeader))) {
-            result.error = "cannot read axis-leaf header for axis " + std::to_string(ai);
-            return result;
-        }
-
-        const uint64_t idxSize = alHeaders[ai].slab_count * sizeof(RzfpAxisLeafSlabIndex);
-        slabIndexes[ai].resize(alHeaders[ai].slab_count);
-        if (pread(result.section_fds[ai], slabIndexes[ai].data(), idxSize,
-                  static_cast<off_t>(embOffset + alHeaders[ai].index_offset)) !=
-            static_cast<ssize_t>(idxSize)) {
-            result.error = "cannot read axis-leaf index for axis " + std::to_string(ai);
-            return result;
-        }
-
-        payloadBases[ai] = embOffset + alHeaders[ai].payload_offset;
-    }
-
     struct SlabKey {
         ColdRecordSource source;
         uint64_t slab_id;
@@ -294,14 +295,14 @@ ColdRequestPlanResult buildColdRequestPlan(
                 slabReq.file_offset = payloadBases[ai] + slabIndexes[ai][slab].offset;
                 slabReq.slab_bytes = slabIndexes[ai][slab].bytes;
                 slabReq.slab_id = slab;
-                slabReq.targets.push_back({outputSlot, local});
+                slabReq.targets.push_back({outputSlot, static_cast<uint8_t>(local)});
 
                 slabMap[key] = plan.slab_requests.size();
                 plan.slab_requests.push_back(std::move(slabReq));
                 plan.unique_slabs++;
             } else {
                 auto& existing = plan.slab_requests[slabMap[key]];
-                existing.targets.push_back({outputSlot, local});
+                existing.targets.push_back({outputSlot, static_cast<uint8_t>(local)});
                 plan.duplicate_slabs_eliminated++;
             }
 
