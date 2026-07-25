@@ -10,6 +10,8 @@
 #include "erwt3d/lz4_axis_plane_writer.hpp"
 #include "erwt3d/rzfp_axis_leaf.hpp"
 #include "erwt3d/embedded_sections.hpp"
+#include "erwt3d/io_profile.hpp"
+#include "erwt3d/unified_read_config.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -17,12 +19,20 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <future>
 #include <iomanip>
 #include <iostream>
+#include <limits>
+#include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 #include <fcntl.h>
+#if defined(__linux__)
+#include <sched.h>
+#endif
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -31,6 +41,71 @@ namespace {
 using Clock = std::chrono::steady_clock;
 constexpr uint64_t GiB = 1024ULL * 1024ULL * 1024ULL;
 constexpr double StorageBudget = 1.50;
+
+double secondsSince(const Clock::time_point& start) {
+    return std::chrono::duration<double>(Clock::now() - start).count();
+}
+
+int availableLogicalCpus() {
+#if defined(__linux__)
+    cpu_set_t mask;
+    CPU_ZERO(&mask);
+    if (sched_getaffinity(0, sizeof(mask), &mask) == 0) {
+        const int count = CPU_COUNT(&mask);
+        if (count > 0) return count;
+    }
+#endif
+    const unsigned count = std::thread::hardware_concurrency();
+    return count == 0 ? 1 : static_cast<int>(count);
+}
+
+int availablePhysicalCores() {
+#if defined(__linux__)
+    cpu_set_t mask;
+    CPU_ZERO(&mask);
+    const bool haveAffinity =
+        sched_getaffinity(0, sizeof(mask), &mask) == 0;
+    std::set<std::pair<int, int>> cores;
+    const int logical = availableLogicalCpus();
+    const int scanLimit = std::max(logical * 4, 256);
+    for (int cpu = 0; cpu < scanLimit; ++cpu) {
+        if (haveAffinity && !CPU_ISSET(cpu, &mask)) continue;
+        std::ifstream coreFile(
+            "/sys/devices/system/cpu/cpu" + std::to_string(cpu) +
+            "/topology/core_id");
+        std::ifstream packageFile(
+            "/sys/devices/system/cpu/cpu" + std::to_string(cpu) +
+            "/topology/physical_package_id");
+        int core = -1;
+        int package = 0;
+        if (coreFile >> core) {
+            if (!(packageFile >> package)) package = 0;
+            cores.emplace(package, core);
+        }
+    }
+    if (!cores.empty()) return static_cast<int>(cores.size());
+#endif
+    const int fallbackLogical = availableLogicalCpus();
+    return fallbackLogical >= 4
+        ? std::max(1, fallbackLogical / 2)
+        : fallbackLogical;
+}
+
+int resolveConversionThreads(uint64_t inputBytes, uint64_t memoryMib) {
+    const int physical = availablePhysicalCores();
+    int scaleCap = 4;
+    if (inputBytes >= 8ULL * GiB) scaleCap = 8;
+    if (inputBytes >= 32ULL * GiB) scaleCap = 16;
+    if (inputBytes >= 64ULL * GiB) scaleCap = 32;
+
+    // Compression workers use private buffers. Keep at least 128 MiB of the
+    // configured budget available per worker even on very small-memory runs.
+    const int memoryCap = static_cast<int>(std::max<uint64_t>(
+        1, std::min<uint64_t>(32, memoryMib / 128)));
+    return std::max(
+        1,
+        std::min({physical, scaleCap, memoryCap, 32}));
+}
 
 uint64_t fileSizeOrZero(const std::string& path) {
     std::error_code ec;
@@ -251,8 +326,12 @@ int main(int argc, char* argv[]) {
     std::string outputPath;
     uint64_t nx = 0, ny = 0, nz = 0;
     bool toRaw = false;
-    int threads = 8;
+    int threads = 0;
+    bool threadsExplicit = false;
     std::string memoryLimit = "auto";
+    std::string ioProfileStr = "auto";
+    int axisWorkers = 0;
+    int planeWorkers = 0;
 
     for (int i = 1; i < argc; ++i) {
         const auto next = [&]() -> const char* {
@@ -273,11 +352,26 @@ int main(int argc, char* argv[]) {
         } else if (std::strcmp(argv[i], "--nz") == 0) {
             nz = std::stoull(next());
         } else if (std::strcmp(argv[i], "--threads") == 0) {
-            threads = std::stoi(next());
+            const std::string value = next();
+            if (value == "auto") {
+                threads = 0;
+                threadsExplicit = false;
+            } else {
+                threads = std::stoi(value);
+                threadsExplicit = true;
+            }
         } else if (std::strcmp(argv[i], "--to-raw") == 0) {
             toRaw = true;
         } else if (std::strcmp(argv[i], "--memory-limit-mb") == 0) {
             memoryLimit = next();
+        } else if (std::strcmp(argv[i], "--io-profile") == 0) {
+            ioProfileStr = next();
+        } else if (std::strcmp(argv[i], "--axis-workers") == 0) {
+            const std::string value = next();
+            axisWorkers = value == "auto" ? 0 : std::stoi(value);
+        } else if (std::strcmp(argv[i], "--plane-workers") == 0) {
+            const std::string value = next();
+            planeWorkers = value == "auto" ? 0 : std::stoi(value);
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             std::cerr
                 << "Usage: erwt3d_convert --input data.raw --output data.erwt3d --nx N --ny N --nz N\n\n"
@@ -288,8 +382,11 @@ int main(int argc, char* argv[]) {
                 << "  --nx N                X dimension (required for raw input)\n"
                 << "  --ny N                Y dimension (required for raw input)\n"
                 << "  --nz N                Z dimension (required for raw input)\n"
-                << "  --threads N           Thread count (default: 8)\n"
+                << "  --threads auto|N      Compression threads (default: auto physical cores)\n"
                 << "  --memory-limit-mb auto|N  Memory limit in MiB (default: auto)\n"
+                << "  --io-profile auto|hdd|ssd|wsl-ssd  Conversion device profile\n"
+                << "  --axis-workers auto|1|2|3  RZFP axis repack concurrency\n"
+                << "  --plane-workers auto|1|2  LZ4 Y/Z generation concurrency\n"
                 << "  --to-raw              Convert ERWT3D/RZFP back to raw float32\n\n"
                 << "New optimized files must use the canonical .erwt3d extension.\n"
                 << "The internal LZ4/RZFP format is selected automatically and stored in the header.\n\n"
@@ -334,6 +431,62 @@ int main(int argc, char* argv[]) {
     }
     std::cout << "Memory mode: " << resolvedMemory.mode
               << "\nResolved memory limit: " << resolvedMemory.mib << " MiB\n";
+
+    const uint64_t inputBytes = fileSizeOrZero(inputPath);
+    if (!threadsExplicit) {
+        threads = resolveConversionThreads(
+            inputBytes,
+            resolvedMemory.mib);
+    }
+    if (threads <= 0 || threads > 256) {
+        std::cerr << "Error: --threads must be auto or an integer in [1,256]\n";
+        return 1;
+    }
+
+    if (ioProfileStr != "auto" &&
+        ioProfileStr != "hdd" &&
+        ioProfileStr != "ssd" &&
+        ioProfileStr != "wsl-ssd") {
+        std::cerr << "Error: invalid --io-profile " << ioProfileStr << "\n";
+        return 1;
+    }
+    if (axisWorkers < 0 || axisWorkers > 3) {
+        std::cerr << "Error: --axis-workers must be auto or an integer in [1,3]\n";
+        return 1;
+    }
+    if (planeWorkers < 0 || planeWorkers > 2) {
+        std::cerr << "Error: --plane-workers must be auto or an integer in [1,2]\n";
+        return 1;
+    }
+
+    std::filesystem::path outputParent =
+        std::filesystem::path(outputPath).parent_path();
+    if (outputParent.empty()) outputParent = ".";
+    erwt3d::UnifiedReadConfig conversionDevice =
+        erwt3d::makeUnifiedConfig(
+            erwt3d::parseIOProfileType(ioProfileStr),
+            outputParent.string(),
+            threads,
+            resolvedMemory.mib,
+            0);
+    const bool conversionSSD =
+        conversionDevice.io_profile == erwt3d::IOProfileType::SSD ||
+        conversionDevice.io_profile == erwt3d::IOProfileType::WSL_SSD;
+    const int resolvedAxisWorkers =
+        axisWorkers > 0
+            ? axisWorkers
+            : (conversionSSD ? std::min(3, threads) : 1);
+
+    std::cout
+        << "Conversion threads: " << threads
+        << (threadsExplicit ? " (user)" : " (auto physical-core aware)")
+        << "\nConversion IO profile: " << ioProfileStr
+        << " -> "
+        << erwt3d::ioProfileTypeName(conversionDevice.io_profile)
+        << " (" << conversionDevice.resolved_profile_reason << ")"
+        << "\nRZFP axis workers: " << resolvedAxisWorkers
+        << (axisWorkers > 0 ? " (user)" : " (auto)")
+        << "\n";
 
     if (toRaw) {
         auto fmt = erwt3d::detectOptimizedFileFormat(inputPath);
@@ -416,6 +569,7 @@ int main(int argc, char* argv[]) {
               << "  Dims:    " << nx << " x " << ny << " x " << nz << "\n"
               << "  Raw:     " << rawSize / GiB << " GiB\n"
               << "  Threads: " << threads << "\n"
+              << "  Memory:  " << resolvedMemory.mib << " MiB\n"
               << "============================================================\n\n";
 
     std::cout << "Phase 1: Sampling and planning...\n";
@@ -456,6 +610,7 @@ int main(int argc, char* argv[]) {
     removeAuxiliaryFiles(workPath);
 
     if (rec.main_format == erwt3d::MainFormat::LZ4) {
+        const auto mainStart = Clock::now();
         erwt3d::RawXAuxStats auxStats;
         if (!erwt3d::writeERWT3DFromFile(
                 workPath, inputPath, nx, ny, nz,
@@ -469,35 +624,131 @@ int main(int argc, char* argv[]) {
             std::cerr << "Error: LZ4 conversion failed\n";
             return 1;
         }
+        std::cout << "  LZ4 main encode: "
+                  << secondsSince(mainStart) << "s\n";
 
         struct AxisCandidate {
             erwt3d::PlaneAxis axis{};
             erwt3d::EmbeddedSectionType type{};
             std::string path;
             uint64_t bytes = 0;
+            double seconds = 0.0;
+            bool written = false;
         };
+
+        // Each whole-plane writer holds approximately one raw-volume-sized
+        // scatter buffer.  Run Y and Z concurrently only when the configured
+        // memory budget can hold both plus working headroom.
+        constexpr uint64_t MiB = 1ULL << 20;
+        const uint64_t rawMiB =
+            rawSize / MiB + (rawSize % MiB != 0 ? 1 : 0);
+        const uint64_t parallelPlaneMemoryMiB =
+            rawMiB >
+                    (std::numeric_limits<uint64_t>::max() - 1024) / 2
+                ? std::numeric_limits<uint64_t>::max()
+                : 2 * rawMiB + 1024;
+        const bool parallelPlaneResources =
+            threads >= 2 &&
+            resolvedMemory.mib >= parallelPlaneMemoryMiB;
+        const bool parallelPlaneEligible =
+            conversionSSD && parallelPlaneResources;
+        const int resolvedPlaneWorkers =
+            planeWorkers > 0
+                ? planeWorkers
+                : (parallelPlaneEligible ? 2 : 1);
+        if (resolvedPlaneWorkers == 2 && !parallelPlaneResources) {
+            std::cerr
+                << "Error: --plane-workers 2 requires at least two threads "
+                   "and "
+                << parallelPlaneMemoryMiB
+                << " MiB of configured memory for this dataset\n";
+            removeIfPresent(workPath);
+            return 1;
+        }
+        std::cout
+            << "LZ4 plane workers: " << resolvedPlaneWorkers
+            << (planeWorkers > 0 ? " (user)" : " (auto)")
+            << "\n";
+
+        const auto buildPlane =
+            [&](erwt3d::PlaneAxis axis,
+                int workerThreads,
+                uint64_t workerMemoryMiB) {
+                const auto axisStart = Clock::now();
+                AxisCandidate candidate;
+                candidate.axis = axis;
+                candidate.type =
+                    axis == erwt3d::PlaneAxis::Y
+                        ? erwt3d::EmbeddedSectionType::Lz4AxisPlaneY
+                        : erwt3d::EmbeddedSectionType::Lz4AxisPlaneZ;
+                candidate.path =
+                    erwt3d::axisPlaneSidecarPath(workPath, axis);
+                erwt3d::Lz4AxisPlaneWriterStats axisStats;
+                candidate.written =
+                    erwt3d::writeLz4AxisPlaneSidecar(
+                        inputPath,
+                        workPath,
+                        axis,
+                        nx,
+                        ny,
+                        nz,
+                        std::numeric_limits<uint32_t>::max(),
+                        StorageBudget,
+                        workerThreads,
+                        &axisStats,
+                        workerMemoryMiB);
+                candidate.seconds = secondsSince(axisStart);
+                if (candidate.written) {
+                    candidate.bytes = fileSizeOrZero(candidate.path);
+                }
+                return candidate;
+            };
+
         std::vector<AxisCandidate> candidates;
-        for (const auto axis : {erwt3d::PlaneAxis::Y, erwt3d::PlaneAxis::Z}) {
-            erwt3d::Lz4AxisPlaneWriterStats axisStats;
-            std::cout << "Generating LZ4 "
-                      << (axis == erwt3d::PlaneAxis::Y ? "Y" : "Z")
-                      << " whole-plane section...\n";
-            if (!erwt3d::writeLz4AxisPlaneSidecar(
-                    inputPath, workPath, axis, nx, ny, nz,
-                    128 * 1024, StorageBudget, threads, &axisStats)) {
-                std::cout << "  skipped: section does not fit its storage gate\n";
-                continue;
+        if (resolvedPlaneWorkers == 2) {
+            const int yThreads = std::max(1, threads / 2);
+            const int zThreads = std::max(1, threads - yThreads);
+            const uint64_t yMemoryMiB =
+                std::max<uint64_t>(1, resolvedMemory.mib / 2);
+            const uint64_t zMemoryMiB =
+                std::max<uint64_t>(
+                    1,
+                    resolvedMemory.mib - yMemoryMiB);
+            auto yFuture = std::async(
+                std::launch::async,
+                buildPlane,
+                erwt3d::PlaneAxis::Y,
+                yThreads,
+                yMemoryMiB);
+            auto zFuture = std::async(
+                std::launch::async,
+                buildPlane,
+                erwt3d::PlaneAxis::Z,
+                zThreads,
+                zMemoryMiB);
+            candidates.push_back(yFuture.get());
+            candidates.push_back(zFuture.get());
+        } else {
+            for (const auto axis : {
+                     erwt3d::PlaneAxis::Y,
+                     erwt3d::PlaneAxis::Z}) {
+                candidates.push_back(buildPlane(
+                    axis,
+                    threads,
+                    resolvedMemory.mib));
             }
-            const std::string sidecar =
-                erwt3d::axisPlaneSidecarPath(workPath, axis);
-            candidates.push_back({
-                axis,
-                axis == erwt3d::PlaneAxis::Y
-                    ? erwt3d::EmbeddedSectionType::Lz4AxisPlaneY
-                    : erwt3d::EmbeddedSectionType::Lz4AxisPlaneZ,
-                sidecar,
-                fileSizeOrZero(sidecar),
-            });
+        }
+        for (const auto& candidate : candidates) {
+            std::cout << "  LZ4 "
+                      << erwt3d::axisLabel(candidate.axis)
+                      << " section: "
+                      << candidate.seconds
+                      << "s";
+            if (!candidate.written) {
+                std::cout
+                    << " (skipped: section does not fit its storage gate)";
+            }
+            std::cout << "\n";
         }
 
         const uint64_t mainBytes = fileSizeOrZero(workPath);
@@ -508,7 +759,8 @@ int main(int argc, char* argv[]) {
                   });
         std::vector<erwt3d::EmbeddedSectionInput> sections;
         for (const auto& candidate : candidates) {
-            if (candidate.bytes != 0 &&
+            if (candidate.written &&
+                candidate.bytes != 0 &&
                 selectedBytes <= static_cast<uint64_t>(StorageBudget * rawSize) &&
                 candidate.bytes <=
                     static_cast<uint64_t>(StorageBudget * rawSize) -
@@ -521,6 +773,7 @@ int main(int argc, char* argv[]) {
         }
 
         erwt3d::EmbeddedPackageStats packageStats;
+        const auto packageStart = Clock::now();
         if (!sections.empty() &&
             !erwt3d::embedSectionsInPlace(
                 workPath, sections, true, &packageStats)) {
@@ -531,6 +784,8 @@ int main(int argc, char* argv[]) {
         }
         if (!sections.empty()) {
             printPackageCopyStats(packageStats);
+            std::cout << "  LZ4 package assembly: "
+                      << secondsSince(packageStart) << "s\n";
         }
 
         const uint64_t outBytes = fileSizeOrZero(workPath);
@@ -563,6 +818,7 @@ int main(int argc, char* argv[]) {
                   << "  Storage ratio: " << std::fixed << std::setprecision(3) << storageRatio << "x\n";
 
     } else if (rec.main_format == erwt3d::MainFormat::RZFP) {
+        const auto encodeStart = Clock::now();
         erwt3d::RzfpWriterConfig cfg;
         cfg.nx = nx;
         cfg.ny = ny;
@@ -579,6 +835,8 @@ int main(int argc, char* argv[]) {
             std::cerr << "Error: RZFP conversion failed\n";
             return 1;
         }
+        std::cout << "  RZFP encode: "
+                  << secondsSince(encodeStart) << "s\n";
 
         if (stats.violation_count > 0 ||
             stats.max_relative_error >= 1e-3 ||
@@ -593,15 +851,22 @@ int main(int argc, char* argv[]) {
         }
 
         erwt3d::RzfpAxisLeafRepackStats repackStats;
+        const auto repackStart = Clock::now();
         std::cout << "Repacking RZFP into X/Y/Z axis-leaf layout...\n";
         if (!erwt3d::repackRzfpAxisLeaves(
-                legacyPath, workPath, resolvedMemory.mib, &repackStats)) {
+                legacyPath,
+                workPath,
+                resolvedMemory.mib,
+                &repackStats,
+                resolvedAxisWorkers)) {
             std::cerr << "Error: RZFP axis-leaf repack failed\n";
             removeIfPresent(legacyPath);
             removeIfPresent(workPath);
             removeAuxiliaryFiles(workPath);
             return 1;
         }
+        std::cout << "  RZFP axis repack: "
+                  << secondsSince(repackStart) << "s\n";
         removeIfPresent(legacyPath);
 
         std::vector<erwt3d::EmbeddedSectionInput> sections = {
@@ -613,6 +878,7 @@ int main(int argc, char* argv[]) {
              erwt3d::rzfpAxisLeafPath(workPath, erwt3d::PlaneAxis::Z)},
         };
         erwt3d::EmbeddedPackageStats packageStats;
+        const auto packageStart = Clock::now();
         if (!erwt3d::embedSectionsInPlace(
                 workPath, sections, true, &packageStats)) {
             std::cerr << "Error: cannot create single-file RZFP package\n";
@@ -621,6 +887,8 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         printPackageCopyStats(packageStats);
+        std::cout << "  RZFP package assembly: "
+                  << secondsSince(packageStart) << "s\n";
         const uint64_t outBytes = fileSizeOrZero(workPath);
         const double storageRatio =
             rawSize > 0 ? static_cast<double>(outBytes) / rawSize : 0.0;
