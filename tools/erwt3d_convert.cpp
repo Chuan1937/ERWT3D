@@ -162,36 +162,41 @@ bool writeAllFd(int fd, const char* data, size_t bytes) {
     return true;
 }
 
-bool stageRawInputForHdd(
+bool stageInputForHdd(
     const std::string& inputPath,
-    uint64_t rawSize,
+    uint64_t inputSize,
     uint64_t memoryLimitMiB,
+    uint64_t maxStageBytes,
+    uint64_t additionalWorkingMiB,
+    const char* label,
     TemporaryRawStage& stage)
 {
 #if !defined(__linux__)
     (void)inputPath;
-    (void)rawSize;
+    (void)inputSize;
     (void)memoryLimitMiB;
+    (void)maxStageBytes;
+    (void)additionalWorkingMiB;
+    (void)label;
     (void)stage;
     return false;
 #else
     constexpr uint64_t MiB = 1ULL << 20;
     constexpr uint64_t MinStageBytes = 1ULL << 30;
-    constexpr uint64_t MaxStageBytes = 24ULL << 30;
-    constexpr uint64_t HeadroomMiB = 2048;
     constexpr uint64_t TmpfsHeadroomBytes = 512ULL << 20;
 
-    if (rawSize < MinStageBytes || rawSize > MaxStageBytes) return false;
+    if (inputSize < MinStageBytes || inputSize > maxStageBytes) return false;
 
-    const uint64_t rawMiB =
-        rawSize / MiB + (rawSize % MiB != 0 ? 1 : 0);
-    if (rawMiB >
-            (std::numeric_limits<uint64_t>::max() - HeadroomMiB) / 2 ||
-        memoryLimitMiB < 2 * rawMiB + HeadroomMiB) {
+    const uint64_t inputMiB =
+        inputSize / MiB + (inputSize % MiB != 0 ? 1 : 0);
+    if (inputMiB >
+            std::numeric_limits<uint64_t>::max() - additionalWorkingMiB ||
+        memoryLimitMiB < inputMiB + additionalWorkingMiB) {
         std::cout
-            << "HDD RAM staging disabled: memory budget needs at least "
-            << (2 * rawMiB + HeadroomMiB)
-            << " MiB for the staged raw volume and one axis-plane buffer\n";
+            << "HDD RAM staging disabled for " << label
+            << ": memory budget needs at least "
+            << (inputMiB + additionalWorkingMiB)
+            << " MiB including conversion working memory\n";
         return false;
     }
 
@@ -211,13 +216,13 @@ bool stageRawInputForHdd(
                     std::numeric_limits<uint64_t>::max() / fragmentBytes
             ? std::numeric_limits<uint64_t>::max()
             : static_cast<uint64_t>(fs.f_bavail) * fragmentBytes;
-    if (availableBytes < rawSize ||
-        availableBytes - rawSize < TmpfsHeadroomBytes) {
+    if (availableBytes < inputSize ||
+        availableBytes - inputSize < TmpfsHeadroomBytes) {
         std::cout
             << "HDD RAM staging disabled: /dev/shm has "
             << availableBytes / MiB
             << " MiB free; needs "
-            << (rawSize + TmpfsHeadroomBytes) / MiB
+            << (inputSize + TmpfsHeadroomBytes) / MiB
             << " MiB\n";
         return false;
     }
@@ -246,9 +251,9 @@ bool stageRawInputForHdd(
     uint64_t copied = 0;
     bool ok = true;
     const auto start = Clock::now();
-    while (copied < rawSize) {
+    while (copied < inputSize) {
         const size_t request = static_cast<size_t>(
-            std::min<uint64_t>(buffer.size(), rawSize - copied));
+            std::min<uint64_t>(buffer.size(), inputSize - copied));
         ssize_t n = read(inputFd, buffer.data(), request);
         if (n < 0 && errno == EINTR) continue;
         if (n <= 0) {
@@ -267,7 +272,7 @@ bool stageRawInputForHdd(
     close(inputFd);
     if (close(outputFd) != 0) ok = false;
 
-    if (!ok || copied != rawSize) {
+    if (!ok || copied != inputSize) {
         std::cout
             << "HDD RAM staging failed after "
             << copied / MiB
@@ -279,7 +284,7 @@ bool stageRawInputForHdd(
     stage.setPath(stageTemplate);
     const double seconds = secondsSince(start);
     std::cout
-        << "HDD RAM staging: copied "
+        << "HDD RAM staging (" << label << "): copied "
         << copied / MiB
         << " MiB once in "
         << seconds
@@ -779,10 +784,15 @@ int main(int argc, char* argv[]) {
     uint64_t conversionMemoryMiB = resolvedMemory.mib;
     if (rec.main_format == erwt3d::MainFormat::LZ4 &&
         !conversionSSD &&
-        stageRawInputForHdd(
+        stageInputForHdd(
             inputPath,
             rawSize,
             resolvedMemory.mib,
+            24ULL * GiB,
+            rawSize / (1ULL << 20) +
+                (rawSize % (1ULL << 20) != 0 ? 1 : 0) +
+                2048,
+            "LZ4 raw",
             hddRawStage)) {
         conversionInputPath = hddRawStage.path();
         constexpr uint64_t MiB = 1ULL << 20;
@@ -1038,13 +1048,37 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
+        TemporaryRawStage rzfpLegacyStage;
+        std::string repackInputPath = legacyPath;
+        uint64_t repackMemoryMiB = resolvedMemory.mib;
+        const uint64_t legacyBytes = fileSizeOrZero(legacyPath);
+        if (!conversionSSD &&
+            stageInputForHdd(
+                legacyPath,
+                legacyBytes,
+                resolvedMemory.mib,
+                32ULL * GiB,
+                8192,
+                "RZFP legacy",
+                rzfpLegacyStage)) {
+            repackInputPath = rzfpLegacyStage.path();
+            constexpr uint64_t MiB = 1ULL << 20;
+            const uint64_t stagedMiB =
+                legacyBytes / MiB +
+                (legacyBytes % MiB != 0 ? 1 : 0);
+            repackMemoryMiB =
+                resolvedMemory.mib > stagedMiB
+                    ? resolvedMemory.mib - stagedMiB
+                    : 1;
+        }
+
         erwt3d::RzfpAxisLeafRepackStats repackStats;
         const auto repackStart = Clock::now();
         std::cout << "Repacking RZFP into X/Y/Z axis-leaf layout...\n";
         if (!erwt3d::repackRzfpAxisLeaves(
-                legacyPath,
+                repackInputPath,
                 workPath,
-                resolvedMemory.mib,
+                repackMemoryMiB,
                 &repackStats,
                 resolvedAxisWorkers)) {
             std::cerr << "Error: RZFP axis-leaf repack failed\n";
