@@ -27,6 +27,7 @@ struct Lz4AxisPlaneWriterStats {
 // chunkElements: approximate element count per LZ4 chunk
 // storageBudget: combined storage ratio limit (1.0 = raw size)
 // threads:   number of worker threads
+// memoryLimitMiB: writer memory budget; 0 preserves legacy behavior
 bool writeLz4AxisPlaneSidecar(
     const std::string& rawPath,
     const std::string& mainPath,
@@ -35,7 +36,8 @@ bool writeLz4AxisPlaneSidecar(
     uint32_t chunkElements = 128 * 1024,
     double storageBudget = 1.50,
     int threads = 4,
-    Lz4AxisPlaneWriterStats* stats = nullptr
+    Lz4AxisPlaneWriterStats* stats = nullptr,
+    uint64_t memoryLimitMiB = 0
 );
 
 } // namespace erwt3d
