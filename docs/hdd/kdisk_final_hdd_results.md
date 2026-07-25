@@ -1,43 +1,47 @@
-# K-Disk HDD Final Validation (PR #61 merged)
+# HDD Final Validation (PR #61 merged, commit 06348fe)
 
 ## 环境
-- 代码：main @ `06348fe` (Merge PR #61)
+- 代码：main @ `06348fe`
 - CTest：39/39 ✅
-- 转换二进制：系统 NVMe
-- 原始 DAT：G 盘 `/mnt/g/CUP/`
-- 转换输出 + 切片：K 盘 `/mnt/k/K/erwt3d_hdd_validation/`
+- K 盘：`/mnt/k`（hgfs HDD）— 转换输出 + 切片
+- G 盘：`/home`（NVMe xfs 系统盘）— 仅结果对比
 
-## 转换
+## 旧基线（G 盘，多文件格式，PR #61 之前）
+
+| 数据集 | 格式 | Cold r1 |
+|--------|------|:------:|
+| 20GB | LZ4 + YZ sidecar | 16.96s |
+| 20GB | LZ4 basic（无 sidecar） | 32.49s |
+| 50GB | RZFP axis leaf | 31.08s |
+| 50GB | RZFP legacy（无 axis） | 66.18s |
+
+## 转换（K 盘）
 
 | 指标 | 20GB | 50GB |
 |------|------|------|
-| HDD RAM staging | ✅ 18378MiB@160MiB/s | ✅ 21214MiB@345MiB/s |
-| 主编码 | LZ4 encode 168s | RZFP encode 2235s |
-| Axis 生成 | Y 57s + Z 41s | repack 1017s |
-| 程序集 | 91s (kernel-copy) | 1268s (kernel-copy) |
+| HDD RAM staging | 18GB@160MiB/s | 21GB@345MiB/s |
+| LZ4 main encode | 168s | — |
+| RZFP encode | — | 2235s |
+| Y/Z section | 57s + 41s | — |
+| Axis repack | — | 1017s |
+| Package assembly | 91s | 1268s |
 | **转换总时间** | **484s（8分钟）** | **4582s（76分钟）** |
-| 总（plan+convert） | 703s（12分钟） | 4931s（82分钟） |
 | 存储比 | 0.918x | 1.295x |
-| 嵌入式轴 | YZ | XYZ |
+| Embedded axes | YZ | XYZ |
 | Violations | — | 0 |
-| Max relative error | — | 0.0009999999 |
 
-## 切片性能（Guest-cold，drop_caches，K 盘）
+## 切片性能（Cold r1）
 
-| 数据集 | Cold r1 | Cold r2 | Cold r3 | Warm |
-|--------|---------|---------|---------|------|
-| **20GB** | **12.53s** | 6.30s | 6.33s | 6.14s |
-| **50GB** | **17.49s** | 12.15s | 12.21s | 12.18s |
+| 数据集 | K 盘 | G 盘 | vs 旧基线 |
+|--------|:----:|:----:|:--------:|
+| **20GB** | **12.53s** | 19.56s | **-26.1%** |
+| **50GB** | **17.49s** | 24.64s | **-43.7%** |
 
-## 对比旧基线
-
-| 数据集 | 旧 Cold r1 | 新 Cold r1 | 改善 |
-|--------|-----------|-----------|------|
-| 20GB LZ4 YZ | 16.96s | 12.53s | **-26.1%** |
-| 50GB RZFP axis | 31.08s | 17.49s | **-43.7%** |
+- IO profile: auto → hdd
+- 20GB: Fast-path YZ (embedded), Read tuning window=128MiB
+- 50GB: Fast-path XYZ axis-leaf (embedded)
 
 ## 验收
 - 330/330 SHA256 MATCH ✅
-- Fast-path: 20GB YZ (embedded), 50GB XYZ (embedded) ✅
 - Storage ≤ 1.50x ✅
 - Violations = 0 ✅
