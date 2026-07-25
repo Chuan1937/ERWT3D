@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -12,6 +13,7 @@
 struct Task {
     std::string command;
     std::vector<std::string> keyValueArgs;
+    bool rawArgv = false;
 };
 
 static bool fileExists(const std::string& path) {
@@ -93,31 +95,6 @@ static ParsedArg parseKeyValue(const std::string& arg) {
     return result;
 }
 
-static void buildArgv(const Task& task,
-                       const std::string& binDir,
-                       std::vector<const char*>& argvOut,
-                       std::string& binPathOut) {
-    std::string binaryName = resolveBinary(task.command);
-    binPathOut = binDir + "/" + binaryName;
-
-    argvOut.clear();
-    argvOut.push_back(binPathOut.c_str());
-
-    for (const auto& kv : task.keyValueArgs) {
-        ParsedArg pa = parseKeyValue(kv);
-        if (pa.isNegated) continue;
-
-        std::string dashKey = "--" + pa.key;
-        // Need stable storage for these strings
-        // We'll use a separate vector to hold them
-        argvOut.push_back(strdup(dashKey.c_str()));
-        if (!pa.isFlag) {
-            argvOut.push_back(strdup(pa.value.c_str()));
-        }
-    }
-    argvOut.push_back(nullptr);
-}
-
 // Special case: handle directories for some commands
 static std::string getBinDir(const std::string& selfPath) {
     size_t slash = selfPath.find_last_of('/');
@@ -143,24 +120,32 @@ static int runTask(const Task& task, const std::string& binDir, bool dryRun) {
     bool positionalOnly = (task.command == "info");
 
     argvVec.push_back(binPath.c_str());
-    for (const auto& kv : task.keyValueArgs) {
-        ParsedArg pa = parseKeyValue(kv);
-        if (pa.isNegated) continue;
+    if (task.rawArgv) {
+        for (const auto& arg : task.keyValueArgs) {
+            char* value = strdup(arg.c_str());
+            allocs.push_back(value);
+            argvVec.push_back(value);
+        }
+    } else {
+        for (const auto& kv : task.keyValueArgs) {
+            ParsedArg pa = parseKeyValue(kv);
+            if (pa.isNegated) continue;
 
-        if (positionalOnly) {
-            // Pass value directly, no --key prefix
-            const char* val = strdup(pa.isFlag ? pa.key.c_str() : pa.value.c_str());
-            allocs.push_back(const_cast<char*>(val));
-            argvVec.push_back(val);
-        } else {
-            std::string dashKey = "--" + pa.key;
-            char* k = strdup(dashKey.c_str());
-            allocs.push_back(k);
-            argvVec.push_back(k);
-            if (!pa.isFlag) {
-                char* v = strdup(pa.value.c_str());
-                allocs.push_back(v);
-                argvVec.push_back(v);
+            if (positionalOnly) {
+                // Pass value directly, no --key prefix
+                const char* val = strdup(pa.isFlag ? pa.key.c_str() : pa.value.c_str());
+                allocs.push_back(const_cast<char*>(val));
+                argvVec.push_back(val);
+            } else {
+                std::string dashKey = "--" + pa.key;
+                char* k = strdup(dashKey.c_str());
+                allocs.push_back(k);
+                argvVec.push_back(k);
+                if (!pa.isFlag) {
+                    char* v = strdup(pa.value.c_str());
+                    allocs.push_back(v);
+                    argvVec.push_back(v);
+                }
             }
         }
     }
@@ -290,9 +275,15 @@ static bool parseConfigFile(const std::string& path, std::vector<Task>& tasks) {
 }
 
 static void printUsage(const char* prog) {
-    std::cerr << "Usage: " << prog << " [options] config.txt\n"
-              << "       " << prog << " <command> key=value ...\n\n"
+    std::cerr << "Usage: " << prog << " <command> [--option value ...]\n"
+              << "       " << prog << " [options] config.txt\n"
+              << "       " << prog << " <command> key=value ...  (legacy)\n\n"
               << "sw4-style config file or direct command mode.\n\n"
+              << "Examples:\n"
+              << "  " << prog << " convert --input data.raw --output data.erwt3d"
+                 " --nx 801 --ny 2405 --nz 2501\n"
+              << "  " << prog << " contest --input data.erwt3d --output-dir results"
+                 " --positions-file positions.csv\n\n"
               << "Config file format:\n"
               << "  # comment\n"
               << "  command\n"
@@ -322,7 +313,9 @@ int main(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--dry-run") == 0 || std::strcmp(argv[i], "-n") == 0) {
             dryRun = true;
-        } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
+        } else if ((std::strcmp(argv[i], "--help") == 0 ||
+                    std::strcmp(argv[i], "-h") == 0) &&
+                   positionalArgs.empty()) {
             printUsage(argv[0]); return 0;
         } else {
             positionalArgs.push_back(argv[i]);
@@ -348,9 +341,16 @@ int main(int argc, char* argv[]) {
             return 1;
         }
     } else if (isKnownCommand(first)) {
-        // Direct command mode: erwt3d command key=value ...
+        // Direct command mode. Preserve normal --key value arguments exactly;
+        // config-file mode retains the historical key=value translation.
         Task t;
         t.command = first;
+        t.rawArgv = std::any_of(
+            positionalArgs.begin() + 1,
+            positionalArgs.end(),
+            [](const std::string& arg) {
+                return !arg.empty() && arg.front() == '-';
+            });
         for (size_t i = 1; i < positionalArgs.size(); ++i)
             t.keyValueArgs.push_back(positionalArgs[i]);
         tasks.push_back(t);
