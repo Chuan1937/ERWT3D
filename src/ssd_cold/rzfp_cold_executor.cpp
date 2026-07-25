@@ -184,16 +184,8 @@ bool executeRzfpAxisLeafColdSSD(
                                                    nx * nz * sizeof(float),
                                                    nx * ny * sizeof(float)});
     const uint64_t totalOutputBytes = 330ULL * largestOutputBytes;
-    const uint64_t memLimitBytes = static_cast<uint64_t>(config.memory_limit_mb) << 20;
 
-    bool deferredWrite = (config.write_mode == "deferred") ||
-        (config.write_mode == "auto" && totalOutputBytes + extentPlan.planned_read_bytes <= memLimitBytes);
-
-    size_t outputBatchSize = deferredWrite ? 330ULL : std::min<size_t>(330ULL,
-        (memLimitBytes / 2) / largestOutputBytes);
-    if (outputBatchSize == 0) outputBatchSize = 33;
-
-    std::vector<std::vector<float>> allOutputs(outputBatchSize);
+    std::vector<std::vector<float>> allOutputs(330);
     for (auto& o : allOutputs) o.resize(largestOutputBytes / sizeof(float), 0.0f);
 
     std::vector<std::string> outputFiles(330);
@@ -362,20 +354,15 @@ bool executeRzfpAxisLeafColdSSD(
     auto tWrite = Clock::now();
 
     uint32_t slot = 0;
-    size_t batchStart = 0;
-    while (batchStart < 330) {
-        size_t batchEnd = std::min<size_t>(330, batchStart + outputBatchSize);
-
-        for (size_t bi = batchStart; bi < batchEnd; ++bi) {
-            const std::string& fname = outputFiles[bi];
-            int ofd = open(fname.c_str(), O_WRONLY);
+    for (const auto& g : groups) {
+        for (size_t si = 0; si < g.indices->size(); ++si) {
+            int ofd = open(outputFiles[slot].c_str(), O_WRONLY);
             if (ofd >= 0) {
-                (void)pwrite(ofd, allOutputs[bi - batchStart].data(), largestOutputBytes, 0);
+                (void)pwrite(ofd, allOutputs[slot].data(), largestOutputBytes, 0);
                 close(ofd);
             }
+            ++slot;
         }
-
-        batchStart = batchEnd;
     }
 
     profile->write_time_ms = msSince(tWrite);
