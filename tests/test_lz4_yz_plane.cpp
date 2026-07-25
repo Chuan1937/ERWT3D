@@ -204,7 +204,8 @@ void testRoundTrip(PlaneAxis axis, uint64_t planeIndex) {
             kChunkElements,
             100.0,  // no practical limit for tiny test dataset
             3,
-            &stats),
+            &stats,
+            1),
         std::string("write ") + axisLabel(axis) + " sidecar");
     CHECK(stats.written, "writer stats mark output written");
     CHECK(stats.axis == axis, "writer stats axis");
@@ -228,7 +229,9 @@ void testRoundTrip(PlaneAxis axis, uint64_t planeIndex) {
     CHECK(
         header.compression == AXISPLANE_COMPRESSION_LZ4,
         "header compression");
-    CHECK(header.chunks_per_plane >= 1, "chunks per plane");
+    CHECK(
+        header.chunks_per_plane > 1,
+        "bounded writer emits multiple chunks per plane");
     CHECK(
         header.total_chunks ==
             header.plane_count * header.chunks_per_plane,
