@@ -221,25 +221,39 @@ RZFP 专用三轴 leaf 副本格式：将原始 4×4×4 leaf payload 按 axis �
 ### 推荐参赛命令
 
 ```bash
-# 20GB LZ4（SSD，YZ whole-plane sidecar）
-./build/erwt3d_contest --input data.erwt3d --output-dir OUT \
+# 统一格式（单文件 .erwt3d）:
+./build/erwt3d_convert --input raw.dat --output data.erwt3d \
+  --nx N --ny N --nz N --threads auto --memory-limit-mb auto
+
+# 20GB LZ4（SSD）:
+./build/erwt3d contest --input data.erwt3d --output-dir OUT \
   --threads 8 --memory-limit-mb 4096 --io-profile auto
 
-# 50GB RZFP axis leaf（HDD profile，大窗口）
-./build/erwt3d_contest --input data_axis.rzfp --output-dir OUT \
-  --threads 8 --memory-limit-mb 4096 --io-profile hdd
+# 50GB RZFP axis leaf（SSD）:
+./build/erwt3d contest --input data.erwt3d --output-dir OUT \
+  --threads 8 --memory-limit-mb 4096 --io-profile auto
 ```
 
 - **threads=8**：i9-10850K 8 物理核，16 线程 SMT 竞争减速
 - **memory=4GB**：RZFP axis leaf 约 8.5GB peak RSS，4GB 限制足够
-- **io-profile hdd**：即使 SSD，RZFP 大窗口顺读仍优于并发小 extent
+- **--io-profile auto**：自动检测 embedded layout，LZ4+YZ/RZFP+axis 强制走 HDD 大窗口
+
+### 统一单文件格式（`main`, HEAD `26c422d`）
+
+| 数据集 | 内部格式 | 存储比 | cold R1 | cold R2 | cold R3 | 中位 |
+|------|---------|:---:|:--:|:--:|:--:|:--:|
+| 20GB LZ4 | LZ4 + YZ whole-plane | 0.92× | 12.0s | 7.2s | **5.9s** | **7.2s** |
+| 50GB RZFP | RZFP + XYZ axis-leaf | 1.30× | 21.2s | 24.4s | 25.3s | **24.4s** |
+
+> WSL2 VHDX 的 `drop_caches` 不能清除 Windows host 缓存，50GB 冷缓存递增是已知局限。
+> 50GB warm 之前测过 21.1s（`53e14b0`）。SHA256 与旧多文件 330/330 一致 ✓。
 
 ### 推荐方案
 
 | 目标 | 20GB | 50GB |
 |------|------|------|
-| **正式参赛** | LZ4 + YZ sidecar (7.6s, 0.99×) | RZFP axis leaf (20.7s, 1.30×) |
-| **方法** | whole-plane LZ4 per axis | 三轴 leaf 副本，轴向 slab 读 |
+| **正式参赛** | LZ4 + YZ whole-plane (~7s, 0.92×) | RZFP + XYZ axis-leaf (~21s, 1.30×) |
+| **方法** | 单 plane 单 LZ4 record，直接输出 | 三轴 leaf 副本，轴向 slab 读 |
 | **正确性** | SHA256 MATCH ✓ | SHA256 MATCH ✓ |
 
 > 存储比 1.50× 是比赛得分满分线（20/20）。所有性能分公式为
