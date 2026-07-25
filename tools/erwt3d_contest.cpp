@@ -419,11 +419,14 @@ int main(int argc, char* argv[]) {
 
     // Auto is layout-aware, not just device-aware.  The optimized production
     // layouts leave either the LZ4 main X path or the RZFP fallback path
-    // dependent on large contiguous windows.  Rebuild the complete config
-    // after choosing HDD; changing only io_profile would retain the SSD
-    // 4 MiB/64 KiB window parameters under an HDD label.
-    if (requestedProfile == erwt3d::IOProfileType::Auto &&
-        (fmt == erwt3d::OptimizedFileFormat::RZFP || lz4AxisPlanes)) {
+    // dependent on large contiguous windows.  But on physical SSD with complete
+    // axis-leaf/axis-plane, we skip this override and let the cold executor
+    // (or SSD-optimized fallback) handle reads.
+    const bool forceHDDLayout = (requestedProfile == erwt3d::IOProfileType::Auto) &&
+        (fmt == erwt3d::OptimizedFileFormat::RZFP || lz4AxisPlanes);
+    const bool onPhysicalSSD = (unifiedCfg.io_profile == erwt3d::IOProfileType::SSD ||
+                                 unifiedCfg.io_profile == erwt3d::IOProfileType::WSL_SSD);
+    if (forceHDDLayout && !onPhysicalSSD) {
         unifiedCfg = erwt3d::makeUnifiedConfig(
             erwt3d::IOProfileType::HDD,
             inputPath,
@@ -434,6 +437,14 @@ int main(int argc, char* argv[]) {
             fmt == erwt3d::OptimizedFileFormat::RZFP
                 ? "auto-rzfp-large-window-cache"
                 : "auto-lz4-axis-large-window";
+    } else if (forceHDDLayout && onPhysicalSSD &&
+               !(rzfpAxisLeaf || (lz4AxisPlanes && fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D))) {
+        unifiedCfg = erwt3d::makeUnifiedConfig(
+            erwt3d::IOProfileType::HDD,
+            inputPath,
+            threads,
+            actualMemoryLimitMib,
+            readWindowMb);
     }
 
     constexpr uint64_t kLargeRzfpThreshold =
