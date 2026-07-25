@@ -259,6 +259,9 @@ bool executeRzfpAxisLeafColdSSD(
                     auto tDecStart = Clock::now();
                     RzfpCodec& codec = threadCodecs[color];
                     uint64_t offset = 0;
+                    uint64_t localDecoded = 0;
+                    uint64_t localErrors = 0;
+                    uint64_t localSkipped = 0;
 
                     while (offset < slabSize && allOk) {
                         if (slabSize - offset < sizeof(uint32_t)) break;
@@ -269,6 +272,7 @@ bool executeRzfpAxisLeafColdSSD(
 
                         if (descriptorId >= descriptors.size()) {
                             totalDecodeErrors++;
+                            localErrors++;
                             break;
                         }
 
@@ -276,6 +280,7 @@ bool executeRzfpAxisLeafColdSSD(
                         const uint16_t recSize = descriptorSizeVal(desc);
                         if (recSize > slabSize - offset) {
                             totalDecodeErrors++;
+                            localErrors++;
                             break;
                         }
 
@@ -290,8 +295,10 @@ bool executeRzfpAxisLeafColdSSD(
                         if (!codec.decodeRecord(descriptorCodecVal(desc),
                                 slabData + offset, recSize, leaf)) {
                             totalDecodeErrors++;
+                            localErrors++;
                         } else {
                             totalDecodedLeaves++;
+                            localDecoded++;
 
                             for (const auto& target : slab.targets) {
                                 if (target.output_slot >= allOutputs.size()) continue;
@@ -327,6 +334,15 @@ bool executeRzfpAxisLeafColdSSD(
                         offset += recSize;
                     }
 
+                    static std::atomic<int> cbCount{0};
+                    int myCb = cbCount++;
+                    if (myCb < 3) {
+                        std::cerr << "[DCB] slab id=" << slab.slab_id << " src=" << (int)slab.source
+                                  << " processed=" << offset << "/" << slabSize
+                                  << " leaves=" << localDecoded
+                                  << " recs=" << (localDecoded + localErrors + localSkipped)
+                                  << " errs=" << localErrors << std::endl;
+                    }
                     totalDecMs = totalDecMs + msSince(tDecStart);
                     return offset == slabSize;
                 }));
