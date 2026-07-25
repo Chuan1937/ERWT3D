@@ -1101,15 +1101,15 @@ int main(int argc, char* argv[]) {
                 repackMemoryMiB,
                 &repackStats,
                 resolvedAxisWorkers)) {
-            std::cerr << "Error: RZFP axis-leaf repack failed\n";
-            removeIfPresent(legacyPath);
+            std::cerr << "Error: RZFP axis-leaf repack failed\n"
+                      << "Preserved RZFP intermediate: "
+                      << legacyPath << "\n";
             removeIfPresent(workPath);
             removeAuxiliaryFiles(workPath);
             return 1;
         }
         std::cout << "  RZFP axis repack: "
                   << secondsSince(repackStart) << "s\n";
-        removeIfPresent(legacyPath);
 
         std::vector<erwt3d::EmbeddedSectionInput> sections = {
             {erwt3d::EmbeddedSectionType::RzfpAxisLeafX,
@@ -1123,7 +1123,9 @@ int main(int argc, char* argv[]) {
         const auto packageStart = Clock::now();
         if (!erwt3d::embedSectionsInPlace(
                 workPath, sections, true, &packageStats)) {
-            std::cerr << "Error: cannot create single-file RZFP package\n";
+            std::cerr << "Error: cannot create single-file RZFP package\n"
+                      << "Preserved RZFP intermediate: "
+                      << legacyPath << "\n";
             removeIfPresent(workPath);
             removeAuxiliaryFiles(workPath);
             return 1;
@@ -1135,7 +1137,9 @@ int main(int argc, char* argv[]) {
         const double storageRatio =
             rawSize > 0 ? static_cast<double>(outBytes) / rawSize : 0.0;
         if (outBytes == 0) {
-            std::cerr << "Error: final RZFP package is empty\n";
+            std::cerr << "Error: final RZFP package is empty\n"
+                      << "Preserved RZFP intermediate: "
+                      << legacyPath << "\n";
             removeIfPresent(workPath);
             return 1;
         }
@@ -1147,9 +1151,13 @@ int main(int argc, char* argv[]) {
                 << "x full-score target; output will be kept\n";
         }
         if (!installPackage(workPath, outputPath)) {
-            removeIfPresent(workPath);
+            std::cerr << "Preserved packaged RZFP working file: "
+                      << workPath << "\n"
+                      << "Preserved RZFP intermediate: "
+                      << legacyPath << "\n";
             return 1;
         }
+        removeIfPresent(legacyPath);
 
         std::cout << "RZFP conversion complete: " << outputPath << "\n"
                   << "  Storage ratio: " << std::fixed << std::setprecision(3)
