@@ -13,6 +13,7 @@
 #include <cmath>
 #include <fcntl.h>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <unistd.h>
 #include <vector>
@@ -239,7 +240,7 @@ PlannerResult planFormat(
 
         if (!c.feasible) {
             c.reason += " (total ratio " + std::to_string(c.total_ratio_upper) +
-                        " > budget " + std::to_string(storage_budget) + ")";
+                        " > full-score target " + std::to_string(storage_budget) + ")";
         }
         result.alternatives.push_back(c);
     }
@@ -252,8 +253,12 @@ PlannerResult planFormat(
         RzfpAutoPlanConfig rzfpCfg;
         rzfpCfg.time_limit_seconds = 300;
         rzfpCfg.soft_time_limit_seconds = 120;
-        rzfpCfg.storage_limit = storage_budget;
-        rzfpCfg.storage_safety_limit = storage_budget * 0.95;
+        // The contest storage threshold affects score but is not a validity
+        // constraint. Keep evaluating RZFP above 1.50x so the converter can
+        // still produce a correct, fast file and report the score penalty.
+        rzfpCfg.storage_limit = std::numeric_limits<double>::infinity();
+        rzfpCfg.storage_safety_limit =
+            std::numeric_limits<double>::infinity();
         rzfpCfg.evaluate_x_sidecar = false;
         rzfpCfg.evaluate_hdd_windows = false;
         rzfpCfg.main_codec_config.error.policy = RelativeErrorPolicy::Strict;
@@ -313,7 +318,7 @@ PlannerResult planFormat(
 
             if (!c.feasible) {
                 c.reason += " (total ratio " + std::to_string(c.total_ratio_upper) +
-                            " > budget " + std::to_string(storage_budget) + ")";
+                            " > full-score target " + std::to_string(storage_budget) + ")";
             }
             result.alternatives.push_back(c);
         }
@@ -321,7 +326,9 @@ PlannerResult planFormat(
     }
 #endif
 
-    // Select recommended: best feasible by predicted T_composite
+    // Prefer the fastest candidate inside the 1.50x scoring target. If every
+    // valid candidate is over target, still choose the fastest one: storage is
+    // a scored metric, not a contest disqualification condition.
     FormatCandidate* best = nullptr;
     for (auto& c : result.alternatives) {
         if (!c.feasible) continue;
@@ -329,12 +336,21 @@ PlannerResult planFormat(
             best = &c;
         }
     }
+    if (!best) {
+        for (auto& c : result.alternatives) {
+            if (!best ||
+                c.predicted_t_composite < best->predicted_t_composite) {
+                best = &c;
+            }
+        }
+    }
 
     if (best) {
         result.recommended = *best;
     } else {
+        result.recommended.main_format = MainFormat::Unknown;
         result.recommended.feasible = false;
-        result.recommended.reason = "no feasible format under budget " + std::to_string(storage_budget);
+        result.recommended.reason = "no valid format candidate";
     }
 
     auto t1 = Clock::now();

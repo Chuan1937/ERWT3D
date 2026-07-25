@@ -469,12 +469,18 @@ bool packageExistingOptimizedFile(
             ? 0.0
             : static_cast<double>(packageBytes) /
                   static_cast<double>(rawBytes);
-    if (packageBytes == 0 || ratio > StorageBudget) {
-        std::cerr
-            << "Error: packaged file exceeds storage budget: "
-            << ratio << "x\n";
+    if (packageBytes == 0) {
+        std::cerr << "Error: packaged file is empty\n";
         removeIfPresent(workPath);
         return false;
+    }
+    if (ratio > StorageBudget) {
+        std::cerr
+            << "WARNING: packaged file storage ratio "
+            << ratio << "x exceeds the "
+            << StorageBudget
+            << "x full-score target; continuing because storage affects "
+               "score but is not a validity requirement\n";
     }
     if (!installPackage(workPath, outputPath)) {
         removeIfPresent(workPath);
@@ -568,7 +574,7 @@ int main(int argc, char* argv[]) {
                 << "Internal policy:\n"
                 << "  RZFP error: contest_bound=1e-3, internal_bound=7.5e-4\n"
                 << "  One self-contained output file; no runtime sidecars\n"
-                << "  Storage budget: 1.50x hard limit\n";
+                << "  Storage target: 1.50x for full score; over-target warns and continues\n";
             return 0;
         } else {
             std::cerr << "Unknown option: " << argv[i] << "\n";
@@ -758,19 +764,28 @@ int main(int argc, char* argv[]) {
     erwt3d::PlannerResult plan = erwt3d::planFormat(
         inputPath, nx, ny, nz, threads, StorageBudget, workload);
 
-    if (!plan.recommended.feasible) {
-        std::cerr << "Error: no feasible format found: " << plan.recommended.reason << "\n";
+    if (plan.alternatives.empty() ||
+        plan.recommended.main_format == erwt3d::MainFormat::Unknown) {
+        std::cerr << "Error: no valid format found: "
+                  << plan.recommended.reason << "\n";
         return 1;
     }
 
     const auto& rec = plan.recommended;
+    if (!rec.feasible) {
+        std::cerr
+            << "WARNING: all valid format candidates exceed the "
+            << StorageBudget
+            << "x full-score storage target; selecting the fastest valid "
+               "candidate and continuing\n";
+    }
     std::cout << "\nPlan result:\n";
     for (const auto& c : plan.alternatives) {
         std::cout << "  " << c.name
                   << ": ratio=" << std::fixed << std::setprecision(3) << c.total_ratio_mean << "x"
                   << " (upper " << c.total_ratio_upper << "x)"
                   << " T_pred=" << std::setprecision(2) << c.predicted_t_composite << "s"
-                  << (c.feasible ? "" : " INFEASIBLE")
+                  << (c.feasible ? "" : " OVER-STORAGE-TARGET")
                   << (&c == &rec ? " <-- SELECTED" : "")
                   << "\n";
     }
@@ -902,7 +917,7 @@ int main(int argc, char* argv[]) {
                         ny,
                         nz,
                         std::numeric_limits<uint32_t>::max(),
-                        StorageBudget,
+                        std::numeric_limits<double>::infinity(),
                         workerThreads,
                         &axisStats,
                         workerMemoryMiB);
@@ -960,22 +975,10 @@ int main(int argc, char* argv[]) {
             std::cout << "\n";
         }
 
-        const uint64_t mainBytes = fileSizeOrZero(workPath);
-        uint64_t selectedBytes = mainBytes;
-        std::sort(candidates.begin(), candidates.end(),
-                  [](const AxisCandidate& a, const AxisCandidate& b) {
-                      return a.bytes < b.bytes;
-                  });
         std::vector<erwt3d::EmbeddedSectionInput> sections;
         for (const auto& candidate : candidates) {
-            if (candidate.written &&
-                candidate.bytes != 0 &&
-                selectedBytes <= static_cast<uint64_t>(StorageBudget * rawSize) &&
-                candidate.bytes <=
-                    static_cast<uint64_t>(StorageBudget * rawSize) -
-                        selectedBytes) {
+            if (candidate.written && candidate.bytes != 0) {
                 sections.push_back({candidate.type, candidate.path});
-                selectedBytes += candidate.bytes;
             } else {
                 removeIfPresent(candidate.path);
             }
@@ -999,11 +1002,17 @@ int main(int argc, char* argv[]) {
 
         const uint64_t outBytes = fileSizeOrZero(workPath);
         double storageRatio = rawSize > 0 ? static_cast<double>(outBytes) / rawSize : 0.0;
-        if (outBytes == 0 || storageRatio > StorageBudget) {
-            std::cerr << "Error: final LZ4 package exceeds storage budget: "
-                      << storageRatio << "x\n";
+        if (outBytes == 0) {
+            std::cerr << "Error: final LZ4 package is empty\n";
             removeIfPresent(workPath);
             return 1;
+        }
+        if (storageRatio > StorageBudget) {
+            std::cerr
+                << "WARNING: final LZ4 storage ratio "
+                << storageRatio << "x exceeds the "
+                << StorageBudget
+                << "x full-score target; output will be kept\n";
         }
         if (!installPackage(workPath, outputPath)) {
             removeIfPresent(workPath);
@@ -1125,11 +1134,17 @@ int main(int argc, char* argv[]) {
         const uint64_t outBytes = fileSizeOrZero(workPath);
         const double storageRatio =
             rawSize > 0 ? static_cast<double>(outBytes) / rawSize : 0.0;
-        if (outBytes == 0 || storageRatio > StorageBudget) {
-            std::cerr << "Error: final RZFP package exceeds storage budget: "
-                      << storageRatio << "x\n";
+        if (outBytes == 0) {
+            std::cerr << "Error: final RZFP package is empty\n";
             removeIfPresent(workPath);
             return 1;
+        }
+        if (storageRatio > StorageBudget) {
+            std::cerr
+                << "WARNING: final RZFP storage ratio "
+                << storageRatio << "x exceeds the "
+                << StorageBudget
+                << "x full-score target; output will be kept\n";
         }
         if (!installPackage(workPath, outputPath)) {
             removeIfPresent(workPath);
