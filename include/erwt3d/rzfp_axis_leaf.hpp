@@ -66,7 +66,8 @@ bool repackRzfpAxisLeaves(
     const std::string& inputPath,
     const std::string& outputPath,
     size_t memoryLimitMiB = 1024,
-    RzfpAxisLeafRepackStats* stats = nullptr
+    RzfpAxisLeafRepackStats* stats = nullptr,
+    int axisWorkers = 1
 );
 
 } // namespace erwt3d
