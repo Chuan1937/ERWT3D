@@ -127,10 +127,15 @@ ColdRequestPlanResult buildColdRequestPlan(
 
         std::vector<EmbeddedSectionInfo> embSections;
         if (hasEmbeddedSections(rzfpHdr)) {
+            struct stat fileStat{};
+            if (fstat(fd, &fileStat) != 0) {
+                result.error = "cannot stat file"; result.main_fd = -1; return result;
+            }
             if (!readEmbeddedSectionDirectory(fd,
                     getEmbeddedSectionDirectoryOffset(rzfpHdr),
                     getEmbeddedSectionDirectoryBytes(rzfpHdr),
-                    0, embSections)) {
+                    static_cast<uint64_t>(fileStat.st_size),
+                    embSections)) {
                 result.error = "cannot read embedded sections"; result.main_fd = -1; return result;
             }
         }
