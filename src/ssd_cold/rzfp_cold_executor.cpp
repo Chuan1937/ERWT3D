@@ -17,6 +17,7 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <memory>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
@@ -221,17 +222,17 @@ bool executeRzfpAxisLeafColdSSD(
         const auto& ext = extentPlan.extents[ei];
 
         uint64_t allocSize = (ext.size + 4095) & ~static_cast<uint64_t>(4095);
-        uint8_t* extBuf = static_cast<uint8_t*>(std::aligned_alloc(4096, static_cast<size_t>(allocSize)));
-        if (!extBuf) { allOk = false; break; }
+        uint8_t* extBufRaw = static_cast<uint8_t*>(std::aligned_alloc(4096, static_cast<size_t>(allocSize)));
+        if (!extBufRaw) { allOk = false; break; }
+        auto extBuf = std::shared_ptr<uint8_t>(extBufRaw, std::free);
 
         auto tPread = Clock::now();
-        ssize_t nr = pread(ext.fd, extBuf, static_cast<size_t>(ext.size),
+        ssize_t nr = pread(ext.fd, extBuf.get(), static_cast<size_t>(ext.size),
                            static_cast<off_t>(ext.file_offset));
         double ioMs = msSince(tPread);
         totalIOMs = totalIOMs + ioMs;
 
         if (nr != static_cast<ssize_t>(ext.size)) {
-            std::free(extBuf);
             std::cerr << "[RZFP-COLD] pread failed\n";
             allOk = false; break;
         }
@@ -245,7 +246,7 @@ bool executeRzfpAxisLeafColdSSD(
             uint64_t relOff = slab.file_offset - ext.file_offset;
             if (relOff + slab.slab_bytes > ext.size) continue;
 
-            const uint8_t* slabData = extBuf + relOff;
+            const uint8_t* slabData = extBuf.get() + relOff;
             const uint64_t slabSize = slab.slab_bytes;
 
             size_t color = sli % static_cast<size_t>(decodeThreads);
@@ -336,8 +337,8 @@ bool executeRzfpAxisLeafColdSSD(
             }
         }
 
-        auto freeExt = [extBuf]() { std::free(extBuf); };
-        decodeFutures.push_back(decodePool.submit([freeExt]() -> bool { freeExt(); return true; }));
+        decodeFutures.push_back(decodePool.submit(
+            [extBuf]() -> bool { return true; }));
     }
 
     while (!decodeFutures.empty()) {
