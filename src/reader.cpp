@@ -1187,7 +1187,7 @@ bool ERWT3DReader::tryReadBatchAxisPlaneSidecar_(
 
     for (const auto& task : tasks) {
         const uint64_t base = task.planeIndex * chunksPerPlane;
-        if (base > idx.size() ||
+        if (base >= idx.size() ||
             chunksPerPlane > idx.size() - static_cast<size_t>(base) ||
             task.requestIndices.empty()) {
             return false;

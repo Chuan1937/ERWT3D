@@ -560,18 +560,18 @@ int main(int argc, char* argv[]) {
         rzfpConfig.hdd = unifiedCfg.hdd;
         rzfpConfig.ssd = unifiedCfg.ssd;
 
-        // Format-aware cap: large RZFP benefits from bounded threads/working-set.
-        // 16 threads → SMT contention; >4GB inflates batch planning without gain.
+        // Format-aware CPU cap: 16 threads regressed from SMT contention in
+        // the validated large RZFP workload. Memory is intentionally left at
+        // the resolved user/auto value because the window cache was already
+        // constructed from that budget; reporting a later 4 GiB cap would be
+        // inaccurate without changing actual allocation or performance.
         const uint64_t rawBytes = rzfpHeader.nx * rzfpHeader.ny * rzfpHeader.nz * sizeof(float);
         if (rawBytes >= kLargeRzfpThreshold) {
             const int cappedT = std::min(threads, 8);
-            const uint64_t cappedM = std::min<uint64_t>(actualMemoryLimitMib, 4096);
-            if (cappedT != threads || cappedM != actualMemoryLimitMib) {
+            if (cappedT != threads) {
                 std::cout << "RZFP large-format tuning: threads " << threads
-                          << " -> " << cappedT << ", memory "
-                          << actualMemoryLimitMib << " -> " << cappedM << " MiB\n";
+                          << " -> " << cappedT << "\n";
                 rzfpConfig.decode_threads = cappedT;
-                actualMemoryLimitMib = cappedM;
             }
         }
 
