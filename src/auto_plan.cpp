@@ -240,7 +240,7 @@ PlannerResult planFormat(
 
         if (!c.feasible) {
             c.reason += " (total ratio " + std::to_string(c.total_ratio_upper) +
-                        " > budget " + std::to_string(storage_budget) + ")";
+                        " > full-score target " + std::to_string(storage_budget) + ")";
         }
         result.alternatives.push_back(c);
     }
@@ -318,7 +318,7 @@ PlannerResult planFormat(
 
             if (!c.feasible) {
                 c.reason += " (total ratio " + std::to_string(c.total_ratio_upper) +
-                            " > budget " + std::to_string(storage_budget) + ")";
+                            " > full-score target " + std::to_string(storage_budget) + ")";
             }
             result.alternatives.push_back(c);
         }
