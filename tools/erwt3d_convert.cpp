@@ -34,6 +34,7 @@
 #include <sched.h>
 #endif
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 
 namespace {
@@ -125,6 +126,168 @@ void removeAuxiliaryFiles(const std::string& path) {
     removeIfPresent(erwt3d::rzfpAxisLeafPath(path, erwt3d::PlaneAxis::X));
     removeIfPresent(erwt3d::rzfpAxisLeafPath(path, erwt3d::PlaneAxis::Y));
     removeIfPresent(erwt3d::rzfpAxisLeafPath(path, erwt3d::PlaneAxis::Z));
+}
+
+class TemporaryRawStage {
+public:
+    TemporaryRawStage() = default;
+    ~TemporaryRawStage() {
+        if (!path_.empty()) removeIfPresent(path_);
+    }
+
+    TemporaryRawStage(const TemporaryRawStage&) = delete;
+    TemporaryRawStage& operator=(const TemporaryRawStage&) = delete;
+
+    bool active() const { return !path_.empty(); }
+    const std::string& path() const { return path_; }
+    void setPath(std::string path) { path_ = std::move(path); }
+
+private:
+    std::string path_;
+};
+
+bool writeAllFd(int fd, const char* data, size_t bytes) {
+    size_t done = 0;
+    while (done < bytes) {
+        const ssize_t n = write(fd, data + done, bytes - done);
+        if (n > 0) {
+            done += static_cast<size_t>(n);
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        return false;
+    }
+    return true;
+}
+
+bool stageRawInputForHdd(
+    const std::string& inputPath,
+    uint64_t rawSize,
+    uint64_t memoryLimitMiB,
+    TemporaryRawStage& stage)
+{
+#if !defined(__linux__)
+    (void)inputPath;
+    (void)rawSize;
+    (void)memoryLimitMiB;
+    (void)stage;
+    return false;
+#else
+    constexpr uint64_t MiB = 1ULL << 20;
+    constexpr uint64_t MinStageBytes = 1ULL << 30;
+    constexpr uint64_t MaxStageBytes = 24ULL << 30;
+    constexpr uint64_t HeadroomMiB = 2048;
+    constexpr uint64_t TmpfsHeadroomBytes = 512ULL << 20;
+
+    if (rawSize < MinStageBytes || rawSize > MaxStageBytes) return false;
+
+    const uint64_t rawMiB =
+        rawSize / MiB + (rawSize % MiB != 0 ? 1 : 0);
+    if (rawMiB >
+            (std::numeric_limits<uint64_t>::max() - HeadroomMiB) / 2 ||
+        memoryLimitMiB < 2 * rawMiB + HeadroomMiB) {
+        std::cout
+            << "HDD RAM staging disabled: memory budget needs at least "
+            << (2 * rawMiB + HeadroomMiB)
+            << " MiB for the staged raw volume and one axis-plane buffer\n";
+        return false;
+    }
+
+    struct statvfs fs{};
+    if (statvfs("/dev/shm", &fs) != 0) {
+        std::cout
+            << "HDD RAM staging disabled: cannot inspect /dev/shm: "
+            << std::strerror(errno) << "\n";
+        return false;
+    }
+    const uint64_t fragmentBytes =
+        fs.f_frsize != 0 ? static_cast<uint64_t>(fs.f_frsize)
+                         : static_cast<uint64_t>(fs.f_bsize);
+    const uint64_t availableBytes =
+        fragmentBytes != 0 &&
+                static_cast<uint64_t>(fs.f_bavail) >
+                    std::numeric_limits<uint64_t>::max() / fragmentBytes
+            ? std::numeric_limits<uint64_t>::max()
+            : static_cast<uint64_t>(fs.f_bavail) * fragmentBytes;
+    if (availableBytes < rawSize ||
+        availableBytes - rawSize < TmpfsHeadroomBytes) {
+        std::cout
+            << "HDD RAM staging disabled: /dev/shm has "
+            << availableBytes / MiB
+            << " MiB free; needs "
+            << (rawSize + TmpfsHeadroomBytes) / MiB
+            << " MiB\n";
+        return false;
+    }
+
+    char stageTemplate[] = "/dev/shm/erwt3d-hdd-stage-XXXXXX";
+    const int outputFd = mkstemp(stageTemplate);
+    if (outputFd < 0) {
+        std::cout
+            << "HDD RAM staging disabled: mkstemp failed: "
+            << std::strerror(errno) << "\n";
+        return false;
+    }
+    const int inputFd = open(inputPath.c_str(), O_RDONLY | O_CLOEXEC);
+    if (inputFd < 0) {
+        std::cout
+            << "HDD RAM staging disabled: cannot open raw input: "
+            << std::strerror(errno) << "\n";
+        close(outputFd);
+        removeIfPresent(stageTemplate);
+        return false;
+    }
+
+    posix_fadvise(inputFd, 0, 0, POSIX_FADV_SEQUENTIAL);
+    constexpr size_t CopyBytes = 16ULL << 20;
+    std::vector<char> buffer(CopyBytes);
+    uint64_t copied = 0;
+    bool ok = true;
+    const auto start = Clock::now();
+    while (copied < rawSize) {
+        const size_t request = static_cast<size_t>(
+            std::min<uint64_t>(buffer.size(), rawSize - copied));
+        ssize_t n = read(inputFd, buffer.data(), request);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) {
+            ok = false;
+            break;
+        }
+        if (!writeAllFd(
+                outputFd,
+                buffer.data(),
+                static_cast<size_t>(n))) {
+            ok = false;
+            break;
+        }
+        copied += static_cast<uint64_t>(n);
+    }
+    close(inputFd);
+    if (close(outputFd) != 0) ok = false;
+
+    if (!ok || copied != rawSize) {
+        std::cout
+            << "HDD RAM staging failed after "
+            << copied / MiB
+            << " MiB; falling back to direct HDD reads\n";
+        removeIfPresent(stageTemplate);
+        return false;
+    }
+
+    stage.setPath(stageTemplate);
+    const double seconds = secondsSince(start);
+    std::cout
+        << "HDD RAM staging: copied "
+        << copied / MiB
+        << " MiB once in "
+        << seconds
+        << "s ("
+        << (seconds > 0.0
+                ? static_cast<double>(copied) / MiB / seconds
+                : 0.0)
+        << " MiB/s); subsequent LZ4/Y/Z scans use tmpfs\n";
+    return true;
+#endif
 }
 
 bool installPackage(const std::string& workPath, const std::string& outputPath) {
@@ -609,13 +772,33 @@ int main(int argc, char* argv[]) {
     removeIfPresent(legacyPath);
     removeAuxiliaryFiles(workPath);
 
+    TemporaryRawStage hddRawStage;
+    std::string conversionInputPath = inputPath;
+    uint64_t conversionMemoryMiB = resolvedMemory.mib;
+    if (rec.main_format == erwt3d::MainFormat::LZ4 &&
+        !conversionSSD &&
+        stageRawInputForHdd(
+            inputPath,
+            rawSize,
+            resolvedMemory.mib,
+            hddRawStage)) {
+        conversionInputPath = hddRawStage.path();
+        constexpr uint64_t MiB = 1ULL << 20;
+        const uint64_t stagedMiB =
+            rawSize / MiB + (rawSize % MiB != 0 ? 1 : 0);
+        conversionMemoryMiB =
+            resolvedMemory.mib > stagedMiB
+                ? resolvedMemory.mib - stagedMiB
+                : 1;
+    }
+
     if (rec.main_format == erwt3d::MainFormat::LZ4) {
         const auto mainStart = Clock::now();
         erwt3d::RawXAuxStats auxStats;
         if (!erwt3d::writeERWT3DFromFile(
-                workPath, inputPath, nx, ny, nz,
+                workPath, conversionInputPath, nx, ny, nz,
                 64, 64, 64, 4, 4, 4,
-                threads, resolvedMemory.mib,
+                threads, conversionMemoryMiB,
                 0, 0,
                 true,
                 erwt3d::RawXAuxMode::Off,
@@ -642,11 +825,14 @@ int main(int argc, char* argv[]) {
         constexpr uint64_t MiB = 1ULL << 20;
         const uint64_t rawMiB =
             rawSize / MiB + (rawSize % MiB != 0 ? 1 : 0);
+        const uint64_t parallelPlaneCopies =
+            hddRawStage.active() ? 3 : 2;
         const uint64_t parallelPlaneMemoryMiB =
             rawMiB >
-                    (std::numeric_limits<uint64_t>::max() - 1024) / 2
+                    (std::numeric_limits<uint64_t>::max() - 1024) /
+                        parallelPlaneCopies
                 ? std::numeric_limits<uint64_t>::max()
-                : 2 * rawMiB + 1024;
+                : parallelPlaneCopies * rawMiB + 1024;
         const bool parallelPlaneResources =
             threads >= 2 &&
             resolvedMemory.mib >= parallelPlaneMemoryMiB;
@@ -686,7 +872,7 @@ int main(int argc, char* argv[]) {
                 erwt3d::Lz4AxisPlaneWriterStats axisStats;
                 candidate.written =
                     erwt3d::writeLz4AxisPlaneSidecar(
-                        inputPath,
+                        conversionInputPath,
                         workPath,
                         axis,
                         nx,
@@ -735,7 +921,7 @@ int main(int argc, char* argv[]) {
                 candidates.push_back(buildPlane(
                     axis,
                     threads,
-                    resolvedMemory.mib));
+                    conversionMemoryMiB));
             }
         }
         for (const auto& candidate : candidates) {
