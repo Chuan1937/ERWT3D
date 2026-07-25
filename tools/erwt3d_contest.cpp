@@ -294,11 +294,16 @@ int main(int argc, char* argv[]) {
     uint64_t nx = 0, ny = 0, nz = 0;
     double storageRatio = 0.0;
     bool rzfpAxisLeaf = false;
+    bool lz4AxisPlanes = false;
 
     if (fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D) {
         erwt3d::ERWT3DReader reader(inputPath);
         const auto& header = reader.getHeader();
         nx = header.nx; ny = header.ny; nz = header.nz;
+        lz4AxisPlanes =
+            reader.hasAxisPlaneSection(erwt3d::PlaneAxis::X) ||
+            reader.hasAxisPlaneSection(erwt3d::PlaneAxis::Y) ||
+            reader.hasAxisPlaneSection(erwt3d::PlaneAxis::Z);
         uint64_t rawBytes = erwt3d::getRawSize(header);
         struct stat st{};
         uint64_t fileBytes = 0;
@@ -375,24 +380,28 @@ int main(int argc, char* argv[]) {
     erwt3d::ContestReadBatchFunction readFn;
     uint64_t actualMemoryLimitMib = resolvedMem.mib;
 
-    erwt3d::IOProfileType requestedProfile = erwt3d::parseIOProfileType(ioProfileStr);
+    erwt3d::IOProfileType requestedProfile =
+        erwt3d::parseIOProfileType(ioProfileStr);
     erwt3d::UnifiedReadConfig unifiedCfg = erwt3d::makeUnifiedConfig(
         requestedProfile, inputPath, threads, actualMemoryLimitMib, readWindowMb);
 
-    if (requestedProfile == erwt3d::IOProfileType::Auto) {
-        bool deviceIsSSD = (unifiedCfg.io_profile == erwt3d::IOProfileType::SSD ||
-                            unifiedCfg.io_profile == erwt3d::IOProfileType::WSL_SSD);
-        bool isLZ4 = (fmt == erwt3d::OptimizedFileFormat::LZ4_ERWT3D);
-
-        if (isLZ4 && deviceIsSSD) {
-            unifiedCfg.io_profile = erwt3d::IOProfileType::SSD;
-            unifiedCfg.resolved_profile_reason = "auto-lz4-on-ssd-extent";
-        } else {
-            unifiedCfg.io_profile = erwt3d::IOProfileType::HDD;
-            unifiedCfg.resolved_profile_reason = isLZ4
-                ? "auto-lz4-on-hdd-large-window"
-                : "auto-rzfp-hdd-large-window-cache";
-        }
+    // Auto is layout-aware, not just device-aware.  The optimized production
+    // layouts leave either the LZ4 main X path or the RZFP fallback path
+    // dependent on large contiguous windows.  Rebuild the complete config
+    // after choosing HDD; changing only io_profile would retain the SSD
+    // 4 MiB/64 KiB window parameters under an HDD label.
+    if (requestedProfile == erwt3d::IOProfileType::Auto &&
+        (fmt == erwt3d::OptimizedFileFormat::RZFP || lz4AxisPlanes)) {
+        unifiedCfg = erwt3d::makeUnifiedConfig(
+            erwt3d::IOProfileType::HDD,
+            inputPath,
+            threads,
+            actualMemoryLimitMib,
+            readWindowMb);
+        unifiedCfg.resolved_profile_reason =
+            fmt == erwt3d::OptimizedFileFormat::RZFP
+                ? "auto-rzfp-large-window-cache"
+                : "auto-lz4-axis-large-window";
     }
 
     constexpr uint64_t kLargeRzfpThreshold =
@@ -415,6 +424,24 @@ int main(int argc, char* argv[]) {
     std::cout << "IO profile: " << ioProfileStr
               << " -> " << erwt3d::ioProfileTypeName(unifiedCfg.io_profile)
               << " (" << unifiedCfg.resolved_profile_reason << ")\n";
+    const bool resolvedSSD =
+        unifiedCfg.io_profile == erwt3d::IOProfileType::SSD ||
+        unifiedCfg.io_profile == erwt3d::IOProfileType::WSL_SSD;
+    const uint64_t resolvedReadWindowMib =
+        (resolvedSSD
+             ? unifiedCfg.ssd.read_window_bytes
+             : unifiedCfg.hdd.read_window_bytes) / MiB;
+    std::cout << "Read tuning: window=" << resolvedReadWindowMib
+              << " MiB, max-gap="
+              << (resolvedSSD
+                      ? unifiedCfg.ssd.max_gap_bytes
+                      : unifiedCfg.hdd.max_gap_bytes) / 1024
+              << " KiB";
+    if (resolvedSSD) {
+        std::cout << ", read-threads=" << unifiedCfg.ssd.read_threads
+                  << ", decode-threads=" << unifiedCfg.ssd.decode_threads;
+    }
+    std::cout << "\n";
     if (unifiedCfg.wsl_detected) std::cout << "WSL detected: yes\n";
     std::cout << "Filesystem: " << unifiedCfg.filesystem_type << "\n\n";
 
@@ -633,8 +660,9 @@ int main(int argc, char* argv[]) {
 
     const std::string scorePath = outputDir + "/contest_score.csv";
     writeScoreCsv(scorePath, inputPath, fmtName, nx, ny, nz, storageRatio,
-                  threads, resolvedMem.mode, actualMemoryLimitMib, readWindowMb,
-                  "eab46cd", positions, profile,
+                  threads, resolvedMem.mode, actualMemoryLimitMib,
+                  resolvedReadWindowMib,
+                  "96ef9cc+", positions, profile,
                   ioProfileStr,
                   erwt3d::ioProfileTypeName(unifiedCfg.io_profile),
                   unifiedCfg.resolved_profile_reason,
