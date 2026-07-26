@@ -94,7 +94,6 @@ static uint64_t sliceElements(SliceAxis axis, uint64_t nx, uint64_t ny, uint64_t
 
 struct SlabDecodeResult {
     bool ok = true;
-    int fail_reason = 0;
     uint64_t decoded_leaves = 0;
     uint64_t slab_index = 0;
     double elapsed_ms = 0.0;
@@ -322,12 +321,12 @@ bool executeRzfpAxisLeafColdSSD(
                         offset += sizeof(uint32_t);
 
                         if (descriptorId >= descriptors.size()) {
-                            result.fail_reason = 1; result.ok = false; return result;
+                            result.ok = false; return result;
                         }
                         const auto desc = descriptors[descriptorId];
                         const uint16_t recSize = descriptorSizeVal(desc);
                         if (recSize > slabSize - offset) {
-                            result.fail_reason = 2; result.ok = false; return result;
+                            result.ok = false; return result;
                         }
                         uint64_t gx = 0, gy = 0, gz = 0;
                         axisLeafRecordCoords(rzfpHdr, descriptorId, gx, gy, gz);
@@ -340,10 +339,10 @@ bool executeRzfpAxisLeafColdSSD(
                                 recordSlab = gy / leafY; break;
                             case ColdRecordSource::RzfpAxisLeafZ:
                                 recordSlab = gz / leafZ; break;
-                            default: result.fail_reason = 3; result.ok = false; return result;
+                            default: result.ok = false; return result;
                         }
                         if (recordSlab != slab.slab_id) {
-                            result.fail_reason = 4; result.ok = false; return result;
+                            result.ok = false; return result;
                         }
                         if (gx >= nx || gy >= ny || gz >= nz) {
                             offset += recSize; continue;
@@ -355,7 +354,7 @@ bool executeRzfpAxisLeafColdSSD(
                         alignas(64) float leaf[64];
                         if (!codec.decodeRecord(descriptorCodecVal(desc),
                                 slabData + offset, recSize, leaf)) {
-                            result.fail_reason = 5; result.ok = false; return result;
+                            result.ok = false; return result;
                         }
                         ++result.decoded_leaves;
 
@@ -402,7 +401,6 @@ bool executeRzfpAxisLeafColdSSD(
                 decodeFutures.pop_front();
                 ++totalProcessedSlabs;
                 if (!r.ok) {
-                    std::cerr << "[RZFP] slab decode fail reason=" << r.fail_reason << "\n";
                     stop = true; break;
                 }
                 totalDecodedLeaves += r.decoded_leaves;
