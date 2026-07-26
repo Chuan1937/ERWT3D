@@ -1,6 +1,7 @@
 #include "erwt3d/contest_groups.hpp"
 #include "erwt3d/contest_positions.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
