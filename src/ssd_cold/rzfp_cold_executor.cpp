@@ -177,11 +177,28 @@ bool executeRzfpAxisLeafColdSSD(
           static_cast<double>(plan.requested_record_bytes)
         : 1.0;
 
+    {
+        std::string covErr;
+        if (!validateExtentCoverage(plan.slab_requests, extentPlan, covErr)) {
+            std::cerr << "[RZFP-COLD] extent coverage: " << covErr << "\n";
+            return false;
+        }
+    }
+
+    if (extentPlan.planned_read_bytes < plan.requested_record_bytes) {
+        std::cerr << "[RZFP-COLD] invalid plan: " << extentPlan.planned_read_bytes
+                  << " < requested " << plan.requested_record_bytes << "\n";
+        return false;
+    }
+
     if (profile->read_amplification > 1.50) {
         std::cerr << "[RZFP-COLD] read amplification " << profile->read_amplification
                   << " exceeds 1.50 — routing error\n";
         return false;
     }
+
+    // Count how many slabs we expect to process
+    size_t totalSlabCount = plan.slab_requests.size();
 
     const size_t outputCount = plan.slice_requests.size();
     std::vector<std::vector<float>> allOutputs(outputCount);
@@ -241,6 +258,9 @@ bool executeRzfpAxisLeafColdSSD(
     std::atomic<uint64_t> totalReadBytes{0};
     std::atomic<uint64_t> totalReadCalls{0};
     uint64_t totalIOMsAccum{0};
+    std::atomic<uint64_t> totalProcessedSlabs{0};
+
+    std::vector<uint64_t> scatteredValues(outputCount, 0);
     uint64_t totalDecMsAccum{0};
 
     const int decodeThreads = std::max(1, config.decode_threads);
@@ -268,13 +288,31 @@ bool executeRzfpAxisLeafColdSSD(
         totalReadBytes += ext.size;
         totalReadCalls++;
 
-        for (size_t sli = ext.first_slab; sli < ext.first_slab + ext.slab_count && allOk; ++sli) {
-            if (sli >= plan.slab_requests.size()) continue;
-            size_t slabIdx = sli;
+        for (size_t slabIdx : ext.slab_indices) {
+            if (slabIdx >= plan.slab_requests.size()) {
+                allOk = false; break;
+            }
+            const auto& slab = plan.slab_requests[slabIdx];
 
-            uint64_t relOff = plan.slab_requests[slabIdx].file_offset - ext.file_offset;
-            if (relOff + plan.slab_requests[slabIdx].slab_bytes > ext.size) continue;
+            if (slab.file_offset < ext.file_offset) {
+                std::cerr << "[RZFP-COLD] slab starts before extent: slab=" << slabIdx
+                          << " slab_off=" << slab.file_offset
+                          << " ext_off=" << ext.file_offset << "\n";
+                allOk = false; break;
+            }
 
+            uint64_t relOff = slab.file_offset - ext.file_offset;
+            if (relOff > ext.size || slab.slab_bytes > ext.size - relOff) {
+                std::cerr << "[RZFP-COLD] incomplete slab coverage: slab=" << slabIdx
+                          << " src=" << static_cast<int>(slab.source)
+                          << " slab_off=" << slab.file_offset
+                          << " slab_sz=" << slab.slab_bytes
+                          << " ext_off=" << ext.file_offset
+                          << " ext_sz=" << ext.size << "\n";
+                allOk = false; break;
+            }
+
+            totalProcessedSlabs++;
             const uint8_t* slabData = extBuf.get() + relOff;
             const uint64_t slabSize = plan.slab_requests[slabIdx].slab_bytes;
 
@@ -409,6 +447,13 @@ bool executeRzfpAxisLeafColdSSD(
         return false;
     }
 
+    if (totalProcessedSlabs != plan.slab_requests.size()) {
+        std::cerr << "[RZFP-COLD] slab coverage mismatch: processed="
+                  << totalProcessedSlabs << " expected="
+                  << plan.slab_requests.size() << "\n";
+        return false;
+    }
+
     auto tWrite = Clock::now();
 
     uint32_t slot = 0;
@@ -428,7 +473,11 @@ bool executeRzfpAxisLeafColdSSD(
                     if (n == 0) break;
                     written += static_cast<uint64_t>(n);
                 }
-                close(ofd);
+                if (written != osize) {
+                    close(ofd);
+                    std::cerr << "[RZFP-COLD] short write: " << written << "/" << osize << "\n";
+                    return false;
+                }
             }
             ++slot;
         }

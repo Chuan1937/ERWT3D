@@ -27,10 +27,6 @@ ColdExtentPlan buildColdExtentPlan(
 
     if (slabs.empty()) return plan;
 
-    for (const auto& s : slabs) {
-        plan.planned_read_bytes += s.slab_bytes;
-    }
-
     std::vector<size_t> sortedIdx(slabs.size());
     for (size_t i = 0; i < slabs.size(); ++i) sortedIdx[i] = i;
     std::sort(sortedIdx.begin(), sortedIdx.end(), [&](size_t a, size_t b) {
@@ -42,87 +38,137 @@ ColdExtentPlan buildColdExtentPlan(
     const uint64_t maxGap = config.max_gap_bytes;
     const uint64_t maxExtent = config.max_extent_bytes;
 
+    if (config.one_extent_per_slab) {
+        for (size_t idx : sortedIdx) {
+            const auto& s = slabs[idx];
+            ColdExtent ext;
+            ext.fd = s.fd;
+            ext.file_offset = s.file_offset;
+            ext.size = s.slab_bytes;
+            ext.slab_indices.push_back(idx);
+            plan.extents.push_back(std::move(ext));
+            plan.planned_read_bytes += s.slab_bytes;
+        }
+        plan.read_amplification = 1.0;
+        return plan;
+    }
+
     size_t i = 0;
     while (i < sortedIdx.size()) {
-        const auto& first = slabs[sortedIdx[i]];
-        uint64_t extentStart = first.file_offset;
+        const size_t firstIdx = sortedIdx[i];
+        const auto& first = slabs[firstIdx];
+
+        ColdExtent ext;
+        ext.fd = first.fd;
+        ext.file_offset = first.file_offset;
+        ext.size = first.slab_bytes;
+        ext.slab_indices.push_back(firstIdx);
+
+        if (first.slab_bytes > maxExtent) {
+            plan.extents.push_back(std::move(ext));
+            ++i;
+            continue;
+        }
+
         uint64_t extentEnd = first.file_offset + first.slab_bytes;
-        size_t extentCount = 1;
-        int extentFd = first.fd;
 
         size_t j = i + 1;
         while (j < sortedIdx.size()) {
-            const auto& next = slabs[sortedIdx[j]];
+            const size_t nextIdx = sortedIdx[j];
+            const auto& next = slabs[nextIdx];
 
             if (!config.cross_section_merge && next.source != first.source) break;
-            if (!config.cross_fd_merge && next.fd != extentFd) break;
+            if (!config.cross_fd_merge && next.fd != first.fd) break;
 
             uint64_t gap = (next.file_offset > extentEnd)
                 ? (next.file_offset - extentEnd) : 0;
 
-            if (gap == 0) {
-                extentEnd = std::max(extentEnd, next.file_offset + next.slab_bytes);
-                extentCount++;
-                j++;
-                continue;
-            }
-
             if (gap > maxGap) break;
 
-            uint64_t gapCostNS = gapPenaltyNS(gap, bwMbS);
-            if (gapCostNS >= ioSubmitCostNS) break;
+            if (gap > 0) {
+                uint64_t gapCostNS = gapPenaltyNS(gap, bwMbS);
+                if (gapCostNS >= ioSubmitCostNS) break;
+            }
 
-            uint64_t newEnd = next.file_offset + next.slab_bytes;
-            uint64_t newSize = newEnd - extentStart;
+            const uint64_t nextEnd = next.file_offset + next.slab_bytes;
+            const uint64_t newEnd = std::max(extentEnd, nextEnd);
+            const uint64_t newSize = newEnd - ext.file_offset;
+
             if (newSize > maxExtent) break;
 
             extentEnd = newEnd;
-            plan.gap_bytes += gap;
-            extentCount++;
-            j++;
+            ext.size = newSize;
+            if (gap > 0) plan.gap_bytes += gap;
+            ext.slab_indices.push_back(nextIdx);
+            ++j;
         }
 
-        uint64_t extentSize = extentEnd - extentStart;
-        if (extentSize > maxExtent) {
-            extentEnd = extentStart + maxExtent;
-            extentSize = maxExtent;
-            size_t k = j - 1;
-            while (k > i && slabs[sortedIdx[k]].file_offset +
-                   slabs[sortedIdx[k]].slab_bytes > extentEnd) {
-                k--;
-            }
-            if (k > i) {
-                j = k + 1;
-                extentCount = j - i;
-                extentEnd = slabs[sortedIdx[j - 1]].file_offset +
-                            slabs[sortedIdx[j - 1]].slab_bytes;
-                extentSize = extentEnd - extentStart;
-            }
-        }
-
-        ColdExtent ext;
-        ext.file_offset = extentStart;
-        ext.size = extentSize;
-        ext.first_slab = i;
-        ext.slab_count = extentCount;
-        ext.fd = extentFd;
-        plan.extents.push_back(ext);
-
+        plan.extents.push_back(std::move(ext));
         i = j;
     }
-
-    uint64_t totalRecordBytes = 0;
-    for (const auto& s : slabs) totalRecordBytes += s.slab_bytes;
 
     uint64_t totalReadBytes = 0;
     for (const auto& e : plan.extents) totalReadBytes += e.size;
     plan.planned_read_bytes = totalReadBytes;
 
-    plan.read_amplification = totalRecordBytes > 0
-        ? static_cast<double>(totalReadBytes) / static_cast<double>(totalRecordBytes)
+    uint64_t totalSlabBytes = 0;
+    for (const auto& s : slabs) totalSlabBytes += s.slab_bytes;
+
+    plan.read_amplification = totalSlabBytes > 0
+        ? static_cast<double>(totalReadBytes) / static_cast<double>(totalSlabBytes)
         : 1.0;
 
     return plan;
+}
+
+bool validateExtentCoverage(
+    const std::vector<ColdSlabRequest>& slabs,
+    const ColdExtentPlan& extentPlan,
+    std::string& error)
+{
+    std::vector<uint32_t> coverage(slabs.size(), 0);
+
+    for (const auto& ext : extentPlan.extents) {
+        for (size_t idx : ext.slab_indices) {
+            if (idx >= slabs.size()) {
+                error = "extent references out-of-range slab index " + std::to_string(idx);
+                return false;
+            }
+
+            const auto& slab = slabs[idx];
+
+            if (slab.fd != ext.fd) {
+                error = "slab " + std::to_string(idx) + " fd mismatch";
+                return false;
+            }
+
+            if (slab.file_offset < ext.file_offset) {
+                error = "slab " + std::to_string(idx) + " starts before extent";
+                return false;
+            }
+
+            uint64_t rel = slab.file_offset - ext.file_offset;
+            if (rel > ext.size || slab.slab_bytes > ext.size - rel) {
+                error = "extent does not fully cover slab " + std::to_string(idx);
+                return false;
+            }
+
+            ++coverage[idx];
+        }
+    }
+
+    for (size_t i = 0; i < coverage.size(); ++i) {
+        if (coverage[i] == 0) {
+            error = "slab " + std::to_string(i) + " is not covered by any extent";
+            return false;
+        }
+        if (coverage[i] > 1) {
+            error = "slab " + std::to_string(i) + " is covered by " + std::to_string(coverage[i]) + " extents";
+            return false;
+        }
+    }
+
+    return true;
 }
 
 } // namespace ssd_cold

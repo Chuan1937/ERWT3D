@@ -3,6 +3,7 @@
 #include "erwt3d/ssd_cold/cold_request_plan.hpp"
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace erwt3d {
@@ -11,9 +12,8 @@ namespace ssd_cold {
 struct ColdExtent {
     uint64_t file_offset = 0;
     uint64_t size = 0;
-    size_t first_slab = 0;
-    size_t slab_count = 0;
     int fd = -1;
+    std::vector<size_t> slab_indices;
 };
 
 struct ColdExtentPlanConfig {
@@ -24,6 +24,8 @@ struct ColdExtentPlanConfig {
     double max_read_amplification = 1.30;
     bool cross_section_merge = false;
     bool cross_fd_merge = false;
+
+    bool one_extent_per_slab = true;
 };
 
 struct ColdExtentPlan {
@@ -39,6 +41,11 @@ struct ColdExtentPlan {
 ColdExtentPlan buildColdExtentPlan(
     const std::vector<ColdSlabRequest>& slabs,
     const ColdExtentPlanConfig& config);
+
+bool validateExtentCoverage(
+    const std::vector<ColdSlabRequest>& slabs,
+    const ColdExtentPlan& extentPlan,
+    std::string& error);
 
 } // namespace ssd_cold
 } // namespace erwt3d
