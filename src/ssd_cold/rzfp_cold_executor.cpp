@@ -8,7 +8,6 @@
 #include "erwt3d/format.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -93,6 +92,14 @@ static uint64_t sliceElements(SliceAxis axis, uint64_t nx, uint64_t ny, uint64_t
     return 0;
 }
 
+struct SlabDecodeResult {
+    bool ok = true;
+    int fail_reason = 0;
+    uint64_t decoded_leaves = 0;
+    uint64_t slab_index = 0;
+    double elapsed_ms = 0.0;
+};
+
 bool executeRzfpAxisLeafColdSSD(
     const std::string& filePath,
     const ContestPositions& positions,
@@ -154,8 +161,6 @@ bool executeRzfpAxisLeafColdSSD(
                       << " Y=" << ySlabs << " Z=" << zSlabs << "\n";
             return false;
         }
-        std::cout << "[RZFP-COLD] plan: X-slabs=" << xSlabs << " Y-slabs=" << ySlabs
-                  << " Z-slabs=" << zSlabs << " total=" << plan.slab_requests.size() << "\n";
     }
 
     ColdExtentPlanConfig extentCfg;
@@ -193,12 +198,9 @@ bool executeRzfpAxisLeafColdSSD(
 
     if (profile->read_amplification > 1.50) {
         std::cerr << "[RZFP-COLD] read amplification " << profile->read_amplification
-                  << " exceeds 1.50 — routing error\n";
+                  << " exceeds 1.50\n";
         return false;
     }
-
-    // Count how many slabs we expect to process
-    size_t totalSlabCount = plan.slab_requests.size();
 
     const size_t outputCount = plan.slice_requests.size();
     std::vector<std::vector<float>> allOutputs(outputCount);
@@ -238,9 +240,7 @@ bool executeRzfpAxisLeafColdSSD(
                 if (fd >= 0) {
                     auto osize = static_cast<off_t>(outputSizes[slot]);
                     if (ftruncate(fd, osize) != 0) {
-                        close(fd);
-                        std::cerr << "[RZFP-COLD] ftruncate failed\n";
-                        return false;
+                        close(fd); return false;
                     }
                     close(fd);
                 }
@@ -252,101 +252,83 @@ bool executeRzfpAxisLeafColdSSD(
     const auto& rzfpHdr = planResult.rzfp_header;
     const auto& descriptors = planResult.descriptors;
 
-    std::atomic<bool> allOk{true};
-    std::atomic<uint64_t> totalDecodedLeaves{0};
-    std::atomic<uint64_t> totalDecodeErrors{0};
+    std::atomic<bool> stop{false};
     std::atomic<uint64_t> totalReadBytes{0};
     std::atomic<uint64_t> totalReadCalls{0};
-    uint64_t totalIOMsAccum{0};
-    std::atomic<uint64_t> totalProcessedSlabs{0};
-
-    std::vector<uint64_t> scatteredValues(outputCount, 0);
-    uint64_t totalDecMsAccum{0};
+    double totalIOMs = 0.0;
+    uint64_t totalDecodedLeaves = 0;
+    uint64_t totalDecodeErrors = 0;
+    double totalDecodeMs = 0.0;
+    uint64_t totalProcessedSlabs = 0;
 
     const int decodeThreads = std::max(1, config.decode_threads);
     ThreadPool decodePool(static_cast<size_t>(decodeThreads));
-    std::deque<std::future<bool>> decodeFutures;
+    std::deque<std::future<SlabDecodeResult>> decodeFutures;
 
-    for (size_t ei = 0; ei < extentPlan.extents.size() && allOk; ++ei) {
+    for (size_t ei = 0; ei < extentPlan.extents.size() && !stop; ++ei) {
         const auto& ext = extentPlan.extents[ei];
 
         uint64_t allocSize = (ext.size + 4095) & ~static_cast<uint64_t>(4095);
         uint8_t* extBufRaw = static_cast<uint8_t*>(std::aligned_alloc(4096, static_cast<size_t>(allocSize)));
-        if (!extBufRaw) { allOk = false; break; }
+        if (!extBufRaw) { stop = true; break; }
         auto extBuf = std::shared_ptr<uint8_t>(extBufRaw, std::free);
 
         auto tPread = Clock::now();
         ssize_t nr = pread(ext.fd, extBuf.get(), static_cast<size_t>(ext.size),
                            static_cast<off_t>(ext.file_offset));
-        double ioMs = msSince(tPread);
-        totalIOMsAccum += static_cast<uint64_t>(ioMs * 1000.0);
+        totalIOMs += msSince(tPread);
 
         if (nr != static_cast<ssize_t>(ext.size)) {
             std::cerr << "[RZFP-COLD] pread failed\n";
-            allOk = false; break;
+            stop = true; break;
         }
         totalReadBytes += ext.size;
         totalReadCalls++;
 
         for (size_t slabIdx : ext.slab_indices) {
-            if (slabIdx >= plan.slab_requests.size()) {
-                allOk = false; break;
-            }
+            if (slabIdx >= plan.slab_requests.size()) { stop = true; break; }
             const auto& slab = plan.slab_requests[slabIdx];
 
             if (slab.file_offset < ext.file_offset) {
-                std::cerr << "[RZFP-COLD] slab starts before extent: slab=" << slabIdx
-                          << " slab_off=" << slab.file_offset
-                          << " ext_off=" << ext.file_offset << "\n";
-                allOk = false; break;
+                std::cerr << "[RZFP-COLD] slab before extent: " << slabIdx << "\n";
+                stop = true; break;
             }
-
             uint64_t relOff = slab.file_offset - ext.file_offset;
             if (relOff > ext.size || slab.slab_bytes > ext.size - relOff) {
-                std::cerr << "[RZFP-COLD] incomplete slab coverage: slab=" << slabIdx
-                          << " src=" << static_cast<int>(slab.source)
-                          << " slab_off=" << slab.file_offset
-                          << " slab_sz=" << slab.slab_bytes
-                          << " ext_off=" << ext.file_offset
-                          << " ext_sz=" << ext.size << "\n";
-                allOk = false; break;
+                std::cerr << "[RZFP-COLD] slab over extent: " << slabIdx << "\n";
+                stop = true; break;
             }
 
-            totalProcessedSlabs++;
             const uint8_t* slabData = extBuf.get() + relOff;
-            const uint64_t slabSize = plan.slab_requests[slabIdx].slab_bytes;
+            const uint64_t slabSize = slab.slab_bytes;
 
             decodeFutures.push_back(decodePool.submit(
                 [extBuf, slabIdx, slabData, slabSize, &plan, &descriptors,
                  &rzfpHdr, nx, ny, nz, leafX, leafY, leafZ, &allOutputs,
-                 &allOk, &totalDecodedLeaves, &totalDecodeErrors,
-                 &totalDecMsAccum]() -> bool {
+                 &stop]() -> SlabDecodeResult {
 
-                    const auto& slab = plan.slab_requests[slabIdx];
+                    SlabDecodeResult result;
+                    result.slab_index = slabIdx;
                     auto tDecStart = Clock::now();
-
+                    const auto& slab = plan.slab_requests[slabIdx];
                     RzfpCodec codec;
                     uint64_t offset = 0;
+                    uint64_t recordCount = 0;
 
-                    while (offset < slabSize && allOk) {
+                    while (offset < slabSize) {
                         if (slabSize - offset < sizeof(uint32_t)) break;
-
                         uint32_t descriptorId = 0;
                         std::memcpy(&descriptorId, slabData + offset, sizeof(uint32_t));
                         offset += sizeof(uint32_t);
 
                         if (descriptorId >= descriptors.size()) {
-                            totalDecodeErrors++;
-                            break;
+                            result.fail_reason = 1; result.ok = false; return result;
                         }
-
                         const auto desc = descriptors[descriptorId];
                         const uint16_t recSize = descriptorSizeVal(desc);
                         if (recSize > slabSize - offset) {
-                            totalDecodeErrors++;
-                            break;
+                            result.fail_reason = 2; result.ok = false; return result;
                         }
-
                         uint64_t gx = 0, gy = 0, gz = 0;
                         axisLeafRecordCoords(rzfpHdr, descriptorId, gx, gy, gz);
 
@@ -358,35 +340,29 @@ bool executeRzfpAxisLeafColdSSD(
                                 recordSlab = gy / leafY; break;
                             case ColdRecordSource::RzfpAxisLeafZ:
                                 recordSlab = gz / leafZ; break;
-                            default: totalDecodeErrors++; return false;
+                            default: result.fail_reason = 3; result.ok = false; return result;
                         }
                         if (recordSlab != slab.slab_id) {
-                            totalDecodeErrors++;
-                            return false;
+                            result.fail_reason = 4; result.ok = false; return result;
                         }
-
                         if (gx >= nx || gy >= ny || gz >= nz) {
-                            offset += recSize;
-                            continue;
+                            offset += recSize; continue;
                         }
-
                         const uint64_t copyX = std::min<uint64_t>(leafX, nx - gx);
                         const uint64_t copyY = std::min<uint64_t>(leafY, ny - gy);
                         const uint64_t copyZ = std::min<uint64_t>(leafZ, nz - gz);
 
-                        float leaf[64] = {};
+                        alignas(64) float leaf[64];
                         if (!codec.decodeRecord(descriptorCodecVal(desc),
                                 slabData + offset, recSize, leaf)) {
-                            totalDecodeErrors++;
-                            break;
+                            result.fail_reason = 5; result.ok = false; return result;
                         }
-                        totalDecodedLeaves++;
+                        ++result.decoded_leaves;
 
                         for (const auto& target : slab.targets) {
                             if (target.output_slot >= allOutputs.size()) continue;
                             float* output = allOutputs[target.output_slot].data();
                             if (!output) continue;
-
                             switch (slab.source) {
                                 case ColdRecordSource::RzfpAxisLeafX:
                                     if (target.local >= copyX) continue;
@@ -413,49 +389,58 @@ bool executeRzfpAxisLeafColdSSD(
                             }
                         }
                         offset += recSize;
+                        if ((++recordCount & 4095u) == 0 &&
+                            stop.load(std::memory_order_relaxed))
+                            return result;
                     }
-
-                    totalDecMsAccum += static_cast<uint64_t>(msSince(tDecStart) * 1000.0);
-                    return offset == slabSize;
+                    result.elapsed_ms = msSince(tDecStart);
+                    return result;
                 }));
 
             while (decodeFutures.size() >= static_cast<size_t>(decodeThreads * 2)) {
-                if (!decodeFutures.front().get()) allOk = false;
+                auto r = decodeFutures.front().get();
                 decodeFutures.pop_front();
+                ++totalProcessedSlabs;
+                if (!r.ok) {
+                    std::cerr << "[RZFP] slab decode fail reason=" << r.fail_reason << "\n";
+                    stop = true; break;
+                }
+                totalDecodedLeaves += r.decoded_leaves;
+                totalDecodeMs += r.elapsed_ms;
             }
+            if (stop) break;
         }
-
-        decodeFutures.push_back(decodePool.submit(
-            [extBuf]() -> bool { return true; }));
     }
 
     while (!decodeFutures.empty()) {
-        if (!decodeFutures.front().get()) allOk = false;
+        auto r = decodeFutures.front().get();
         decodeFutures.pop_front();
+        ++totalProcessedSlabs;
+        if (!r.ok) { stop = true; ++totalDecodeErrors; }
+        totalDecodedLeaves += r.decoded_leaves;
+        totalDecodeMs += r.elapsed_ms;
     }
     decodePool.waitAll();
 
-    profile->io_time_ms = static_cast<double>(totalIOMsAccum) / 1000.0;
-    profile->decode_time_ms = static_cast<double>(totalDecMsAccum) / 1000.0;
+    profile->io_time_ms = totalIOMs;
+    profile->decode_time_ms = totalDecodeMs;
     profile->decoded_leaf_count = totalDecodedLeaves;
     profile->decoder_error_count = totalDecodeErrors;
     profile->actual_read_bytes = totalReadBytes;
     profile->pread_calls = totalReadCalls;
 
-    if (!allOk) {
+    if (stop) {
         std::cerr << "[RZFP-COLD] decode errors: " << totalDecodeErrors << "\n";
         return false;
     }
 
     if (totalProcessedSlabs != plan.slab_requests.size()) {
-        std::cerr << "[RZFP-COLD] slab coverage mismatch: processed="
-                  << totalProcessedSlabs << " expected="
-                  << plan.slab_requests.size() << "\n";
+        std::cerr << "[RZFP-COLD] slab mismatch: " << totalProcessedSlabs
+                  << "/" << plan.slab_requests.size() << "\n";
         return false;
     }
 
     auto tWrite = Clock::now();
-
     uint32_t slot = 0;
     for (const auto& g : groups) {
         for (size_t si = 0; si < g.indices->size(); ++si) {
@@ -465,19 +450,14 @@ bool executeRzfpAxisLeafColdSSD(
                 uint64_t written = 0;
                 const uint8_t* src = reinterpret_cast<const uint8_t*>(allOutputs[slot].data());
                 while (written < osize) {
-                    ssize_t n = pwrite(ofd, src + written, static_cast<size_t>(osize - written), static_cast<off_t>(written));
-                    if (n < 0) {
-                        if (errno == EINTR) continue;
-                        break;
-                    }
+                    ssize_t n = pwrite(ofd, src + written, static_cast<size_t>(osize - written),
+                                       static_cast<off_t>(written));
+                    if (n < 0) { if (errno == EINTR) continue; break; }
                     if (n == 0) break;
                     written += static_cast<uint64_t>(n);
                 }
-                if (written != osize) {
-                    close(ofd);
-                    std::cerr << "[RZFP-COLD] short write: " << written << "/" << osize << "\n";
-                    return false;
-                }
+                if (written != osize) { close(ofd); return false; }
+                close(ofd);
             }
             ++slot;
         }
@@ -496,9 +476,8 @@ bool executeRzfpAxisLeafColdSSD(
               << " decode=" << profile->decode_time_ms / 1000.0 << "s"
               << " write=" << profile->write_time_ms / 1000.0 << "s"
               << " read_mb=" << (profile->actual_read_bytes >> 20)
-              << " amp=" << profile->read_amplification
               << " preads=" << profile->pread_calls
-              << " slabs=" << profile->unique_leaf_records
+              << " slabs=" << totalProcessedSlabs
               << " leaves=" << profile->decoded_leaf_count
               << " errors=" << profile->decoder_error_count
               << " rss=" << profile->peak_rss_mib << "MiB\n";
