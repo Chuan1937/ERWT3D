@@ -599,7 +599,8 @@ int main(int argc, char* argv[]) {
             erwt3d::ssd_cold::RzfpColdConfig coldCfg;
             coldCfg.memory_limit_mb = actualMemoryLimitMib;
             coldCfg.read_threads = ssdColdReadThreads > 0 ? ssdColdReadThreads : std::max(2, threads / 2);
-            coldCfg.decode_threads = ssdColdDecodeThreads > 0 ? ssdColdDecodeThreads : std::max(4, threads - 2);
+            coldCfg.decode_threads = static_cast<int>(
+                erwt3d::ssd_cold::resolveColdDecodeThreads(ssdColdDecodeThreads > 0 ? ssdColdDecodeThreads : threads));
             coldCfg.write_threads = 2;
             coldCfg.max_gap_bytes = ssdColdMaxGapKb > 0 ? ssdColdMaxGapKb << 10 : 256ULL << 10;
             coldCfg.max_extent_bytes = ssdColdMaxExtentMb > 0 ? ssdColdMaxExtentMb << 20 : 16ULL << 20;

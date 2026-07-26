@@ -17,7 +17,9 @@
 #include <future>
 #include <iostream>
 #include <memory>
+#include <sched.h>
 #include <sys/stat.h>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -490,6 +492,36 @@ bool executeRzfpAxisLeafColdSSD(
               << " rss=" << profile->peak_rss_mib << "MiB\n";
 
     return true;
+}
+
+unsigned detectAvailableCpuCount() {
+#ifdef __linux__
+    cpu_set_t mask;
+    CPU_ZERO(&mask);
+    if (sched_getaffinity(0, sizeof(mask), &mask) == 0) {
+        int count = CPU_COUNT(&mask);
+        if (count > 0) return static_cast<unsigned>(count);
+    }
+#endif
+    unsigned fallback = std::thread::hardware_concurrency();
+    return fallback > 0 ? fallback : 1;
+}
+
+unsigned resolveColdDecodeThreads(int requestedThreads) {
+    unsigned available = detectAvailableCpuCount();
+    if (requestedThreads > 0) {
+        unsigned capped = std::max(1u, std::min(static_cast<unsigned>(requestedThreads), available));
+        std::cout << "[RZFP-COLD] available_cpus=" << available
+                  << " decode_threads=" << capped
+                  << " source=explicit\n";
+        return capped;
+    }
+    unsigned autoThreads = std::max(1u, std::min(available, 32u));
+    std::cout << "[RZFP-COLD] available_cpus=" << available
+              << " decode_threads=" << autoThreads
+              << " source=" << (available > 32 ? "auto-cap" : "auto-all")
+              << "\n";
+    return autoThreads;
 }
 
 } // namespace ssd_cold

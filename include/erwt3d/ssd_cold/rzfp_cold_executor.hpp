@@ -27,6 +27,10 @@ struct RzfpColdConfig {
     bool use_direct_io = false;
 };
 
+unsigned detectAvailableCpuCount();
+
+unsigned resolveColdDecodeThreads(int requestedThreads);
+
 bool executeRzfpAxisLeafColdSSD(
     const std::string& filePath,
     const ContestPositions& positions,
