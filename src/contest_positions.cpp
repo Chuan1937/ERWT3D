@@ -118,6 +118,7 @@ bool validatePositions(
     auto checkRandom = [&](const std::vector<uint64_t>& v,
                            const std::string& name,
                            uint64_t dim) -> bool {
+        if (v.empty()) return true;
         if (v.size() != randomCount) {
             error = name + " random count " + std::to_string(v.size()) +
                     " != " + std::to_string(randomCount);
@@ -140,8 +141,9 @@ bool validatePositions(
     };
 
     auto checkContinuous = [&](const std::vector<uint64_t>& v,
-                              const std::string& name,
-                              uint64_t dim) -> bool {
+                               const std::string& name,
+                               uint64_t dim) -> bool {
+        if (v.empty()) return true;
         if (v.size() != continuousCount) {
             error = name + " continuous count " + std::to_string(v.size()) +
                     " != " + std::to_string(continuousCount);
@@ -161,6 +163,15 @@ bool validatePositions(
         }
         return true;
     };
+
+    const bool hasAnyRequest =
+        !positions.x_random.empty() || !positions.y_random.empty() ||
+        !positions.z_random.empty() || !positions.x_continuous.empty() ||
+        !positions.y_continuous.empty() || !positions.z_continuous.empty();
+    if (!hasAnyRequest) {
+        error = "positions file contains no slice requests";
+        return false;
+    }
 
     if (!checkRandom(positions.x_random, "X", nx)) return false;
     if (!checkRandom(positions.y_random, "Y", ny)) return false;
@@ -299,4 +310,4 @@ uint64_t computePositionsHash(const ContestPositions& positions) {
     return h;
 }
 
-}
+} // namespace erwt3d
