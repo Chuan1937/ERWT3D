@@ -99,6 +99,12 @@ set(LIB_SOURCES
     src/unified_read_config.cpp
     src/ssd/ssd_extent_planner.cpp
     src/ssd/ssd_executor.cpp
+    src/ssd_cold/cold_request_plan.cpp
+    src/ssd_cold/cold_extent_plan.cpp
+    src/ssd_cold/cold_io_engine.cpp
+    src/ssd_cold/cold_buffer_pool.cpp
+    src/ssd_cold/cold_profile.cpp
+    src/ssd_cold/rzfp_cold_executor.cpp
 )
 
 if(ERWT3D_ENABLE_RZFP)
