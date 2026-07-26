@@ -111,11 +111,46 @@ static bool closeFilesChecked(std::vector<int>& fds, std::string* error = nullpt
     return allOk;
 }
 
+static double averageRequestedGroups(
+    const ContestGroupTiming& random,
+    const ContestGroupTiming& continuous
+) {
+    double total = 0.0;
+    uint32_t count = 0;
+    if (random.slice_count > 0) {
+        total += random.time_ms;
+        ++count;
+    }
+    if (continuous.slice_count > 0) {
+        total += continuous.time_ms;
+        ++count;
+    }
+    return count > 0 ? total / static_cast<double>(count) : 0.0;
+}
+
 static void finishProfile(ContestUnifiedProfile& p) {
-    p.t_x_ms = (p.x_random.time_ms + p.x_continuous.time_ms) / 2.0;
-    p.t_y_ms = (p.y_random.time_ms + p.y_continuous.time_ms) / 2.0;
-    p.t_z_ms = (p.z_random.time_ms + p.z_continuous.time_ms) / 2.0;
-    p.t_composite_ms = (p.t_x_ms + p.t_y_ms + p.t_z_ms) / 3.0;
+    p.t_x_ms = averageRequestedGroups(p.x_random, p.x_continuous);
+    p.t_y_ms = averageRequestedGroups(p.y_random, p.y_continuous);
+    p.t_z_ms = averageRequestedGroups(p.z_random, p.z_continuous);
+
+    double axisTotal = 0.0;
+    uint32_t axisCount = 0;
+    if (p.x_random.slice_count > 0 || p.x_continuous.slice_count > 0) {
+        axisTotal += p.t_x_ms;
+        ++axisCount;
+    }
+    if (p.y_random.slice_count > 0 || p.y_continuous.slice_count > 0) {
+        axisTotal += p.t_y_ms;
+        ++axisCount;
+    }
+    if (p.z_random.slice_count > 0 || p.z_continuous.slice_count > 0) {
+        axisTotal += p.t_z_ms;
+        ++axisCount;
+    }
+    p.t_composite_ms = axisCount > 0
+        ? axisTotal / static_cast<double>(axisCount)
+        : 0.0;
+
     p.output_file_count = p.x_random.slice_count + p.y_random.slice_count +
         p.z_random.slice_count + p.x_continuous.slice_count +
         p.y_continuous.slice_count + p.z_continuous.slice_count;
@@ -239,7 +274,7 @@ bool executeContestGroupsMerged(
 
     const auto e2eStart = Clock::now();
 
-    // Phase 1: Create all output files and pre-0allocate
+    // Phase 1: Create all output files and pre-allocate.
     const auto createStart = Clock::now();
     std::vector<std::vector<int>> allFds(6);
     std::vector<uint64_t> outBytesPerGroup(6, 0);
@@ -258,7 +293,7 @@ bool executeContestGroupsMerged(
     }
     const double totalCreateMs = msSince(createStart);
 
-    // Phase 2: Merge-read all groups at once (cross-group dedup)
+    // Phase 2: Merge-read only the requested groups.
     const auto readStart = Clock::now();
     std::vector<GroupReadEntry> readEntries;
     std::vector<std::vector<std::vector<float>>> allOutputs(6);
@@ -286,7 +321,7 @@ bool executeContestGroupsMerged(
     uint64_t totalSlices = 0;
     for (int g = 0; g < 6; ++g) totalSlices += groups[g].indices->size();
 
-    // Phase 3: Write each group's output and close files
+    // Phase 3: Write each requested group's output and close files.
     const auto writeStartAll = Clock::now();
     for (int g = 0; g < 6; ++g) {
         if (groups[g].indices->empty()) continue;
@@ -308,15 +343,17 @@ bool executeContestGroupsMerged(
             return false;
         }
 
-        double writeCloseMs = msSince(writeStart);
-        double groupReadMs = (totalSlices > 0)
-            ? readMs * static_cast<double>(groups[g].indices->size()) / static_cast<double>(totalSlices)
+        const double writeCloseMs = msSince(writeStart);
+        const double groupWeight = totalSlices > 0
+            ? static_cast<double>(groups[g].indices->size()) / static_cast<double>(totalSlices)
             : 0.0;
+        const double groupReadMs = readMs * groupWeight;
+        const double groupCreateMs = totalCreateMs * groupWeight;
 
-        timings[g]->time_ms = groupReadMs + writeCloseMs;
+        timings[g]->time_ms = groupCreateMs + groupReadMs + writeCloseMs;
         timings[g]->read_ms = groupReadMs;
         timings[g]->write_ms = writeCloseMs;
-        timings[g]->create_files_ms = 0.0;
+        timings[g]->create_files_ms = groupCreateMs;
         timings[g]->slice_count = groups[g].indices->size();
         timings[g]->total_bytes = groups[g].indices->size() * outBytes;
     }
@@ -326,18 +363,7 @@ bool executeContestGroupsMerged(
     p.merged_read_ms = readMs;
     p.total_write_ms = totalWriteMs;
     p.total_create_files_ms = totalCreateMs;
-
-    p.t_composite_ms = p.process_e2e_ms / 6.0;
-    p.t_x_ms = (p.x_random.time_ms + p.x_continuous.time_ms) / 2.0;
-    p.t_y_ms = (p.y_random.time_ms + p.y_continuous.time_ms) / 2.0;
-    p.t_z_ms = (p.z_random.time_ms + p.z_continuous.time_ms) / 2.0;
-
-    p.output_file_count = p.x_random.slice_count + p.y_random.slice_count +
-        p.z_random.slice_count + p.x_continuous.slice_count +
-        p.y_continuous.slice_count + p.z_continuous.slice_count;
-    p.output_total_bytes = p.x_random.total_bytes + p.y_random.total_bytes +
-        p.z_random.total_bytes + p.x_continuous.total_bytes +
-        p.y_continuous.total_bytes + p.z_continuous.total_bytes;
+    finishProfile(p);
 
     if (profile) *profile = p;
     return true;
