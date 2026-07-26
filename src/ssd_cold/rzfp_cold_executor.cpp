@@ -99,6 +99,92 @@ struct SlabDecodeResult {
     double elapsed_ms = 0.0;
 };
 
+template<ColdRecordSource Source>
+static SlabDecodeResult decodeSlab(
+    const uint8_t* slabData, uint64_t slabSize,
+    size_t slabIdx,
+    const std::vector<ColdSlabRequest>& plan,
+    const std::vector<RzfpLeafDescriptor>& descriptors,
+    const RzfpFileHeader& rzfpHdr,
+    uint64_t nx, uint64_t ny, uint64_t nz,
+    uint64_t leafX, uint64_t leafY, uint64_t leafZ,
+    std::vector<std::vector<float>>& allOutputs,
+    std::atomic<bool>& stop)
+{
+    SlabDecodeResult result;
+    result.slab_index = slabIdx;
+    auto tDecStart = Clock::now();
+    const auto& slab = plan[slabIdx];
+    RzfpCodec codec;
+    uint64_t offset = 0;
+    uint64_t recordCount = 0;
+
+    while (offset < slabSize) {
+        if (slabSize - offset < sizeof(uint32_t)) break;
+        uint32_t descriptorId = 0;
+        std::memcpy(&descriptorId, slabData + offset, sizeof(uint32_t));
+        offset += sizeof(uint32_t);
+        if (descriptorId >= descriptors.size()) { result.ok = false; return result; }
+        const auto desc = descriptors[descriptorId];
+        const uint16_t recSize = descriptorSizeVal(desc);
+        if (recSize > slabSize - offset) { result.ok = false; return result; }
+        uint64_t gx = 0, gy = 0, gz = 0;
+        axisLeafRecordCoords(rzfpHdr, descriptorId, gx, gy, gz);
+
+        uint64_t recordSlab = 0;
+        if constexpr (Source == ColdRecordSource::RzfpAxisLeafX) {
+            recordSlab = gx / leafX;
+        } else if constexpr (Source == ColdRecordSource::RzfpAxisLeafY) {
+            recordSlab = gy / leafY;
+        } else {
+            recordSlab = gz / leafZ;
+        }
+        if (recordSlab != slab.slab_id) { result.ok = false; return result; }
+
+        if (gx >= nx || gy >= ny || gz >= nz) { offset += recSize; continue; }
+        const uint64_t copyX = std::min<uint64_t>(leafX, nx - gx);
+        const uint64_t copyY = std::min<uint64_t>(leafY, ny - gy);
+        const uint64_t copyZ = std::min<uint64_t>(leafZ, nz - gz);
+
+        alignas(64) float leaf[64];
+        if (!codec.decodeRecord(descriptorCodecVal(desc), slabData + offset, recSize, leaf)) {
+            result.ok = false; return result;
+        }
+        ++result.decoded_leaves;
+
+        for (const auto& target : slab.targets) {
+            if (target.output_slot >= allOutputs.size()) continue;
+            float* output = allOutputs[target.output_slot].data();
+            if (!output) continue;
+
+            if constexpr (Source == ColdRecordSource::RzfpAxisLeafX) {
+                if (target.local >= copyX) continue;
+                for (uint64_t z = 0; z < copyZ; ++z)
+                    for (uint64_t y = 0; y < copyY; ++y)
+                        output[(gy + y) * nz + gz + z] =
+                            leaf[(z * leafY + y) * leafX + target.local];
+            } else if constexpr (Source == ColdRecordSource::RzfpAxisLeafY) {
+                if (target.local >= copyY) continue;
+                for (uint64_t z = 0; z < copyZ; ++z)
+                    for (uint64_t x = 0; x < copyX; ++x)
+                        output[(gx + x) * nz + gz + z] =
+                            leaf[(z * leafY + target.local) * leafX + x];
+            } else {
+                if (target.local >= copyZ) continue;
+                for (uint64_t y = 0; y < copyY; ++y)
+                    for (uint64_t x = 0; x < copyX; ++x)
+                        output[(gx + x) * ny + gy + y] =
+                            leaf[(target.local * leafY + y) * leafX + x];
+            }
+        }
+        offset += recSize;
+        if ((++recordCount & 4095u) == 0 && stop.load(std::memory_order_relaxed))
+            return result;
+    }
+    result.elapsed_ms = msSince(tDecStart);
+    return result;
+}
+
 bool executeRzfpAxisLeafColdSSD(
     const std::string& filePath,
     const ContestPositions& positions,
@@ -301,100 +387,23 @@ bool executeRzfpAxisLeafColdSSD(
             const uint8_t* slabData = extBuf.get() + relOff;
             const uint64_t slabSize = slab.slab_bytes;
 
-            decodeFutures.push_back(decodePool.submit(
-                [extBuf, slabIdx, slabData, slabSize, &plan, &descriptors,
-                 &rzfpHdr, nx, ny, nz, leafX, leafY, leafZ, &allOutputs,
-                 &stop]() -> SlabDecodeResult {
+#define DISPATCH_SLAB(AXS) \
+    decodeFutures.push_back(decodePool.submit( \
+        [extBuf, slabIdx, slabData, slabSize, &plan, &descriptors, \
+         &rzfpHdr, nx, ny, nz, leafX, leafY, leafZ, &allOutputs, \
+         &stop]() { \
+            return decodeSlab<ColdRecordSource::AXS>( \
+                slabData, slabSize, slabIdx, plan.slab_requests, \
+                descriptors, rzfpHdr, nx, ny, nz, leafX, leafY, leafZ, \
+                allOutputs, stop); \
+        }))
 
-                    SlabDecodeResult result;
-                    result.slab_index = slabIdx;
-                    auto tDecStart = Clock::now();
-                    const auto& slab = plan.slab_requests[slabIdx];
-                    RzfpCodec codec;
-                    uint64_t offset = 0;
-                    uint64_t recordCount = 0;
-
-                    while (offset < slabSize) {
-                        if (slabSize - offset < sizeof(uint32_t)) break;
-                        uint32_t descriptorId = 0;
-                        std::memcpy(&descriptorId, slabData + offset, sizeof(uint32_t));
-                        offset += sizeof(uint32_t);
-
-                        if (descriptorId >= descriptors.size()) {
-                            result.ok = false; return result;
-                        }
-                        const auto desc = descriptors[descriptorId];
-                        const uint16_t recSize = descriptorSizeVal(desc);
-                        if (recSize > slabSize - offset) {
-                            result.ok = false; return result;
-                        }
-                        uint64_t gx = 0, gy = 0, gz = 0;
-                        axisLeafRecordCoords(rzfpHdr, descriptorId, gx, gy, gz);
-
-                        uint64_t recordSlab = 0;
-                        switch (slab.source) {
-                            case ColdRecordSource::RzfpAxisLeafX:
-                                recordSlab = gx / leafX; break;
-                            case ColdRecordSource::RzfpAxisLeafY:
-                                recordSlab = gy / leafY; break;
-                            case ColdRecordSource::RzfpAxisLeafZ:
-                                recordSlab = gz / leafZ; break;
-                            default: result.ok = false; return result;
-                        }
-                        if (recordSlab != slab.slab_id) {
-                            result.ok = false; return result;
-                        }
-                        if (gx >= nx || gy >= ny || gz >= nz) {
-                            offset += recSize; continue;
-                        }
-                        const uint64_t copyX = std::min<uint64_t>(leafX, nx - gx);
-                        const uint64_t copyY = std::min<uint64_t>(leafY, ny - gy);
-                        const uint64_t copyZ = std::min<uint64_t>(leafZ, nz - gz);
-
-                        alignas(64) float leaf[64];
-                        if (!codec.decodeRecord(descriptorCodecVal(desc),
-                                slabData + offset, recSize, leaf)) {
-                            result.ok = false; return result;
-                        }
-                        ++result.decoded_leaves;
-
-                        for (const auto& target : slab.targets) {
-                            if (target.output_slot >= allOutputs.size()) continue;
-                            float* output = allOutputs[target.output_slot].data();
-                            if (!output) continue;
-                            switch (slab.source) {
-                                case ColdRecordSource::RzfpAxisLeafX:
-                                    if (target.local >= copyX) continue;
-                                    for (uint64_t z = 0; z < copyZ; ++z)
-                                        for (uint64_t y = 0; y < copyY; ++y)
-                                            output[(gy + y) * nz + gz + z] =
-                                                leaf[(z * leafY + y) * leafX + target.local];
-                                    break;
-                                case ColdRecordSource::RzfpAxisLeafY:
-                                    if (target.local >= copyY) continue;
-                                    for (uint64_t z = 0; z < copyZ; ++z)
-                                        for (uint64_t x = 0; x < copyX; ++x)
-                                            output[(gx + x) * nz + gz + z] =
-                                                leaf[(z * leafY + target.local) * leafX + x];
-                                    break;
-                                case ColdRecordSource::RzfpAxisLeafZ:
-                                    if (target.local >= copyZ) continue;
-                                    for (uint64_t y = 0; y < copyY; ++y)
-                                        for (uint64_t x = 0; x < copyX; ++x)
-                                            output[(gx + x) * ny + gy + y] =
-                                                leaf[(target.local * leafY + y) * leafX + x];
-                                    break;
-                                default: break;
-                            }
-                        }
-                        offset += recSize;
-                        if ((++recordCount & 4095u) == 0 &&
-                            stop.load(std::memory_order_relaxed))
-                            return result;
-                    }
-                    result.elapsed_ms = msSince(tDecStart);
-                    return result;
-                }));
+            switch (slab.source) {
+                case ColdRecordSource::RzfpAxisLeafX: DISPATCH_SLAB(RzfpAxisLeafX); break;
+                case ColdRecordSource::RzfpAxisLeafY: DISPATCH_SLAB(RzfpAxisLeafY); break;
+                case ColdRecordSource::RzfpAxisLeafZ: DISPATCH_SLAB(RzfpAxisLeafZ); break;
+                default: break;
+            }
 
             while (decodeFutures.size() >= static_cast<size_t>(decodeThreads * 2)) {
                 auto r = decodeFutures.front().get();
