@@ -105,7 +105,6 @@ set(LIB_SOURCES
     src/ssd_cold/cold_buffer_pool.cpp
     src/ssd_cold/cold_profile.cpp
     src/ssd_cold/rzfp_cold_executor.cpp
-    src/ssd_cold/lz4_cold_executor.cpp
 )
 
 if(ERWT3D_ENABLE_RZFP)

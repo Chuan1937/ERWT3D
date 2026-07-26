@@ -11,7 +11,6 @@
 #include "erwt3d/io_profile.hpp"
 #include "erwt3d/unified_read_config.hpp"
 #include "erwt3d/ssd_cold/rzfp_cold_executor.hpp"
-#include "erwt3d/ssd_cold/lz4_cold_executor.hpp"
 #include "erwt3d/ssd_cold/cold_profile.hpp"
 
 #include <algorithm>
