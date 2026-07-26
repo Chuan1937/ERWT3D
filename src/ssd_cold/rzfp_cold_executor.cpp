@@ -324,13 +324,13 @@ bool executeRzfpAxisLeafColdSSD(
                 snprintf(name, sizeof(name), "contest_%s_%03zu.dat", g.name.c_str(), si);
                 outputFiles[slot] = outputDir + "/" + name;
                 int fd = open(outputFiles[slot].c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-                if (fd >= 0) {
-                    auto osize = static_cast<off_t>(outputSizes[slot]);
-                    if (ftruncate(fd, osize) != 0) {
-                        close(fd); return false;
-                    }
-                    close(fd);
+                if (fd < 0) {
+                    std::cerr << "[RZFP-COLD] cannot create: " << outputFiles[slot] << "\n";
+                    return false;
                 }
+                auto osize = static_cast<off_t>(outputSizes[slot]);
+                if (ftruncate(fd, osize) != 0) { close(fd); return false; }
+                close(fd);
                 ++slot;
             }
         }
@@ -454,20 +454,22 @@ bool executeRzfpAxisLeafColdSSD(
     for (const auto& g : groups) {
         for (size_t si = 0; si < g.indices->size(); ++si) {
             int ofd = open(outputFiles[slot].c_str(), O_WRONLY);
-            if (ofd >= 0) {
-                auto osize = outputSizes[slot];
-                uint64_t written = 0;
-                const uint8_t* src = reinterpret_cast<const uint8_t*>(allOutputs[slot].data());
-                while (written < osize) {
-                    ssize_t n = pwrite(ofd, src + written, static_cast<size_t>(osize - written),
-                                       static_cast<off_t>(written));
-                    if (n < 0) { if (errno == EINTR) continue; break; }
-                    if (n == 0) break;
-                    written += static_cast<uint64_t>(n);
-                }
-                if (written != osize) { close(ofd); return false; }
-                close(ofd);
+            if (ofd < 0) {
+                std::cerr << "[RZFP-COLD] cannot open for write: " << outputFiles[slot] << "\n";
+                return false;
             }
+            auto osize = outputSizes[slot];
+            uint64_t written = 0;
+            const uint8_t* src = reinterpret_cast<const uint8_t*>(allOutputs[slot].data());
+            while (written < osize) {
+                ssize_t n = pwrite(ofd, src + written, static_cast<size_t>(osize - written),
+                                   static_cast<off_t>(written));
+                if (n < 0) { if (errno == EINTR) continue; break; }
+                if (n == 0) break;
+                written += static_cast<uint64_t>(n);
+            }
+            if (written != osize) { close(ofd); return false; }
+            close(ofd);
             ++slot;
         }
     }
