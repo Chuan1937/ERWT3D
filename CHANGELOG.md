@@ -34,7 +34,36 @@
   - CentOS 7 移植（portable x86-64，`-DERWT3D_NATIVE_OPT=OFF`）
   - 50GB RZFP cold-group 43.06s, 2GB 不 OOM
 
-## [0.8.0] - unreleased
+## [0.9.0] - 2026-07-26
+
+### Added
+
+- **SSD RZFP cold executor** (PR #64, branch: `perf/ssd-cold-aggressive`)：
+  - 新执行器 `src/ssd_cold/`：仅读取 axis-leaf 区段，main payload 读取为 0
+  - `cold_request_plan`：按 (source, slab_id) 去重的 slab 级请求规划
+  - `cold_extent_plan`：逐 slab 独立 extent，不做截断
+  - P3-1：模板化轴解码路径（`if constexpr` 消除热循环 switch）
+  - `sched_getaffinity()` CPU 检测，自动线程上限 `min(available, 32)`
+  - `--ssd-cold-backend pread` 显式启用冷执行器
+  - 失败自动回退标准 reader
+  - 35 个文件，~3K 行新代码
+
+### Changed
+
+- `erwt3d_contest`：新增 `--ssd-cold-*` 参数族
+- `buildColdExtentPlan()`：改用显式 `slab_indices` 替代 `first_slab/slab_count`
+- 布局覆写不再强制 HDD 大窗口于物理 SSD
+- LZ4 cold executor 已删除（未完成）
+
+### Performance (SSD, 16 threads, Guest-cold, x86-64-v3)
+
+| 数据 | 格式 | 路径 | process_e2e | T_composite | vs standard |
+|------|------|------|:-----------:|:-----------:|:-----------:|
+| 50GB | RZFP axis-leaf | standard reader | 22.6s | 3.8s | baseline |
+| 50GB | RZFP axis-leaf | **cold executor** | **17.7s** | **3.0s** | **-22%** |
+| 20GB | LZ4 unified | standard reader | 8.9s | 1.4s | baseline |
+
+
 
 ### Added
 

@@ -103,82 +103,62 @@ T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
 - 预创建输出文件（避免 open/close 开销在计时内）
 - -march=native 编译优化（AVX2 自动向量化）
 
-## 当前性能（P5）
+## 当前性能（main, HEAD `6383261`）
 
-分支 `perf/p5-round-planner-hdd-pipeline` (PR #55)，`erwt3d_contest` 正式入口。
+### SSD Guest-cold（WSL2 ext4, i9-10850K 8C/16T）
 
-测试环境：i9-10850K（8C/16T）、62 GiB RAM、0 swap、G 盘 HDD via WSL2 9p、GCC 15.2.1、CMake 3.31、HEAD `edd6f2a`。`--threads 8`，`--seed 20260511`。
+| 数据 | 格式 | 路径 | Threads | process_e2e | T_composite | RSS |
+|------|------|------|:-------:|:-----------:|:-----------:|:---:|
+| 50GB | RZFP axis-leaf | standard reader | 16 | 22.6s | 3.8s | 8.5GB |
+| 50GB | RZFP axis-leaf | **cold executor**¹ | **16** | **17.7s** | **3.0s** | **8.9GB** |
+| 20GB | LZ4 unified | standard reader | 16 | 8.9s | 1.4s | 3.4GB |
 
-### 50GB RZFP + Raw X Aux（1.421x）
+¹ 使用 `--ssd-cold-backend pread` 显式启用。构建 `-O3 -march=x86-64-v3`。
 
-| 配置 | 内存 | 窗口 | T_composite | RSS | vs AUTO |
-|------|------|------|-------------|-----|---------|
-| AUTO | 27 GiB | 512 MB | **39.95s** | 30.4 GiB | baseline |
-| M28 | 28 GiB | 512 MB | 40.70s | 30.4 GiB | +1.9% |
-| M24 | 24 GiB | 512 MB | 40.30s | 30.4 GiB | +0.9% |
-| **M8** ★ | **8 GiB** | **128 MB** | **41.37s** | **13.7 GiB** | **+3.6%** |
-| M16 | 16 GiB | 256 MB | 42.20s | 22.1 GiB | +5.6% |
-| M4 | 4 GiB | 64 MB | 56.67s | 8.4 GiB | +42% |
-| M2 | 2 GiB | 64 MB | 88.30s | 4.4 GiB | +121% |
+### HDD Guest-cold（G: 盘 via 9p, 同机）
 
-### 稳定性（stable-auto x5）
+| 数据 | 格式 | 路径 | Threads | process_e2e |
+|------|------|------|:-------:|:-----------:|
+| 50GB | RZFP axis-leaf (external .xal) | standard reader | 16 | 85.8s |
+| 20GB | LZ4 unified | standard reader | 16 | 69.3s |
 
-| 配置 | mean | median | min | max | CV |
-|------|------|--------|-----|-----|-----|
-| AUTO | 40.01s | 39.98s | 39.82s | 40.32s | 0.5% |
-| M8 | 41.34s | 41.33s | 41.21s | 41.47s | 0.3% |
+### 比赛评分参考
 
-### cold-round x3
-
-| 配置 | mean |
-|------|------|
-| AUTO | 40.27s |
-| M8 | 41.68s |
-
-### 20GB RZFP + X-plane sidecar（1.036x）
-
-| 配置 | 内存 | T_composite | RSS |
-|------|------|-------------|-----|
-| AUTO | 17 GiB | **16.79s** | 17.8 GiB |
-| **M4** ★ | **4 GiB** | **17.25s** | **8.7 GiB** |
-| M2 | 2 GiB | 50.44s | 4.7 GiB |
-
-### P4 vs P5 对比（50GB M8, stable-auto）
-
-| 模式 | mean |
-|------|------|
-| P4 (p4-groups) | 42.36s |
-| P5 (p5-round) | 41.83s ¹ |
-
-¹ P5 round 2 outlier 45.4s excluded (disk activity)。
-
-### 同盘/异盘
-
-| 模式 | T_composite |
-|------|-------------|
-| 同盘 (G→G) | 41.60s |
-| 异盘 (G→WSL) | **37.69s** |
-| 差异 | **-9.4%** |
+```
+T_composite = (T_xr + T_yr + T_zr + T_xc + T_yc + T_zc) / 6
+性能得分 = (基准时间 / T_composite) × 60
+存储得分：≤1.5x → 20分
+```
 
 ### 关键验证
 
-- 21/21 CTest 通过
-- 2GB 不崩溃，decode errors = 0
-- AUTO vs M8 hash 一致
-- 输出文件 330/330
-- 存储比 50GB 1.421x、20GB 1.036x（≤ 1.50）
-- 5 轮 CV ≤ 0.5%
+- 39/39 CTest 通过
+- 330/330 SHA256 一致
+- RZFP violations=0，max_relative_error<1e-3
 
-### P5 关键架构
+## 推荐参赛命令
 
-- **`readContestRound()`**：Y/Z 四组合并为一次 `readSlicesBatch`，跨组 Leaf 去重
-- **`ContestRoundExecutor`**：共享执行器，benchmark 与 contest 共用，字节预算阶段规划
-- **`erwt3d_contest`**：正式入口，`--memory-limit-mb N`，`--read-window-mb N`
-- **`BoundedWindowCache::getContaining()`**：包含命中范围缓存
-- **`computeWindow`**：`windowEnd = max(windowEnd, end)` 修复同 offset 不同 size 窗口收缩
-- **`patchExceptions`**：`bool` 返回 + popcount 校验，消除 `std::out_of_range`
-- **直读回退**：decode 失败时从磁盘重读
-- **存储预算**：1.50 硬上限，1.490 自动目标，1.495 手动上限
+### 50GB RZFP（推荐 cold executor，需硬件支持）
+
+```bash
+# 显式使用 cold executor
+./build/erwt3d_contest --input data.erwt3d --output-dir OUT \
+  --positions-file positions_big.csv --threads 16 \
+  --io-profile ssd --ssd-cold-backend pread
+
+# 或自动路径（标准 reader）
+./build/erwt3d_contest --input data.erwt3d --output-dir OUT \
+  --positions-file positions_big.csv --threads 16 \
+  --io-profile auto
+```
+
+### 20GB LZ4
+
+```bash
+./build/erwt3d_contest --input data.erwt3d --output-dir OUT \
+  --positions-file positions_small.csv --threads 16 \
+  --io-profile auto
+```
 
 ## RZFP Axis Leaf（PR #59 最终方案）
 
