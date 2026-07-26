@@ -22,6 +22,9 @@ target_link_libraries(test_official_raw_layout PRIVATE erwt3d)
 add_executable(test_contest_positions test_contest_positions.cpp)
 target_link_libraries(test_contest_positions PRIVATE erwt3d)
 
+add_executable(test_contest_sparse_groups test_contest_sparse_groups.cpp)
+target_link_libraries(test_contest_sparse_groups PRIVATE erwt3d)
+
 add_executable(test_contest_timing test_contest_timing.cpp)
 target_link_libraries(test_contest_timing PRIVATE erwt3d)
 
@@ -134,6 +137,7 @@ add_test(NAME rzfp_round_reader COMMAND test_rzfp_round_reader)
 add_test(NAME contest_phase_plan COMMAND test_contest_phase_plan)
 add_test(NAME contest_batch_plan COMMAND test_contest_batch_plan)
 add_test(NAME contest_positions COMMAND test_contest_positions)
+add_test(NAME contest_sparse_groups COMMAND test_contest_sparse_groups)
 add_test(NAME contest_timing COMMAND test_contest_timing)
 add_test(NAME contest_output_dat COMMAND test_contest_output_dat)
 add_test(NAME large_positional_io COMMAND test_large_positional_io)
