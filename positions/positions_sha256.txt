@@ -1,2 +1,0 @@
-fcdfbcabb96c88d58c596502456637c5913b5da64ae5547c5fe9ab49a55717ff  /data/positions/positions_small.csv
-9679e507e9598ca50ee84264b531d8107053ca07f8320c0236362278569471b8  /data/positions/positions_big.csv
