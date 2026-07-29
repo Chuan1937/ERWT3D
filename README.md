@@ -1,92 +1,113 @@
 # ERWT3D
 
-三维空间数据高效读写库，面向赛题2“三维空间数据的高效读写”。核心存储布局仍是单文件、Superblock + Leaf、Morton Z-order；本次收口重点放在更严格的 benchmark、verify、脚本和文档口径。
+三维空间数据高效读写库。采用自定义单文件格式（.erwt3d），以 Morton Z-order 物理布局实现三轴切片访问均衡，支持 LZ4 和 RZFP 两种压缩存储。
 
-## 构建
+## 1. 构建
 
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-```
+推荐在实际运行设备上自行编译，以充分利用目标 CPU 指令集。预编译版本性能会明显下降。
 
-## 严格比赛模拟
+### 依赖
 
-赛题性能口径仍为：
+- C++17 编译器（GCC ≥ 8、Clang ≥ 7）
+- CMake ≥ 3.16
+- LZ4（必选）
 
-```text
-T_composite = (T_x_random + T_y_random + T_z_random + T_x_continuous + T_y_continuous + T_z_continuous) / 6
-```
-
-预处理时间不计入性能分，但预处理后全部必要文件大小计入存储分。推荐先做相对误差验证，再做严格 benchmark：
+### 编译
 
 ```bash
-./build/erwt3d_verify \
-  --raw data.dat \
-  --erwt3d data.erwt3d \
-  --nx NX --ny NY --nz NZ \
-  --samples 100000 \
-  --seed 20260511 \
-  --rel-tol 1e-3
+cmake3 -S deps/zfp-src -B build-zfp \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="$PWD/deps/zfp" \
+  -DCMAKE_C_FLAGS_RELEASE="-O3 -DNDEBUG -march=native -mtune=native" \
+  -DCMAKE_CXX_FLAGS_RELEASE="-O3 -DNDEBUG -march=native -mtune=native" \
+  -DBUILD_SHARED_LIBS=OFF \
+  -DBUILD_UTILITIES=OFF \
+  -DBUILD_TESTING=OFF \
+  -DZFP_WITH_OPENMP=OFF
+cmake3 --build build-zfp -j"$(nproc)"
+cmake3 --install build-zfp
 
-./build/erwt3d_bench_contest \
-  --input data.erwt3d \
-  --output-dir bench_out \
-  --random-count 100 \
-  --continuous-count 10 \
-  --continuous-start random \
-  --timing-mode strict \
-  --storage-path data.erwt3d \
-  --hdd
+cmake3 -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CXX_COMPILER="$(command -v g++)" \
+  -DCMAKE_PREFIX_PATH="$PWD/deps/zfp" \
+  -DERWT3D_ENABLE_RZFP=ON \
+  -DERWT3D_NATIVE_OPT=ON
+cmake3 --build build -j"$(nproc)"
 ```
 
-`--timing-mode strict` 是推荐正式口径，计时覆盖 output file 的 open/create、切片读取、解码/重排、raw 写出和 close。`--timing-mode fast` 只适合调试核心读取性能，不适合正式报告。
+## 2. 使用
 
-## 关键工具
+使用预编译版本时，将 `./build/` 替换为预编译包中的 `./bin/`。
 
-| 二进制 | 用途 |
-|--------|------|
-| **`erwt3d_contest`** | **统一比赛切片**（自动识别LZ4/RZFP，330个.dat） |
-| **`erwt3d_convert`** | **统一自动转换**（Raw↔LZ4+XP/RZFP） |
-| `erwt3d_verify` | 正确性验证 |
-| `erwt3d_slice` | 单切片读取 |
-| `erwt3d_line` | 主维度单列读取 |
-| `erwt3d_info` | 文件信息查看 |
-| ~~`erwt3d_bench_contest`~~ | Historical / superseded — 请用 `erwt3d_contest` |
-| ~~`erwt3d_precompute_x`~~ | Historical / superseded — XP 已内嵌 |
+### 2.1. 数据转换
 
-## 验证与计时说明
+正向转换（raw → .erwt3d）：
 
-`erwt3d_verify` 现在默认按赛题要求使用相对误差判据：
+```bash
+./build/erwt3d_convert \
+  --input cup_3d_small.dat \
+  --output cup_3d_small.erwt3d \
+  --nx 801 --ny 2405 --nz 2501 \
+  --threads auto --memory-limit-mb auto
+```
 
-- 官方否决项是单点相对误差 `< 0.001`
-- 对参考值接近 0 的点，默认使用 `--zero-abs-tol 1e-6` 保护
-- 采样验证使用 `std::mt19937_64`，可通过 `--seed` 复现
-- 如果要完全严格地对所有点都按相对误差处理，可加 `--strict-relative`
+反向转换（.erwt3d → raw）：
 
-`erwt3d_bench_contest` 的连续切片起点默认是 `--continuous-start random`，并由 `--seed` 控制复现。`--storage-path` 支持统计单文件，也支持递归统计整个预处理目录，更接近“预处理后全部文件都计入存储分”的比赛口径；如果用户显式传入 `--storage-path` 但路径不存在、不可访问或递归统计失败，程序会直接报错退出，避免误算存储分。
+```bash
+./build/erwt3d_convert \
+  --input cup_3d_small.erwt3d \
+  --output restored.dat \
+  --to-raw
+```
 
-`--repeats` 默认仍为 `1`。当 `repeats > 1` 时，`T_composite` 仍按每组最小值计算以保持兼容，但 CSV 和终端会同时输出 min/mean/median/max，并提示该结果偏乐观。
+### 2.2. 切片读取
 
-## 输出目录建议
+自助测试（自动生成坐标）：
 
-输出目录位置会直接影响结果：
+```bash
+./build/erwt3d_contest \
+  --input cup_3d_small.erwt3d \
+  --output-dir test_output \
+  --seed 20260511
+```
 
-- 输出目录放在 SSD 或 tmpfs，更偏向读取算法本身
-- 输出目录放在同一块 HDD，更接近比赛中的总 I/O 压力
-- 正式报告应明确写出 output 目录所在磁盘
+正式测试（指定坐标文件）：
 
-## 脚本
+```bash
+./build/erwt3d_contest \
+  --input cup_3d_small.erwt3d \
+  --output-dir official_output \
+  --positions-file positions_small.csv \
+  --memory-limit-mb 8192
+```
 
-| 脚本 | 用途 |
-|------|------|
-| `scripts/benchmark_contest_strict.sh` | 严格比赛模拟 |
-| `scripts/benchmark.sh` | 日常调参 benchmark，默认 `fast` |
-| `scripts/verify_contest.sh` | 赛题口径验证 |
-| `scripts/verify.sh` | 常用验证脚本 |
-| `scripts/bench_mem_sweep.sh` | 内存限制扫描 |
+坐标文件为 CSV/TXT 格式，每行由轴向、访问类型和坐标索引组成：
 
-## 文档
+```csv
+axis,type,index
+x,random,12
+x,random,157
+y,random,35
+z,random,84
+x,continuous,300
+x,continuous,301
+y,continuous,700
+y,continuous,701
+z,continuous,1000
+z,continuous,1001
+```
 
-- [性能测试](docs/benchmark.md)
-- [赛题说明](docs/competiton_guide.md)
-- [存储结构与算法](docs/design.md)
+完整坐标文件应满足：
+- X、Y、Z 方向各 100 个不重复 random 坐标
+- X、Y、Z 方向各 10 个严格递增且相邻的 continuous 坐标
+- 坐标索引从 0 开始，不超出对应维度范围
+
+参考坐标文件位于 `positions/` 目录。
+
+
+## 3. 预编译包
+
+在centOS 7 Intel 上所编译
+`dist/ERWT3D-1.0.0-linux-x86_64-v3-c7.tar.gz`
+
