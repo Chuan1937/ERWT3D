@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-set -e
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export LD_LIBRARY_PATH="$ROOT/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-exec "$ROOT/libexec/$(basename "$0")" "$@"
