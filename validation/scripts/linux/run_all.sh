@@ -11,7 +11,7 @@ while (($#)); do
         --device) shift; device="${1:?--device needs a value}" ;;
         --config) shift; config="${1:?--config needs a value}" ;;
         --dry-run) dry_run=1 ;;
-        *) echo "Usage: $0 [--config linux.json] [--dry-run] [--only compression|accuracy|read|baseline|ablation|fidelity|all] [--dataset ID] [--device SSD|HDD]" >&2; exit 2 ;;
+        *) echo "Usage: $0 [--config linux.json] [--dry-run] [--only storage|accuracy|access|ablation|fidelity|all] [--dataset ID] [--device SSD|HDD]" >&2; exit 2 ;;
     esac
     shift
 done
@@ -27,6 +27,7 @@ fi
 source "$SCRIPT_DIR/common.sh"
 require_roots
 require_binary erwt3d_convert; require_binary erwt3d_paper_bench
+case "$only" in all|storage|accuracy|access|ablation|fidelity) ;; *) echo "[ERROR] invalid --only: $only" >&2; exit 2 ;; esac
 [[ -f "$ERWT3D_DATASET_ROOT/manifest.json" ]] || { echo "[ERROR] expected $ERWT3D_DATASET_ROOT/manifest.json (copy and complete validation/datasets/manifest.template.json)" >&2; exit 2; }
 "$SCRIPT_DIR/audit_environment.sh"
 
@@ -52,7 +53,7 @@ PY
     [[ -n "${info[2]}" && "${info[2]}" != REPLACE_AFTER_PREPARATION ]] && [[ "$(sha256_file "$raw")" == "${info[2]}" ]] || [[ "${info[2]}" == REPLACE_AFTER_PREPARATION ]] || { echo "[ERROR] raw SHA256 mismatch: $raw" >&2; exit 2; }
     [[ -d "$VALIDATION_DIR/workloads/$id" ]] || { echo "[ERROR] generate workloads for $id before formal execution" >&2; exit 2; }
     ssd_file="$ERWT3D_SSD_ROOT/erwt3d/$id.erwt3d"; hdd_file="$ERWT3D_HDD_ROOT/erwt3d/$id.erwt3d"
-    if [[ "$only" == all || "$only" == compression || "$only" == read || "$only" == accuracy || "$only" == ablation ]]; then
+    if [[ "$only" == all || "$only" == storage || "$only" == access || "$only" == accuracy || "$only" == ablation ]]; then
         if [[ ! -f "$ssd_file" ]]; then
             mkdir -p "$(dirname "$ssd_file")"
             cmd=("$BUILD_DIR/erwt3d_convert" --input "$raw" --output "$ssd_file" --nx "$nx" --ny "$ny" --nz "$nz" --threads "${ERWT3D_THREADS:-8}")
@@ -65,9 +66,40 @@ PY
         restored="$ERWT3D_RESULT_ROOT/accuracy/$id.restored.raw"; result="$ERWT3D_RESULT_ROOT/raw_results/accuracy/${id}_ERWT3D.json"
         cmd=("$BUILD_DIR/erwt3d_convert" --input "$ssd_file" --output "$restored" --to-raw --threads "${ERWT3D_THREADS:-8}")
         printf '[ACCURACY RESTORE] '; printf '%q ' "${cmd[@]}"; printf '\n'
-        if (( ! dry_run )); then "${cmd[@]}"; python3 "$VALIDATION_DIR/scripts/stream_accuracy.py" --raw "$raw" --restored "$restored" --output "$result"; fi
+        if (( ! dry_run )); then
+            "${cmd[@]}"
+            quantile_args=(--quantiles exact)
+            if (( $(stat -c%s "$raw") >= 2 * 1024 * 1024 * 1024 )); then
+                quantile_args=(--quantiles sample --sample-size 10000000 --seed 42)
+            fi
+            python3 "$VALIDATION_DIR/scripts/stream_accuracy.py" --raw "$raw" --restored "$restored" --output "$result" "${quantile_args[@]}"
+        fi
     fi
-    if [[ "$only" == all || "$only" == read ]]; then
+    if [[ "$only" == all || "$only" == storage ]]; then
+        storage_dir="$ERWT3D_SSD_ROOT/storage_baselines/$id"
+        storage_metrics="$ERWT3D_RESULT_ROOT/raw_results/storage/$id"
+        if (( ! dry_run )); then
+            mkdir -p "$storage_dir"
+            raw_storage="$storage_dir/raw.raw"
+            [[ -f "$raw_storage" ]] || copy_and_verify "$raw" "$raw_storage"
+            python3 "$VALIDATION_DIR/scripts/prepare/prepare_baselines.py" --raw "$raw_storage" --shape "$nx" "$ny" "$nz" --dataset "$id" --output-dir "$storage_dir" --metrics-dir "$storage_metrics"
+            python3 - "$storage_metrics/erwt3d.json" "$id" "$raw" "$ssd_file" <<'PY'
+import json, pathlib, sys
+raw, optimized = pathlib.Path(sys.argv[3]), pathlib.Path(sys.argv[4])
+pathlib.Path(sys.argv[1]).parent.mkdir(parents=True, exist_ok=True)
+pathlib.Path(sys.argv[1]).write_text(json.dumps({
+  "status":"SUCCESS", "experiment":"storage", "dataset":sys.argv[2], "method":"ERWT3D",
+  "raw_size_bytes":raw.stat().st_size, "compressed_size_bytes":optimized.stat().st_size,
+  "compression_ratio":raw.stat().st_size / optimized.stat().st_size,
+  "encode_time_ms":None, "decode_time_ms":None,
+  "timing_note":"The storage artifact was converted by the formal conversion phase; its timing is recorded in the conversion log."
+}, indent=2) + "\n")
+PY
+        else
+            echo "[STORAGE] Raw/LZ4/ZFP/HDF5/ERWT3D records for $id"
+        fi
+    fi
+    if [[ "$only" == all || "$only" == access ]]; then
         for dev in "${devices[@]}"; do
             [[ "$dev" == SSD || "$dev" == HDD ]] || { echo "[ERROR] invalid device $dev" >&2; exit 2; }
             input="$ssd_file"; [[ "$dev" == HDD ]] && input="$hdd_file"
@@ -80,7 +112,7 @@ PY
             done; done
         done
     fi
-    if [[ "$only" == all || "$only" == baseline ]]; then
+    if [[ "$only" == all || "$only" == access ]]; then
         require_binary erwt3d_convert
         ssd_baseline="$ERWT3D_SSD_ROOT/baselines/$id"; hdd_baseline="$ERWT3D_HDD_ROOT/baselines/$id"
         raw_ssd="$ssd_baseline/raw.raw"; raw_hdd="$hdd_baseline/raw.raw"

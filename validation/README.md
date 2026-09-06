@@ -20,7 +20,7 @@ python3 validation/scripts/prepare/pack_datasets.py
 
 Synthetic controls are strictly named `synthetic_smooth_model`, `synthetic_correlated_volume`, `synthetic_wavefield`, and `random_control`; none is real seismic data. The generator rejects competition-scale inputs and writes in X chunks instead of allocating whole-volume meshgrids.
 
-`stream_accuracy.py` evaluates raw/reconstructed files chunkwise. Its NRMSE is `sqrt(sum(error²)/sum(raw²))`; percentile results are marked `exact` only when actually exact.
+`stream_accuracy.py` evaluates raw/reconstructed files chunkwise. Its NRMSE is `sqrt(sum(error²)/sum(raw²))`; percentile results are marked `exact` only when actually exact. The Linux runner uses exact quantiles below 2 GiB and a deterministic 10,000,000-point sample (seed 42) at or above 2 GiB; RMSE, NRMSE, maximum relative error, and violation counts always remain full-volume calculations.
 
 ## Stage B — Linux formal benchmark
 
@@ -30,7 +30,8 @@ Copy `configs/linux.example.json` to a private path and replace every path. Load
 cp validation/configs/linux.example.json /secure/linux.json
 # Populate DATASET_ROOT/manifest.json from validation/datasets/manifest.template.json.
 bash validation/scripts/linux/run_all.sh --config /secure/linux.json --dry-run
-bash validation/scripts/linux/run_all.sh --config /secure/linux.json --dataset f3_amplitude
+bash validation/scripts/linux/run_all.sh --config /secure/linux.json --only storage --dataset f3_amplitude
+bash validation/scripts/linux/run_all.sh --config /secure/linux.json --only access --dataset f3_amplitude
 ```
 
 The Linux protocol audits device paths/mounts/model/ROTA, checks raw checksums, builds or verifies the SSD ERWT3D copy, copies it to HDD and verifies SHA256, then runs every axis/pattern independently. A cold run means **cold OS page-cache** only: cache dropping occurs before each workload. It does not claim a completely cold SSD.
@@ -41,7 +42,9 @@ Formal output is append-only by run ID under `raw_results`; failures retain stdo
 
 ## Baselines and ablations
 
-Storage baselines are Raw, LZ4, HDF5 chunked raw, HDF5 gzip, and standard ZFP. `prepare/prepare_baselines.py` records actual ZFP reconstruction error over a tolerance sweep; it does not equate a ZFP tolerance to ERWT3D pointwise-relative semantics. Raw/HDF5/ERWT3D are the intended multi-axis access comparison set. Standalone LZ4/ZFP remain compression baselines because they do not supply a comparable random-slice container.
+`--only storage` measures Raw, LZ4, HDF5 chunked raw, HDF5 gzip, standard ZFP, and ERWT3D storage artifacts. `prepare/prepare_baselines.py` records actual ZFP reconstruction error over a tolerance sweep; it does not equate a ZFP tolerance to ERWT3D pointwise-relative semantics.
+
+`--only access` measures Raw, HDF5 chunked raw, HDF5 gzip, and ERWT3D using identical axis/pattern/position/output rules. Standalone LZ4/ZFP remain storage baselines because they do not supply a comparable random-slice container.
 
 Ablation definitions for the Linux run are A0 full ERWT3D, A1 separately converted fixed-LZ4/fixed-RZFP artifacts, A2 `--disable-access-planner`, and A3 `--disable-device-scheduling`. A1 must use genuinely distinct converted artifacts; no duplicate configuration is accepted as an ablation result.
 

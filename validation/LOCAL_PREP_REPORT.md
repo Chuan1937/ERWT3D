@@ -38,7 +38,7 @@ Linux-only formal execution: `scripts/linux/`. It audits paths/devices, validate
 1. Build the frozen commit with RZFP enabled.
 2. Transfer the prepared data bundle, fill `manifest.json` from the template, and generate/transfer workloads.
 3. Copy and complete `linux.example.json` outside Git.
-4. Run `run_all.sh --dry-run`, then formal compression, accuracy, access, baseline, ablation, and error-sensitivity experiments.
+4. Run `run_all.sh --dry-run`, then formal storage, accuracy, access, and ablation experiments.
 5. Integrate efwi3D (or another external solver) before running forward-modeling fidelity.
 
 ## Known limitations
