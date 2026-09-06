@@ -176,7 +176,7 @@ int main(int argc, char* argv[]) {
         const uint64_t outputBytes = elements * sizeof(float);
         const auto requestedProfile = erwt3d::parseIOProfileType(ioProfileText);
         erwt3d::UnifiedReadConfig config = erwt3d::makeUnifiedConfig(requestedProfile, inputPath, threads, memory.mib, 0);
-        if (disableDeviceScheduling) config = erwt3d::makeUnifiedConfig(erwt3d::IOProfileType::Auto, inputPath, threads, memory.mib, 0);
+        if (disableDeviceScheduling) config = erwt3d::makeGenericReadConfig(threads, memory.mib);
 
         double apiReadMs = 0.0, writeMs = 0.0, createMs = 0.0;
         double decodeMs = 0.0, reorderMs = 0.0;

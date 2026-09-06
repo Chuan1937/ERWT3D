@@ -4,11 +4,11 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 usage() { echo "Usage: $0 --input FILE --dataset ID --device SSD|HDD --axis x|y|z --pattern random|continuous --run N [--dry-run] [--extra ARG]" >&2; }
-input= dataset= device= axis= pattern= run= dry_run=0
+input= dataset= device= axis= pattern= run= method=ERWT3D dry_run=0
 extra=()
 while (($#)); do
     case "$1" in
-        --input|--dataset|--device|--axis|--pattern|--run) key="${1#--}"; shift; [[ $# -gt 0 ]] || { usage; exit 2; }; printf -v "$key" '%s' "$1" ;;
+        --input|--dataset|--device|--axis|--pattern|--run|--method) key="${1#--}"; shift; [[ $# -gt 0 ]] || { usage; exit 2; }; printf -v "$key" '%s' "$1" ;;
         --extra) shift; [[ $# -gt 0 ]] || { usage; exit 2; }; extra+=("$1") ;;
         --dry-run) dry_run=1 ;;
         *) usage; exit 2 ;;
@@ -21,7 +21,7 @@ require_roots; require_binary erwt3d_paper_bench
 [[ -f "$input" ]] || { echo "[ERROR] input missing: $input" >&2; exit 2; }
 workload="$VALIDATION_DIR/workloads/$dataset/${pattern}_${axis}.txt"
 [[ -f "$workload" ]] || { echo "[ERROR] workload missing: $workload" >&2; exit 2; }
-run_id="$(date -u +%Y%m%dT%H%M%SZ)_${device}_ERWT3D_${dataset}_${axis}_${pattern}_run$(printf '%02d' "$run")"
+run_id="$(date -u +%Y%m%dT%H%M%SZ)_${device}_${method}_${dataset}_${axis}_${pattern}_run$(printf '%02d' "$run")"
 category="${pattern}_read"
 result="$ERWT3D_RESULT_ROOT/raw_results/$category/$run_id.json"
 stdout="$ERWT3D_RESULT_ROOT/logs/$run_id.stdout.log"; stderr="$ERWT3D_RESULT_ROOT/logs/$run_id.stderr.log"
@@ -39,10 +39,10 @@ if ((code != 0)); then
     echo "[FAILED] $run_id" >&2
     exit "$code"
 fi
-python3 - "$result" "$run_id" "$dataset" "$device" "$run" "$(git -C "$PROJECT_ROOT" rev-parse HEAD)" <<'PY'
+python3 - "$result" "$run_id" "$dataset" "$device" "$run" "$method" "$(git -C "$PROJECT_ROOT" rev-parse HEAD)" <<'PY'
 import json, pathlib, sys
 p=pathlib.Path(sys.argv[1]); data=json.loads(p.read_text())
-data.update({"run_id":sys.argv[2], "dataset":sys.argv[3], "device":sys.argv[4], "run_number":int(sys.argv[5]), "git_commit":sys.argv[6], "cache_mode":"cold_os_page_cache"})
+data.update({"run_id":sys.argv[2], "dataset":sys.argv[3], "device":sys.argv[4], "run_number":int(sys.argv[5]), "method":sys.argv[6], "git_commit":sys.argv[7], "cache_mode":"cold_os_page_cache"})
 p.write_text(json.dumps(data, indent=2) + "\n")
 PY
 echo "[OK] $result"

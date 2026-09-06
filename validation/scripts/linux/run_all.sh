@@ -11,7 +11,7 @@ while (($#)); do
         --device) shift; device="${1:?--device needs a value}" ;;
         --config) shift; config="${1:?--config needs a value}" ;;
         --dry-run) dry_run=1 ;;
-        *) echo "Usage: $0 [--config linux.json] [--dry-run] [--only compression|accuracy|read|all] [--dataset ID] [--device SSD|HDD]" >&2; exit 2 ;;
+        *) echo "Usage: $0 [--config linux.json] [--dry-run] [--only compression|accuracy|read|baseline|ablation|fidelity|all] [--dataset ID] [--device SSD|HDD]" >&2; exit 2 ;;
     esac
     shift
 done
@@ -52,7 +52,7 @@ PY
     [[ -n "${info[2]}" && "${info[2]}" != REPLACE_AFTER_PREPARATION ]] && [[ "$(sha256_file "$raw")" == "${info[2]}" ]] || [[ "${info[2]}" == REPLACE_AFTER_PREPARATION ]] || { echo "[ERROR] raw SHA256 mismatch: $raw" >&2; exit 2; }
     [[ -d "$VALIDATION_DIR/workloads/$id" ]] || { echo "[ERROR] generate workloads for $id before formal execution" >&2; exit 2; }
     ssd_file="$ERWT3D_SSD_ROOT/erwt3d/$id.erwt3d"; hdd_file="$ERWT3D_HDD_ROOT/erwt3d/$id.erwt3d"
-    if [[ "$only" == all || "$only" == compression || "$only" == read || "$only" == accuracy ]]; then
+    if [[ "$only" == all || "$only" == compression || "$only" == read || "$only" == accuracy || "$only" == ablation ]]; then
         if [[ ! -f "$ssd_file" ]]; then
             mkdir -p "$(dirname "$ssd_file")"
             cmd=("$BUILD_DIR/erwt3d_convert" --input "$raw" --output "$ssd_file" --nx "$nx" --ny "$ny" --nz "$nz" --threads "${ERWT3D_THREADS:-8}")
@@ -80,5 +80,44 @@ PY
             done; done
         done
     fi
+    if [[ "$only" == all || "$only" == baseline ]]; then
+        require_binary erwt3d_convert
+        ssd_baseline="$ERWT3D_SSD_ROOT/baselines/$id"; hdd_baseline="$ERWT3D_HDD_ROOT/baselines/$id"
+        raw_ssd="$ssd_baseline/raw.raw"; raw_hdd="$hdd_baseline/raw.raw"
+        if (( ! dry_run )); then
+            [[ -f "$raw_ssd" ]] || copy_and_verify "$raw" "$raw_ssd"
+            [[ -f "$ssd_baseline/hdf5_raw.h5" && -f "$ssd_baseline/hdf5_gzip.h5" ]] || python3 "$VALIDATION_DIR/scripts/prepare/prepare_hdf5_baselines.py" --raw "$raw_ssd" --shape "$nx" "$ny" "$nz" --output-dir "$ssd_baseline"
+            copy_and_verify "$raw_ssd" "$raw_hdd"
+            copy_and_verify "$ssd_baseline/hdf5_raw.h5" "$hdd_baseline/hdf5_raw.h5"
+            copy_and_verify "$ssd_baseline/hdf5_gzip.h5" "$hdd_baseline/hdf5_gzip.h5"
+        fi
+        for dev in "${devices[@]}"; do
+            base="$ssd_baseline"; [[ "$dev" == HDD ]] && base="$hdd_baseline"
+            for method in raw hdf5_raw hdf5_gzip; do
+                input="$base/raw.raw"; [[ "$method" != raw ]] && input="$base/$method.h5"
+                for pattern in random continuous; do for axis in x y z; do for repeat in $(seq 1 "${ERWT3D_REPETITIONS:-5}"); do
+                    args=(--method "$method" --input "$input" --shape "$nx" "$ny" "$nz" --dataset "$id" --device "$dev" --axis "$axis" --pattern "$pattern" --run "$repeat")
+                    ((dry_run)) && args+=(--dry-run)
+                    "$SCRIPT_DIR/run_baseline.sh" "${args[@]}"
+                done; done; done
+            done
+        done
+    fi
+    if [[ "$only" == all || "$only" == ablation ]]; then
+        for dev in "${devices[@]}"; do
+            args=(--raw "$raw" --dataset "$id" --shape "$nx" "$ny" "$nz" --device "$dev")
+            ((dry_run)) && args+=(--dry-run)
+            "$SCRIPT_DIR/run_ablation.sh" "${args[@]}"
+        done
+    fi
 done
+if [[ "$only" == fidelity ]]; then
+    : "${ERWT3D_ORIGINAL_MODEL:?Set ERWT3D_ORIGINAL_MODEL for fidelity}"
+    : "${ERWT3D_RECONSTRUCTED_MODEL:?Set ERWT3D_RECONSTRUCTED_MODEL for fidelity}"
+    : "${ERWT3D_ORIGINAL_GATHER:?Set ERWT3D_ORIGINAL_GATHER for fidelity}"
+    : "${ERWT3D_RECONSTRUCTED_GATHER:?Set ERWT3D_RECONSTRUCTED_GATHER for fidelity}"
+    : "${ERWT3D_FIDELITY_NREC:?Set ERWT3D_FIDELITY_NREC for fidelity}"
+    : "${ERWT3D_FIDELITY_NT:?Set ERWT3D_FIDELITY_NT for fidelity}"
+    ((dry_run)) || python3 "$VALIDATION_DIR/scripts/run_forward_fidelity.py" --original-model "$ERWT3D_ORIGINAL_MODEL" --reconstructed-model "$ERWT3D_RECONSTRUCTED_MODEL" --original-gather "$ERWT3D_ORIGINAL_GATHER" --reconstructed-gather "$ERWT3D_RECONSTRUCTED_GATHER" --nrec "$ERWT3D_FIDELITY_NREC" --nt "$ERWT3D_FIDELITY_NT" --output "$ERWT3D_RESULT_ROOT/raw_results/forward_modeling/fidelity.json"
+fi
 ((dry_run)) || python3 "$VALIDATION_DIR/scripts/collect_results.py"
