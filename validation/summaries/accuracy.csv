@@ -1,0 +1,1 @@
+run_id,timestamp,git_commit,hostname,device,dataset,size,method,axis,access_pattern,run_number,cache_mode,threads,wall_time_s,peak_rss_mb,max_abs_error,max_relative_error,rmse,nrmse,p99_relative_error,p999_relative_error,zero_preservation,fallback_blocks,exit_code

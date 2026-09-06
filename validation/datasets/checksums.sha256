@@ -1,0 +1,3 @@
+# SHA256 checksums for all datasets
+# Format: <sha256>  <filename>
+# Generate with: sha256sum dataset_*.raw >> checksums.sha256

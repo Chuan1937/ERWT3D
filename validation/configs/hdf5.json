@@ -1,0 +1,29 @@
+{
+  "method": "HDF5",
+  "description": "HDF5 with various filters",
+  "variants": [
+    {
+      "id": "hdf5_chunked_raw",
+      "chunking": true,
+      "chunk_dims": [64, 64, 64],
+      "compression": "none",
+      "notes": "Chunked but no compression"
+    },
+    {
+      "id": "hdf5_chunked_gzip4",
+      "chunking": true,
+      "chunk_dims": [64, 64, 64],
+      "compression": "gzip",
+      "compression_level": 4,
+      "notes": "GZIP level 4"
+    },
+    {
+      "id": "hdf5_chunked_lzf",
+      "chunking": true,
+      "chunk_dims": [64, 64, 64],
+      "compression": "lzf",
+      "notes": "LZF fast compression"
+    }
+  ],
+  "notes": "HDF5 chunk size affects random access. 64^3 = 1M values per chunk."
+}

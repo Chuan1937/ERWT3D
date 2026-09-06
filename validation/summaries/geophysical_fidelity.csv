@@ -1,0 +1,1 @@
+run_id,timestamp,git_commit,dataset,method,model_rmse,model_nrmse,model_max_abs_diff,waveform_nrmse,mean_trace_error,p95_trace_error,max_trace_error,exit_code
