@@ -1,0 +1,22 @@
+{
+  "dataset_id": "f3_similarity",
+  "dimensions": [
+    191,
+    146,
+    51
+  ],
+  "axis_order": "xyz",
+  "seed": 42,
+  "random_count": 100,
+  "continuous_count": 10,
+  "generated_at_utc": "2026-09-06T07:14:39.879570+00:00",
+  "random_order": "sampled_order_preserved",
+  "sha256": {
+    "random_x.txt": "40bdc3499d199b212fdbd3ae8085ed39148116103513e26437284c2715d95292",
+    "continuous_x.txt": "63e543190a8ae6b876c9f3a5bc7dda67bf800cfb346986c38c0b60e611a56034",
+    "random_y.txt": "f72168f098b1b582790f2e917eafdd97aaba694bd43dd7ccf0dabe00ab00a68b",
+    "continuous_y.txt": "053b578370e70fb0cd381e9d017067b616bfe1687e7ea10751884aa4e0d27542",
+    "random_z.txt": "d3863676cbbc2e6567b59369a679cda56675c38a6d5cc9a66f58832649d5c4e7",
+    "continuous_z.txt": "cb422248df1dbbd6ac49f1eee3097859e4938b11ec482ab7575e42ff60c45d42"
+  }
+}

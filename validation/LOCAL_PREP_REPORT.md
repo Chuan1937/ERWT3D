@@ -19,7 +19,14 @@
 
 The declared sources are `f3_amplitude` and `f3_similarity` from Equinor's `segyio-notebooks`, licensed CC-BY-SA. Their URLs and license are versioned in `datasets/sources.json`.
 
-They have **not been downloaded in this checkout**. Therefore file sizes, cube dimensions, and SHA256 values are intentionally not fabricated. Run `fetch_public_datasets.py`, then `prepare_segy.py`; each prepared metadata JSON records the real source/prepared SHA256, bytes, shape, and statistics.
+They were downloaded and prepared in this checkout; the binary SEG-Y, raw volumes, and transfer bundle remain ignored by Git. Versioned metadata records the measured facts:
+
+| Dataset | Shape (X×Y×Z) | SEG-Y bytes | Prepared bytes | Source SHA256 | Prepared SHA256 |
+|---|---:|---:|---:|---|---|
+| f3_amplitude | 201×201×51 | 17,941,644 | 8,241,804 | `ed50c38db56cbdd1343ca6d06a93e2ed0de2b82946c1cb6756ef9bba207f8573` | `f16b0aaff41385ed91fb705293c203cf8372c654ec6912c3da73d1c03f9683a7` |
+| f3_similarity | 191×146×51 | 12,384,984 | 5,688,744 | `dc6da7bf5c47cf5b8fcc7e321cdb989b91e95aa3ae7aea2bf1706a21c71ab8b2` | `1569683d3a82b2d4c61adf262828f450a091ebd0fde70511baa725e11316201e` |
+
+Run `fetch_public_datasets.py`, then `prepare_segy.py` on a new host to reproduce the metadata and raw volumes.
 
 ## Methods and ablations
 

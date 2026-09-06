@@ -1,0 +1,22 @@
+{
+  "dataset_id": "f3_amplitude",
+  "dimensions": [
+    201,
+    201,
+    51
+  ],
+  "axis_order": "xyz",
+  "seed": 42,
+  "random_count": 100,
+  "continuous_count": 10,
+  "generated_at_utc": "2026-09-06T07:14:39.878722+00:00",
+  "random_order": "sampled_order_preserved",
+  "sha256": {
+    "random_x.txt": "107529ba7f7ea881016f3c2181d4fd78e8eaf2864ef940a3b5a98c6698a89a34",
+    "continuous_x.txt": "98cd84aec1f1117bca5e9c85eff334c4af30358cd960cd0bdfa6ba97cce5ce40",
+    "random_y.txt": "2f6fc785bd2392064ecce987775c946b9888853f7fdc9f3c5d6d2bb50095ef31",
+    "continuous_y.txt": "b5d930619a63c6ab88cb72677eae439f506184a63faa3a52507b2370f059d3d5",
+    "random_z.txt": "1f44ba2bb739117e6113759c5ef6839864a8d065e80b00c6b094fbdac0e9335f",
+    "continuous_z.txt": "4b39bfadbf5c8620b53377275c5e62b08364c106eafadc50880037a2c7d11dfc"
+  }
+}
