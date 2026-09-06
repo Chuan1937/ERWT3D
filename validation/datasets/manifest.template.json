@@ -1,0 +1,11 @@
+{
+  "datasets": [
+    {
+      "dataset_id": "f3_amplitude",
+      "raw_file": "f3_amplitude.raw",
+      "metadata_file": "f3_amplitude.metadata.json",
+      "shape": [201, 201, 201],
+      "raw_sha256": "REPLACE_AFTER_PREPARATION"
+    }
+  ]
+}
