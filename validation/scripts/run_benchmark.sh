@@ -100,7 +100,7 @@ esac
 WALL_END=$(date +%s%N)
 TIMESTAMP_END=$(date -Iseconds)
 WALL_TIME_MS=$(( (WALL_END - WALL_START) / 1000000 ))
-WALL_TIME_S=$(echo "scale=3; $WALL_TIME_MS / 1000" | bc)
+WALL_TIME_S=$(python3 -c "print(f'{$WALL_TIME_MS/1000:.3f}')")
 
 # --- Extract metrics from output ---
 # Parse erwt3d_contest output for timing, throughput, RSS, etc.

@@ -7,6 +7,19 @@ VALIDATION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_ROOT="$(cd "$VALIDATION_DIR/.." && pwd)"
 BUILD_DIR="$PROJECT_ROOT/build"
 
+# --- Storage paths ---
+# SSD (固态): /mnt/f/CUP/
+# HDD (机械): /mnt/d/
+# All benchmark data/results stored on external drives, NOT on WSL C: drive
+SSD_BASE="/mnt/f/CUP"
+HDD_BASE="/mnt/d"
+SSD_DATASET_DIR="$SSD_BASE"
+HDD_DATASET_DIR="$HDD_BASE"
+SSD_WORK_DIR="$SSD_BASE/erwt3d_bench_work"
+HDD_WORK_DIR="$HDD_BASE/erwt3d_bench_work"
+RESULTS_BASE="$VALIDATION_DIR/raw_results"
+LOGS_BASE="$VALIDATION_DIR/logs"
+
 # --- Git info ---
 get_git_commit() {
     git -C "$PROJECT_ROOT" rev-parse HEAD
