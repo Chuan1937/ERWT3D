@@ -45,4 +45,4 @@ Linux-only formal execution: `scripts/linux/`. It audits paths/devices, validate
 
 - macOS cannot validate this repository's Linux-specific cold-I/O implementation; a syntax-only check was used for the new RZFP benchmark source.
 - The production converter currently has a fixed RZFP error policy, so error-bound sensitivity remains disabled until a safe, end-to-end runtime parameter is added and verified.
-- A1 requires real forced-LZ4 and forced-RZFP conversion outputs; it must not be substituted with duplicate reader flags.
+- A1 requires real forced-LZ4 and forced-RZFP conversion outputs. `erwt3d_convert --force-format lz4|rzfp` selects an actual measured format candidate; it must not be substituted with duplicate reader flags.
