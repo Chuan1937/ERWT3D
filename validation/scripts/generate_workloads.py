@@ -1,78 +1,85 @@
 #!/usr/bin/env python3
-"""Generate fixed random and continuous workloads for ERWT3D paper benchmark.
+"""Generate versioned, deterministic per-dataset slice workloads.
 
-All methods use identical coordinates for fair comparison.
-Outputs: validation/workloads/{random,continuous}_{x,y,z}.txt
+Random lists deliberately retain sampling order. Sorting them would change a
+random-access workload into an increasingly sequential one.
 """
 
-import os
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
 import random
-import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
-SEED = 42
-N_RANDOM = 100
-N_CONTINUOUS = 10
+VALIDATION = Path(__file__).resolve().parents[1]
+DEFAULT_DATASETS = {"20GB": (801, 2405, 2501), "50GB": (2001, 2201, 3000)}
 
-# Dataset dimensions (update after dataset generation)
-# Format: {dataset_name: (nx, ny, nz)}
-DATASETS = {
-    "20GB": (801, 2405, 2501),   # small.dat dimensions
-    "50GB": (2001, 2201, 3000),  # big.dat dimensions
-}
 
-def generate_random_coords(max_val, n, rng):
-    """Generate n unique random indices in [0, max_val)."""
-    return sorted(rng.sample(range(max_val), min(n, max_val)))
+def checksum(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
-def generate_continuous_start(max_val, n_slices, rng):
-    """Generate a random start index such that start + n_slices <= max_val."""
-    return rng.randint(0, max(0, max_val - n_slices))
 
-def write_list(path, values):
-    with open(path, 'w') as f:
-        for v in values:
-            f.write(f"{v}\n")
+def write_indices(path: Path, values: list[int]) -> str:
+    path.write_text("".join(f"{value}\n" for value in values))
+    return checksum(path)
 
-def main():
-    out_dir = os.path.join(os.path.dirname(__file__), '..', 'workloads')
-    os.makedirs(out_dir, exist_ok=True)
 
-    rng = random.Random(SEED)
+def dimensions_from_metadata(path: Path) -> tuple[int, int, int]:
+    metadata = json.loads(path.read_text())
+    shape = metadata.get("shape")
+    if not isinstance(shape, list) or len(shape) != 3 or any(not isinstance(x, int) or x <= 0 for x in shape):
+        raise SystemExit(f"invalid shape in {path}")
+    return tuple(shape)  # type: ignore[return-value]
 
-    for ds_name, (nx, ny, nz) in DATASETS.items():
-        ds_dir = os.path.join(out_dir, ds_name)
-        os.makedirs(ds_dir, exist_ok=True)
 
-        print(f"Dataset {ds_name}: nx={nx}, ny={ny}, nz={nz}")
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dataset", action="append", help="ID=NX,NY,NZ; may be repeated")
+    parser.add_argument("--metadata", type=Path, action="append", help="Prepared dataset metadata JSON")
+    parser.add_argument("--output-dir", type=Path, default=VALIDATION / "workloads")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--random-count", type=int, default=100)
+    parser.add_argument("--continuous-count", type=int, default=10)
+    args = parser.parse_args()
+    datasets = dict(DEFAULT_DATASETS) if not args.dataset and not args.metadata else {}
+    for spec in args.dataset or []:
+        try:
+            dataset_id, dims = spec.split("=", 1)
+            values = tuple(int(x) for x in dims.split(","))
+        except ValueError as exc:
+            raise SystemExit(f"invalid --dataset {spec!r}; expected ID=NX,NY,NZ") from exc
+        if len(values) != 3 or min(values) <= 0:
+            raise SystemExit(f"invalid dimensions in {spec!r}")
+        datasets[dataset_id] = values
+    for metadata in args.metadata or []:
+        datasets[metadata.name.removesuffix(".metadata.json")] = dimensions_from_metadata(metadata)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    for dataset_id, dimensions in sorted(datasets.items()):
+        target = args.output_dir / dataset_id
+        target.mkdir(parents=True, exist_ok=True)
+        rng = random.Random(f"{args.seed}:{dataset_id}")
+        file_checksums: dict[str, str] = {}
+        for axis, limit in zip("xyz", dimensions):
+            random_indices = rng.sample(range(limit), min(args.random_count, limit))
+            if limit < args.continuous_count:
+                raise SystemExit(f"{dataset_id}: {axis} dimension smaller than continuous count")
+            start = rng.randrange(limit - args.continuous_count + 1)
+            continuous_indices = list(range(start, start + args.continuous_count))
+            file_checksums[f"random_{axis}.txt"] = write_indices(target / f"random_{axis}.txt", random_indices)
+            file_checksums[f"continuous_{axis}.txt"] = write_indices(target / f"continuous_{axis}.txt", continuous_indices)
+        metadata = {
+            "dataset_id": dataset_id, "dimensions": list(dimensions), "axis_order": "xyz",
+            "seed": args.seed, "random_count": args.random_count,
+            "continuous_count": args.continuous_count,
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "random_order": "sampled_order_preserved", "sha256": file_checksums,
+        }
+        (target / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
+        print(f"[OK] {dataset_id}: {dimensions} -> {target}")
 
-        # Random coordinates
-        rx = generate_random_coords(nx, N_RANDOM, rng)
-        ry = generate_random_coords(ny, N_RANDOM, rng)
-        rz = generate_random_coords(nz, N_RANDOM, rng)
 
-        write_list(os.path.join(ds_dir, 'random_x.txt'), rx)
-        write_list(os.path.join(ds_dir, 'random_y.txt'), ry)
-        write_list(os.path.join(ds_dir, 'random_z.txt'), rz)
-
-        print(f"  Random: {len(rx)} x-slices, {len(ry)} y-slices, {len(rz)} z-slices")
-
-        # Continuous coordinates
-        cx_start = generate_continuous_start(nx, N_CONTINUOUS, rng)
-        cy_start = generate_continuous_start(ny, N_CONTINUOUS, rng)
-        cz_start = generate_continuous_start(nz, N_CONTINUOUS, rng)
-
-        cx = list(range(cx_start, cx_start + N_CONTINUOUS))
-        cy = list(range(cy_start, cy_start + N_CONTINUOUS))
-        cz = list(range(cz_start, cz_start + N_CONTINUOUS))
-
-        write_list(os.path.join(ds_dir, 'continuous_x.txt'), cx)
-        write_list(os.path.join(ds_dir, 'continuous_y.txt'), cy)
-        write_list(os.path.join(ds_dir, 'continuous_z.txt'), cz)
-
-        print(f"  Continuous: x=[{cx[0]}..{cx[-1]}], y=[{cy[0]}..{cy[-1]}], z=[{cz[0]}..{cz[-1]}]")
-
-    print(f"\nSeed: {SEED}")
-    print(f"Workloads written to: {out_dir}")
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -5,32 +5,29 @@
     {
       "id": "zfp_fixed_rate_64",
       "mode": "fixed-rate",
-      "bits_per_value": 64,
-      "expected_cr": "~2x"
+      "bits_per_value": 64
     },
     {
       "id": "zfp_fixed_rate_32",
       "mode": "fixed-rate",
-      "bits_per_value": 32,
-      "expected_cr": "~4x"
+      "bits_per_value": 32
     },
     {
       "id": "zfp_fixed_rate_16",
       "mode": "fixed-rate",
-      "bits_per_value": 16,
-      "expected_cr": "~8x"
+      "bits_per_value": 16
     },
     {
       "id": "zfp_fixed_accuracy_1e3",
       "mode": "fixed-accuracy",
       "tolerance": 0.001,
-      "notes": "Match ERWT3D error bound"
+      "notes": "Candidate parameter only; actual reconstruction error must be measured."
     },
     {
       "id": "zfp_fixed_accuracy_5e4",
       "mode": "fixed-accuracy",
       "tolerance": 0.0005,
-      "notes": "Tighter than ERWT3D"
+      "notes": "Candidate parameter only; actual reconstruction error must be measured."
     }
   ],
   "notes": "Parameter sweep to find comparable accuracy. Record actual reconstruction error for each."

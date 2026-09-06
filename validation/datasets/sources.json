@@ -1,0 +1,16 @@
+{
+  "f3_amplitude": {
+    "repository": "https://github.com/equinor/segyio-notebooks",
+    "path": "data/basic/F3_Dip_steered_median_subvolume_IL230-430_XL475-675_T1600-1800.sgy",
+    "raw_url": "https://raw.githubusercontent.com/equinor/segyio-notebooks/master/data/basic/F3_Dip_steered_median_subvolume_IL230-430_XL475-675_T1600-1800.sgy",
+    "license": "CC-BY-SA",
+    "description": "Netherlands Offshore F3 dip-steered median subvolume"
+  },
+  "f3_similarity": {
+    "repository": "https://github.com/equinor/segyio-notebooks",
+    "path": "data/basic/F3_Similarity_FEF_subvolume_IL230-430_XL475-675_T1600-1800.sgy",
+    "raw_url": "https://raw.githubusercontent.com/equinor/segyio-notebooks/master/data/basic/F3_Similarity_FEF_subvolume_IL230-430_XL475-675_T1600-1800.sgy",
+    "license": "CC-BY-SA",
+    "description": "Netherlands Offshore F3 similarity subvolume"
+  }
+}

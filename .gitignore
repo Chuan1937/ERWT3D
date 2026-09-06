@@ -3,3 +3,12 @@
 benchmarks/
 *.DS_Store
 /build-*
+
+# Paper-benchmark data are prepared locally or transferred to the Linux runner.
+validation/datasets/cache/
+validation/datasets/prepared/*.raw
+validation/datasets/prepared/*.sgy
+validation/datasets/bundles/
+validation/environment/*.json
+validation/raw_results/**/*.json
+validation/logs/*.log

@@ -25,5 +25,5 @@
       "notes": "LZF fast compression"
     }
   ],
-  "notes": "HDF5 chunk size affects random access. 64^3 = 1M values per chunk."
+  "notes": "HDF5 chunk size affects random access. A 64^3 float32 chunk contains 262144 values and occupies 1 MiB."
 }
