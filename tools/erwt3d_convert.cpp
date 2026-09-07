@@ -925,9 +925,11 @@ int main(int argc, char* argv[]) {
                 AxisCandidate candidate;
                 candidate.axis = axis;
                 candidate.type =
-                    axis == erwt3d::PlaneAxis::Y
-                        ? erwt3d::EmbeddedSectionType::Lz4AxisPlaneY
-                        : erwt3d::EmbeddedSectionType::Lz4AxisPlaneZ;
+                    axis == erwt3d::PlaneAxis::X
+                        ? erwt3d::EmbeddedSectionType::Lz4AxisPlaneX
+                        : axis == erwt3d::PlaneAxis::Y
+                            ? erwt3d::EmbeddedSectionType::Lz4AxisPlaneY
+                            : erwt3d::EmbeddedSectionType::Lz4AxisPlaneZ;
                 candidate.path =
                     erwt3d::axisPlaneSidecarPath(workPath, axis);
                 erwt3d::Lz4AxisPlaneWriterStats axisStats;
@@ -952,7 +954,14 @@ int main(int argc, char* argv[]) {
             };
 
         std::vector<AxisCandidate> candidates;
-        if (resolvedPlaneWorkers == 2) {
+        // Generate X, Y, Z axis-plane sidecars.
+        // X uses the old XP format (stride from planner), Y/Z use v2 format.
+        if (resolvedPlaneWorkers >= 2) {
+            // Run X first (sequential, smaller), then Y+Z in parallel
+            candidates.push_back(buildPlane(
+                erwt3d::PlaneAxis::X,
+                threads,
+                conversionMemoryMiB));
             const int yThreads = std::max(1, threads / 2);
             const int zThreads = std::max(1, threads - yThreads);
             const uint64_t yMemoryMiB =
@@ -977,6 +986,7 @@ int main(int argc, char* argv[]) {
             candidates.push_back(zFuture.get());
         } else {
             for (const auto axis : {
+                     erwt3d::PlaneAxis::X,
                      erwt3d::PlaneAxis::Y,
                      erwt3d::PlaneAxis::Z}) {
                 candidates.push_back(buildPlane(
@@ -1045,6 +1055,11 @@ int main(int argc, char* argv[]) {
         std::cout << "LZ4 conversion complete: " << outputPath << "\n"
                   << "  Embedded axes: "
                   << (sections.empty() ? "none" : "")
+                  << (std::any_of(
+                          sections.begin(), sections.end(),
+                          [](const auto& s) {
+                              return s.type == erwt3d::EmbeddedSectionType::Lz4AxisPlaneX;
+                          }) ? "X" : "")
                   << (std::any_of(
                           sections.begin(), sections.end(),
                           [](const auto& s) {

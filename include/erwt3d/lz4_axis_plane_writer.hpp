@@ -22,12 +22,13 @@ struct Lz4AxisPlaneWriterStats {
 //
 // rawPath:  raw float32 file (Z-fastest layout)
 // mainPath: the .erwt3d file (used to derive sidecar path only)
-// axis:     Y or Z (X is delegated)
+// axis:     X, Y, or Z
 // nx,ny,nz: dimensions
 // chunkElements: approximate element count per LZ4 chunk
 // storageBudget: combined storage ratio limit (1.0 = raw size)
 // threads:   number of worker threads
 // memoryLimitMiB: writer memory budget; 0 preserves legacy behavior
+// xpStride:  X-plane stride (only used for X axis; default 1 = every plane)
 bool writeLz4AxisPlaneSidecar(
     const std::string& rawPath,
     const std::string& mainPath,
@@ -37,7 +38,8 @@ bool writeLz4AxisPlaneSidecar(
     double storageBudget = 1.50,
     int threads = 4,
     Lz4AxisPlaneWriterStats* stats = nullptr,
-    uint64_t memoryLimitMiB = 0
+    uint64_t memoryLimitMiB = 0,
+    uint32_t xpStride = 1
 );
 
 } // namespace erwt3d

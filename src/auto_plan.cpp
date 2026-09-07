@@ -189,48 +189,52 @@ PlannerResult planFormat(
         lz4DecodeMBs = result.lz4_probe.decode_throughput_mibs;
     }
 
-    // XP stride=2 sidecar ratio estimate: ~0.5 * main_ratio / stride
-    double xpStride = 2.0;
-    double xpRatioEstimate = lz4Ratio * 0.5 / xpStride;
-    double xpRatioUpper = lz4Upper * 0.55 / xpStride;
+    // XP stride=1 sidecar ratio estimate: ~0.5 * main_ratio (every X plane stored)
+    double xpStride = 1.0;
+    double xpRatioEstimate = lz4Ratio * 0.5;
+    double xpRatioUpper = lz4Upper * 0.55;
 
-    // --- Candidate A: LZ4 + XP stride=2 ---
+    // Y and Z embedded sidecar ratio estimates.
+    // Each stores whole-plane LZ4-compressed records; empirical ratio ~main_ratio.
+    double yzRatioEstimate = lz4Ratio;
+    double yzRatioUpper = lz4Upper;
+
+    // --- Candidate A: LZ4 + embedded XYZ (X stride=1, Y/Z whole-plane) ---
     {
         FormatCandidate c;
-        c.name = "LZ4 + XP stride=2";
+        c.name = "LZ4 + embedded XYZ";
         c.main_format = MainFormat::LZ4;
         c.sidecar_format = SidecarFormat::LZ4_XPlane;
-        c.sidecar_stride = 2;
+        c.sidecar_stride = 1;
         c.main_ratio_mean = lz4Ratio;
         c.main_ratio_lower = result.lz4_probe.main_ratio_lower;
         c.main_ratio_upper = lz4Upper;
-        c.sidecar_ratio_mean = xpRatioEstimate;
-        c.sidecar_ratio_upper = xpRatioUpper;
-        c.total_ratio_mean = lz4Ratio + xpRatioEstimate;
-        c.total_ratio_upper = lz4Upper + xpRatioUpper;
+        c.sidecar_ratio_mean = xpRatioEstimate + 2.0 * yzRatioEstimate;
+        c.sidecar_ratio_upper = xpRatioUpper + 2.0 * yzRatioUpper;
+        c.total_ratio_mean = lz4Ratio + xpRatioEstimate + 2.0 * yzRatioEstimate;
+        c.total_ratio_upper = lz4Upper + xpRatioUpper + 2.0 * yzRatioUpper;
         c.feasible = (c.total_ratio_upper <= storage_budget);
         c.confidence = inGrayZone ? 0.5 : 0.75;
         c.uncertain = inGrayZone;
-        c.reason = "LZ4 compressed + XP sidecar stride=2";
+        c.reason = "LZ4 compressed + embedded XYZ sections";
 
         double compressedMB = rawMB * lz4Ratio;
         double xpMB = rawMB * xpRatioEstimate;
-        double hitRate = 1.0 / xpStride;
+        double yzMB = rawMB * yzRatioEstimate;  // per-axis sidecar size
 
+        // X: always hits XP sidecar (stride=1, 100% hit rate)
+        // Y/Z: always use embedded sidecar (O(1) per slice)
         if (inGrayZone) {
-            c.predicted_x_random = hitRate * approxTCompositeWithDecode(
-                    xpMB, xpMB, ioBand, lz4DecodeMBs, nx / 2, seek, threads)
-                + (1.0 - hitRate) * approxTCompositeWithDecode(
-                    compressedMB, rawMB, ioBand, lz4DecodeMBs, 100, seek, threads);
+            c.predicted_x_random = approxTCompositeWithDecode(
+                    xpMB, xpMB, ioBand, lz4DecodeMBs, 1, seek, threads);
             c.predicted_y_random = approxTCompositeWithDecode(
-                compressedMB, rawMB, ioBand, lz4DecodeMBs, 100, seek, threads);
+                yzMB, yzMB, ioBand, lz4DecodeMBs, 1, seek, threads);
             c.predicted_z_random = approxTCompositeWithDecode(
-                compressedMB, rawMB, ioBand, lz4DecodeMBs, 100, seek, threads);
+                yzMB, yzMB, ioBand, lz4DecodeMBs, 1, seek, threads);
         } else {
-            c.predicted_x_random = hitRate * approxTComposite(xpMB, ioBand, nx / 2, seek)
-                                 + (1.0 - hitRate) * approxTComposite(compressedMB, ioBand, 100, seek);
-            c.predicted_y_random = approxTComposite(compressedMB, ioBand, 100, seek);
-            c.predicted_z_random = approxTComposite(compressedMB, ioBand, 100, seek);
+            c.predicted_x_random = approxTComposite(xpMB, ioBand, 1, seek);
+            c.predicted_y_random = approxTComposite(yzMB, ioBand, 1, seek);
+            c.predicted_z_random = approxTComposite(yzMB, ioBand, 1, seek);
         }
         c.predicted_x_cont = c.predicted_x_random * 0.08;
         c.predicted_y_cont = c.predicted_y_random * 0.06;
