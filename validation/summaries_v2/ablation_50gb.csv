@@ -1,0 +1,13 @@
+method,device,axis,pattern,n,mean_ms,std_ms,cv_percent
+A0_auto,SSD,x,continuous,5,9737.1,742.6,7.6
+A0_auto,SSD,x,random,5,80175.7,9963.7,12.4
+A0_auto,SSD,y,continuous,5,8888.3,307.1,3.5
+A0_auto,SSD,y,random,5,71632.8,9453.6,13.2
+A0_auto,SSD,z,continuous,5,7049.5,138.6,2.0
+A0_auto,SSD,z,random,5,51125.2,2140.3,4.2
+A2_no_access_planner,SSD,x,continuous,4,10273.3,200.8,2.0
+A2_no_access_planner,SSD,x,random,5,75008.9,427.8,0.6
+A2_no_access_planner,SSD,y,continuous,4,8758.8,92.3,1.1
+A2_no_access_planner,SSD,y,random,4,67261.4,419.4,0.6
+A2_no_access_planner,SSD,z,continuous,4,7138.3,130.3,1.8
+A2_no_access_planner,SSD,z,random,4,50222.2,138.8,0.3

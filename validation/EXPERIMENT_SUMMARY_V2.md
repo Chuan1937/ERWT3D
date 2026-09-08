@@ -4,7 +4,7 @@
 
 ```
 2cc905d fix: LZ4 X-axis layout, --to-raw, and planner model
-(base: ed8b21e7b8b0c3990372301bbe542f4598ef5bed)
+(base: ed8b21e7b8b0c3990372301bbe542f4598ef5bed PR#65)
 ```
 
 ## 2. Environment
@@ -13,105 +13,112 @@
 |-----------|---------|
 | CPU | Intel i7-13700F, 12C/24T |
 | RAM | 62 GB |
-| SSD | /mnt/f (F:), 260 GB free |
-| HDD | /mnt/d (D:), 366 GB free |
+| SSD | /mnt/f (F:) |
+| HDD | /mnt/d (D:) |
 | OS | Fedora 43 WSL2 |
 | Threads | 8 (fixed) |
 | Cache | cold Linux/WSL guest page-cache |
 
-## 3. Datasets
+## 3. Datasets & Storage
 
-| ID | Type | Shape | Raw Size | Auto Format | Final Package | SR | Lossy? |
-|----|------|-------|----------|-------------|---------------|-----|--------|
-| f3_amplitude | seismic | 201×201×51 | 7.9 MB | LZ4 | 28.6 MB | 3.63x | No |
-| f3_similarity | seismic | 191×146×51 | 5.3 MB | LZ4 | 16.1 MB | 3.02x | No |
-| 20GB | velocity | 801×2405×2501 | 18.0 GB | RZFP | 33.3 GB | 1.85x | Yes |
-| 50GB | velocity | 2001×2201×3000 | 49.2 GB | RZFP | 63.8 GB | 1.30x | Yes |
+| ID | Shape | Raw | Auto Format | Package | SR | Lossy |
+|----|-------|-----|-------------|---------|-----|-------|
+| f3_amplitude | 201×201×51 | 7.9 MB | LZ4+XYZ | 28.6 MB | 3.63x | No |
+| f3_similarity | 191×146×51 | 5.3 MB | LZ4+XYZ | 16.1 MB | 3.02x | No |
+| 20GB | 801×2405×2501 | 18.0 GB | RZFP | 33.3 GB | 1.85x | Yes |
+| 50GB | 2001×2201×3000 | 49.2 GB | RZFP | 63.8 GB | 1.30x | Yes |
 
 ## 4. Adaptive Selection
 
-| Dataset | Planner Decision | Reason |
-|---------|-----------------|--------|
-| f3_amplitude | LZ4 + embedded XYZ | Fast (T_pred=0.01s), storage over budget accepted |
-| f3_similarity | LZ4 + embedded XYZ | Fast, storage over budget accepted |
-| 20GB | **RZFP** | LZ4 total ratio 1.548x > 1.5x budget; RZFP 0.602x selected |
-| 50GB | **RZFP** | LZ4 incompressible (1.04x); RZFP 0.42x selected |
-
-**Key insight**: The planner correctly selects the format based on data compressibility and storage budget. 20GB switches from LZ4 to RZFP because the embedded XYZ sidecars would push LZ4 over 1.5x.
+| Dataset | Decision | Reason |
+|---------|----------|--------|
+| f3_amplitude | LZ4+XYZ | Fast (T_pred=0.01s), storage over budget accepted |
+| f3_similarity | LZ4+XYZ | Fast, storage over budget accepted |
+| **20GB** | **RZFP** | LZ4 total ratio 1.548x > 1.5x budget; RZFP 0.602x |
+| **50GB** | **RZFP** | LZ4 incompressible (1.04x); RZFP 0.42x |
 
 ## 5. Accuracy
 
-| Dataset | Format | max_rel_error | violations | RMSE | Status |
-|---------|--------|---------------|------------|------|--------|
-| f3_amplitude | LZ4 | 0 | 0 | 0 | PASS (bitwise equal) |
-| f3_similarity | LZ4 | 0 | 0 | 0 | PASS |
-| 20GB | RZFP | 0.000977 | 0 | — | PASS |
-| 50GB | RZFP | 0.001 | 0 | — | PASS (from conversion log) |
+| Dataset | Format | max_rel_error | violations | Status |
+|---------|--------|---------------|------------|--------|
+| f3_amplitude | LZ4 | 0 | 0 | bitwise equal |
+| f3_similarity | LZ4 | 0 | 0 | bitwise equal |
+| 20GB | RZFP | 0.000977 | 0 | PASS |
+| 50GB | RZFP | 0.000810 | 0 | PASS |
 
-## 6. 20GB RZFP Access (cold cache, SSD, 100 slices × 5 runs)
+## 6. 20GB Access (cold cache, SSD, 100 slices × 5 runs)
 
-| Axis | Pattern | Mean (ms) | Std (ms) | CV% |
-|------|---------|-----------|----------|-----|
-| X | random | 75,168 | 2,174 | 2.9% |
-| Y | random | 25,027 | 558 | 2.2% |
-| Z | random | 24,799 | 601 | 2.4% |
-| X | continuous | 8,633 | 676 | 7.8% |
-| Y | continuous | 3,470 | 289 | 8.3% |
-| Z | continuous | 3,716 | 242 | 6.5% |
+| Axis | Random (ms) | Continuous (ms) |
+|------|-------------|-----------------|
+| X | 75,168 ± 2,174 | 8,633 ± 676 |
+| Y | 25,027 ± 558 | 3,470 ± 289 |
+| Z | 24,799 ± 601 | 3,716 ± 242 |
 
-**Axis imbalance**: X/Y/Z random ratio = 3.0:1.0:1.0 (RZFP axis-leaf provides balanced Y/Z)
+**Axis imbalance**: X:Y:Z = 3.0:1.0:1.0
 
-## 7. 50GB RZFP Access (from previous results, preserved)
+## 7. 20GB Ablation (SSD, random, mean ms)
 
-| Axis | SSD random (ms) | HDD random (ms) |
-|------|-----------------|-----------------|
-| X | 76,793 | 81,322 |
-| Y | 67,790 | 72,070 |
-| Z | 49,468 | 52,725 |
+| Config | X | Y | Z |
+|--------|---|---|---|
+| A0_auto (RZFP) | 79,578 | 25,934 | 25,141 |
+| A1_force_lz4 | 379,961 | 6,390 | 4,992 |
+| A1_force_rzfp | 77,607 | 26,355 | 25,921 |
+| A2_no_planner | 75,151 | 25,348 | 25,336 |
+| A3_generic | 78,060 | 26,707 | 26,057 |
 
-## 8. Code Changes
+**Key findings**:
+- A0 ≈ A1_rzfp ≈ A2 ≈ A3 (RZFP path dominates)
+- A1_lz4: Y/Z 4-5x faster but X 5x slower (X scan bottleneck)
+- Access planner and device scheduling have small effect on RZFP
 
-### Task 1: LZ4 X-axis layout
-- **Problem**: Planner assumed "LZ4 + XP stride=2" but converter only wrote Y/Z sidecars
-- **Fix**: Added X-plane sidecar generation (stride=1) to converter
-- **Files**: `tools/erwt3d_convert.cpp`, `src/lz4_axis_plane_writer.cpp`, `include/erwt3d/lz4_axis_plane_writer.hpp`
-- **Reader**: Added fallback to load embedded XP sidecar in old format
-- **File**: `src/reader.cpp`
+## 8. 50GB Access (cold cache, SSD, 100 slices × 5 runs)
 
-### Task 2: --to-raw
-- **Problem**: pwrite fallback on WSL2 extends file beyond expected size; reads from wrong offsets for compressed data
-- **Fix**: pwrite fallback now uses `readSuperblock()` for compressed data; added post-truncate safety net
-- **File**: `src/reader.cpp`
+| Axis | Random (ms) | Continuous (ms) |
+|------|-------------|-----------------|
+| X | 80,176 | 9,737 |
+| Y | 71,633 | 8,888 |
+| Z | 51,125 | 7,050 |
 
-### Task 3: Planner model
-- **Problem**: Y/Z sidecar costs not included in storage ratio estimate
-- **Fix**: Updated model to include all three sidecars; X access time updated for stride=1
-- **File**: `src/auto_plan.cpp`
+## 9. 50GB Ablation (SSD, random, mean ms)
 
-## 9. Known Issues
+| Config | X | Y | Z |
+|--------|---|---|---|
+| A0_auto | 80,176 | 71,633 | 51,125 |
+| A2_no_planner | 75,009 | 67,261 | 50,222 |
 
-1. F3 RZFP decode fails (small data bug) — does not affect 20GB/50GB
-2. --to-raw RZFP not tested (separate bug)
-3. 20GB LZ4 would exceed 1.5x storage budget (planner correctly selects RZFP)
-4. F3 storage ratio >1.5x (accepted for speed)
+## 10. HDD vs SSD (20GB RZFP)
 
-## 10. Pending
+| Axis | SSD random | HDD random | SSD/HDD ratio |
+|------|------------|------------|---------------|
+| X | 75,168 | 76,971 | 0.98 |
+| Y | 25,027 | 25,611 | 0.98 |
+| Z | 24,799 | 24,853 | 1.00 |
 
-- [ ] 20GB ablation (A0/A1/A2/A3)
-- [ ] 20GB HDD access
-- [ ] 50GB accuracy (formal stream_accuracy)
-- [ ] 50GB A2/A3 ablation
+SSD ≈ HDD (RZFP decode dominates, not I/O)
+
+## 11. Code Changes
+
+| Change | File | Impact |
+|--------|------|--------|
+| LZ4 X sidecar (stride=1) | converter, reader | F3 X: 354s → 0.17s |
+| --to-raw pwrite fix | reader | WSL2 file extension bug |
+| Planner XYZ model | auto_plan | Correct storage ratio |
+
+## 12. Pending
+
 - [ ] collect_results.py per-slice statistics
-- [ ] ablation metadata fix
+- [ ] ablation metadata recovery
+- [ ] Formal stream_accuracy.py for all datasets
 
-## 11. Data Files
+## 13. Data Files
 
-| File | Path |
-|------|------|
-| 20GB ERWT3D | /mnt/f/CUP/erwt3d-paper/erwt3d/20gb_v2.erwt3d |
-| 50GB ERWT3D | /mnt/d/erwt3d-paper/erwt3d/50GB.erwt3d |
-| Raw results v2 | /mnt/f/CUP/results/raw_results_v2/ |
-| Summaries v2 | validation/summaries_v2/ |
+| Path | Content |
+|------|---------|
+| /mnt/f/CUP/erwt3d-paper/erwt3d/20gb_v2.erwt3d | 20GB RZFP |
+| /mnt/d/erwt3d-paper/erwt3d/50GB.erwt3d | 50GB RZFP |
+| /mnt/d/erwt3d-paper/erwt3d/20gb_v2.erwt3d | 20GB RZFP (HDD copy) |
+| /mnt/f/CUP/results/raw_results_v2/ | 265 JSON results |
+| validation/summaries_v2/ | CSV summaries |
 
 ---
 *Auto-generated*
