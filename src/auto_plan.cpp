@@ -274,6 +274,13 @@ PlannerResult planFormat(
             double rzfpRatio = rzfpResult.main_ratio_estimate;
             double rzfpUpper = rzfpResult.main_ratio_upper;
 
+            // Axis-leaf repack: the converter always creates 3 axis-leaf
+            // replicas (X, Y, Z), each containing the full compressed payload
+            // reordered by axis.  Empirically total ≈ main × 3.1.
+            constexpr double axisLeafMultiplier = 3.1;
+            double rzfpTotalRatio = rzfpRatio * axisLeafMultiplier;
+            double rzfpTotalUpper = rzfpUpper * axisLeafMultiplier;
+
             // RZFP decode micro-benchmark in gray zone
             double rzfpDecodeMBs = 1000.0; // default ZFP decode throughput
             if (inGrayZone) {
@@ -293,26 +300,27 @@ PlannerResult planFormat(
             c.main_ratio_mean = rzfpRatio;
             c.main_ratio_lower = rzfpResult.main_ratio_lower;
             c.main_ratio_upper = rzfpUpper;
-            c.total_ratio_mean = rzfpRatio;
-            c.total_ratio_upper = rzfpUpper;
+            c.total_ratio_mean = rzfpTotalRatio;
+            c.total_ratio_upper = rzfpTotalUpper;
             c.feasible = (c.total_ratio_upper <= storage_budget);
             c.confidence = inGrayZone ? 0.5 : 0.7;
             c.uncertain = inGrayZone;
             c.reason = "RZFP compressed (" + std::to_string(rzfpResult.sampling_rounds) + " rounds)";
 
-            double compressedMB = rawMB * rzfpRatio;
+            // Per-axis I/O: each axis reads from its own axis-leaf file
+            double perAxisMB = rawMB * rzfpRatio;
 
             if (inGrayZone) {
                 c.predicted_x_random = approxTCompositeWithDecode(
-                    compressedMB, rawMB, ioBand, rzfpDecodeMBs, 100, seek, threads);
+                    perAxisMB, perAxisMB, ioBand, rzfpDecodeMBs, 1, seek, threads);
                 c.predicted_y_random = approxTCompositeWithDecode(
-                    compressedMB, rawMB, ioBand, rzfpDecodeMBs, 100, seek, threads);
+                    perAxisMB, perAxisMB, ioBand, rzfpDecodeMBs, 1, seek, threads);
                 c.predicted_z_random = approxTCompositeWithDecode(
-                    compressedMB, rawMB, ioBand, rzfpDecodeMBs, 100, seek, threads);
+                    perAxisMB, perAxisMB, ioBand, rzfpDecodeMBs, 1, seek, threads);
             } else {
-                c.predicted_x_random = approxTComposite(compressedMB, ioBand, 100, seek);
-                c.predicted_y_random = approxTComposite(compressedMB, ioBand, 100, seek);
-                c.predicted_z_random = approxTComposite(compressedMB, ioBand, 100, seek);
+                c.predicted_x_random = approxTComposite(perAxisMB, ioBand, 1, seek);
+                c.predicted_y_random = approxTComposite(perAxisMB, ioBand, 1, seek);
+                c.predicted_z_random = approxTComposite(perAxisMB, ioBand, 1, seek);
             }
             c.predicted_x_cont = c.predicted_x_random * 0.08;
             c.predicted_y_cont = c.predicted_y_random * 0.06;

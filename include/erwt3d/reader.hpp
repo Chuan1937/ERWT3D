@@ -124,6 +124,7 @@ private:
     XPSidecarHeader xpHeader_{};
     std::vector<XPChunkIndex> xpIndex_;
     bool xpAvailable_ = false;
+    uint64_t xpBaseOffset_ = 0;  // base offset for embedded XP sidecar
     std::vector<uint8_t> xpCompBuf_;
     std::vector<uint8_t> xpRawBuf_;
     std::vector<float> xPlaneRawBuf_;
