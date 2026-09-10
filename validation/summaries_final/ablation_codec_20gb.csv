@@ -49,6 +49,16 @@ dataset,configuration,format,layout,device,axis,pattern,run_number,total_time_ms
 20GB,A0_auto_final,LZ4,LZ4+XYZ,HDD,z,continuous,3,491.280462,10,48.5357534
 20GB,A0_auto_final,LZ4,LZ4+XYZ,HDD,z,continuous,4,456.395218,10,44.9525153
 20GB,A0_auto_final,LZ4,LZ4+XYZ,HDD,z,continuous,5,444.507252,10,43.9872464
+20GB,A1_force_rzfp_final,RZFP,RZFP+XYZ,SSD,y,continuous,1,4290.355295,10,304.822029
+20GB,A1_force_rzfp_final,RZFP,RZFP+XYZ,SSD,y,continuous,2,4008.811124,10,285.62411149999997
+20GB,A1_force_rzfp_final,RZFP,RZFP+XYZ,SSD,y,continuous,3,3994.785902,10,283.1571156
+20GB,A1_force_rzfp_final,RZFP,RZFP+XYZ,SSD,y,continuous,4,3995.874336,10,284.8822987
+20GB,A1_force_rzfp_final,RZFP,RZFP+XYZ,SSD,y,continuous,5,3903.950423,10,280.5104265
+20GB,A1_force_rzfp_final,RZFP,RZFP+XYZ,SSD,z,continuous,1,4127.101591,10,303.9593621
+20GB,A1_force_rzfp_final,RZFP,RZFP+XYZ,SSD,z,continuous,2,4043.243329,10,295.9780709
+20GB,A1_force_rzfp_final,RZFP,RZFP+XYZ,SSD,z,continuous,3,4634.433955,10,321.4759702
+20GB,A1_force_rzfp_final,RZFP,RZFP+XYZ,SSD,z,continuous,4,4586.97612,10,331.6208964
+20GB,A1_force_rzfp_final,RZFP,RZFP+XYZ,SSD,z,continuous,5,4211.107897,10,294.40140890000004
 20GB,A0_auto_final,LZ4,LZ4+XYZ,SSD,x,random,1,20737.828276,100,207.14293344
 20GB,A0_auto_final,LZ4,LZ4+XYZ,SSD,x,random,2,19959.79449,100,199.39568738
 20GB,A0_auto_final,LZ4,LZ4+XYZ,SSD,x,random,3,19739.223348,100,197.18503436
@@ -103,3 +113,9 @@ dataset,configuration,format,layout,device,axis,pattern,run_number,total_time_ms
 20GB,A0_auto_final,LZ4,LZ4+XYZ,HDD,z,random,3,5761.243213,100,57.51323902
 20GB,A0_auto_final,LZ4,LZ4+XYZ,HDD,z,random,4,5897.230137,100,58.91048566
 20GB,A0_auto_final,LZ4,LZ4+XYZ,HDD,z,random,5,5025.425005,100,50.18473558
+20GB,A1_force_rzfp_final,RZFP,RZFP+XYZ,SSD,y,random,5,33514.907111,100,323.41145806
+20GB,A1_force_rzfp_final,RZFP,RZFP+XYZ,SSD,z,random,1,32984.924444,100,317.23009591
+20GB,A1_force_rzfp_final,RZFP,RZFP+XYZ,SSD,z,random,2,28775.33649,100,276.68410863
+20GB,A1_force_rzfp_final,RZFP,RZFP+XYZ,SSD,z,random,3,29534.087892,100,281.39502598
+20GB,A1_force_rzfp_final,RZFP,RZFP+XYZ,SSD,z,random,4,29225.61017,100,281.34462957
+20GB,A1_force_rzfp_final,RZFP,RZFP+XYZ,SSD,z,random,5,29240.28273,100,279.62521582

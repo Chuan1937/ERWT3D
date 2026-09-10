@@ -13,18 +13,24 @@ def read_workload(path):
 
 def read_x_slice(data, nx, ny, nz, idx):
     """X slice: all y,z for fixed x -> shape (ny, nz)"""
-    plane = data[idx, :, :]
-    return plane.ravel()
+    view = data[idx, :, :]
+    result = np.empty(view.shape, dtype=np.float32)
+    np.copyto(result, view)
+    return result
 
 def read_y_slice(data, nx, ny, nz, idx):
     """Y slice: all x,z for fixed y -> shape (nx, nz)"""
-    plane = data[:, idx, :]
-    return plane.ravel()
+    view = data[:, idx, :]
+    result = np.empty(view.shape, dtype=np.float32)
+    np.copyto(result, view)
+    return result
 
 def read_z_slice(data, nx, ny, nz, idx):
     """Z slice: all x,y for fixed z -> shape (nx, ny)"""
-    plane = data[:, :, idx]
-    return plane.ravel()
+    view = data[:, :, idx]
+    result = np.empty(view.shape, dtype=np.float32)
+    np.copyto(result, view)
+    return result
 
 def main():
     p = argparse.ArgumentParser()
@@ -62,14 +68,17 @@ def main():
 
     slice_latencies_ms = []
     total_bytes = 0
+    checksum = 0.0
     t_total_start = time.perf_counter()
 
     for pos in positions:
         t0 = time.perf_counter()
         out = reader(data, nx, ny, nz, pos)
+        assert out.flags["OWNDATA"], f"slice {pos} not materialized (view, not copy)"
         t1 = time.perf_counter()
         slice_latencies_ms.append((t1 - t0) * 1000)
         total_bytes += out.nbytes
+        checksum += float(out.flat[0]) + float(out.flat[-1])
 
     t_total_end = time.perf_counter()
     total_time_ms = (t_total_end - t_total_start) * 1000
@@ -102,6 +111,7 @@ def main():
         "output_bytes": output_bytes * len(positions),
         "pread_calls": len(positions),
         "positions": positions,
+        "checksum": checksum,
     }
 
     Path(args.output_json).parent.mkdir(parents=True, exist_ok=True)

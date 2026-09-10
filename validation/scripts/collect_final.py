@@ -227,6 +227,19 @@ def main():
         print(f"[OK] {p} ({len(accuracy_records)} rows)")
 
     # --- dataset_summary.csv ---
+    # Map dataset -> list of candidate package paths to stat
+    PACKAGE_PATHS = {
+        "f3_amplitude": [
+            "/mnt/f/CUP/erwt3d-paper/erwt3d/f3_amplitude_final.erwt3d",
+        ],
+        "f3_similarity": [
+            "/mnt/f/CUP/erwt3d-paper/erwt3d/f3_similarity_final.erwt3d",
+        ],
+        "20GB": [
+            "/mnt/f/CUP/erwt3d-paper/erwt3d/20GB_A0_auto_final.erwt3d",
+            "/mnt/f/CUP/erwt3d-paper/erwt3d/20gb_plan_test.erwt3d",
+        ],
+    }
     ds_rows = []
     ds_info = {
         "f3_amplitude": {"shape": "201x201x51", "raw_bytes": 8241804,
@@ -237,12 +250,25 @@ def main():
                  "auto_format": "LZ4+XYZ", "lossless_or_lossy": "lossless"},
     }
     for ds_name, info in ds_info.items():
-        matching = [r for r in all_records if r["dataset"] == ds_name]
+        # Stat actual package files on disk — NEVER rely on benchmark JSON fields
         pkg_bytes = 0
-        for r in matching:
-            fb = r.get("file_size_bytes") or r.get("input_file_size_bytes")
-            if fb and fb > pkg_bytes:
-                pkg_bytes = fb
+        pkg_path_found = None
+        for candidate in PACKAGE_PATHS.get(ds_name, []):
+            real = Path(candidate)
+            if real.exists() and not real.is_symlink():
+                sz = real.stat().st_size
+                if sz > pkg_bytes:
+                    pkg_bytes = sz
+                    pkg_path_found = str(real)
+            elif real.is_symlink():
+                target = real.resolve()
+                if target.exists():
+                    sz = target.stat().st_size
+                    if sz > pkg_bytes:
+                        pkg_bytes = sz
+                        pkg_path_found = str(target)
+        if pkg_bytes == 0:
+            print(f"[FAIL] {ds_name}: no package file found — cannot compute physical_storage_ratio")
         sr = round(pkg_bytes / info["raw_bytes"], 3) if info["raw_bytes"] and pkg_bytes else 0
         ds_rows.append({
             "dataset": ds_name, "shape": info["shape"],
