@@ -9,7 +9,8 @@ VALIDATION_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PROJECT_ROOT="$(cd "$VALIDATION_DIR/.." && pwd)"
 BUILD_DIR="${ERWT3D_BUILD_DIR:-$PROJECT_ROOT/build}"
 RESULT_ROOT="${ERWT3D_RESULT_ROOT:-/mnt/f/CUP/results/raw_results_final}"
-ALGORITHM_COMMIT="${ERWT3D_ALGORITHM_COMMIT:-$(git -C "$PROJECT_ROOT" rev-parse HEAD)}"
+ALGORITHM_COMMIT="${ERWT3D_ALGORITHM_COMMIT:-0fa38a2e6ddbf78e2d052bff03bde11f9cbc7ba3}"
+VALIDATION_COMMIT="$(git -C "$PROJECT_ROOT" rev-parse HEAD)"
 
 input= dataset= format= layout= configuration= device= axis= pattern= run=
 extra=()
@@ -99,8 +100,8 @@ data.update({
     "benchmark_schema_version": "final-1",
     "status": "SUCCESS",
     "run_id": "${run_id}",
-    "git_commit": "${ALGORITHM_COMMIT}",
     "algorithm_commit": "${ALGORITHM_COMMIT}",
+    "validation_commit": "${VALIDATION_COMMIT}",
     "dataset": "${dataset}",
     "format": "${format}",
     "layout": "${layout}",

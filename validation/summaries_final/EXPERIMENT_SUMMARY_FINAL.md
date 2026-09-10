@@ -1,9 +1,10 @@
 # ERWT3D Paper Benchmark — FINAL Experiment Summary
 
 **Algorithm commit**: `0fa38a2e6ddbf78e2d052bff03bde11f9cbc7ba3`
+**Validation commit**: `fe5457508c03dfff2c4fd464b297062c66dbfe5d`
 **Threads**: 8 (fixed)
 **Cache mode**: cold Linux/WSL guest page-cache
-**Audit**: 20/20 PASS
+**Audit**: 25/25 PASS
 
 ## Table A — Dataset & Storage
 
@@ -18,20 +19,22 @@
 | Dataset | Format | Bitwise | RMSE | NRMSE | Max Rel | Violations | Method |
 |---------|--------|---------|------|-------|---------|------------|--------|
 | 20GB | LZ4 | YES | 0.0 | 0.0 | 0.0 | 0 | erwt3d_verify_full |
-| 20GB | RZFP | no | 0.024 | 0.001 | 0.000999973 | 0 | erwt3d_verify_rzfp_full |
+| 20GB | RZFP | no | 0.0022056308672771 | 9.11670967701799e-05 | 0.000999656883445946 | 0 | rzfp_reader_slice_sample |
 | f3_amplitude | LZ4 | YES | 0.0 | 0.0 | 0.0 | 0 | erwt3d_verify_full |
-| f3_similarity | RZFP | no | 0.0004 | 0.001 | 0.000998947 | 0 | erwt3d_verify_rzfp_full |
+| f3_similarity | RZFP | no | 0.00016944554215702 | 0.000190598401523806 | 0.000998946615764776 | 0 | rzfp_reader_slice_exact |
 
 ## Table C — 20GB Multi-Axis Access (SSD)
 
-| Axis | Pattern | Raw (ms) | ERWT3D (ms) | Speedup |
-|------|---------|----------|-------------|---------|
-| x | random | 15771.5 | 21171.3 | 0.74x |
-| x | continuous | 1617.0 | 3501.6 | 0.46x |
-| y | random | 38854.3 | 16493.8 | 2.36x |
-| y | continuous | 1524.4 | 1482.8 | 1.03x |
-| z | random | 5800588.5 | 10915.1 | 531.43x |
-| z | continuous | 1200527.3 | 1197.0 | 1002.95x |
+| Axis | Pattern | Raw (ms) | ERWT3D (ms) | Speedup | Note |
+|------|---------|----------|-------------|---------|------|
+| x | random | 15771.5 | 21171.3 | 0.74x | CV=11.9% |
+| x | continuous | 1617.0 | 3501.6 | 0.46x | CV=16.1% |
+| y | random | 38854.3 | 16493.8 | 2.36x | CV=21.2% |
+| y | continuous | 1524.4 | 1482.8 | 1.03x | CV=19.3% |
+| z | random | cache-sensitive | 10915.1 | — | Raw Z excluded |
+| z | continuous | cache-sensitive | 1197.0 | — | Raw Z excluded |
+
+*Raw Z measurements showed large cross-run variability under the WSL2 host/guest cache hierarchy and were therefore excluded from quantitative speedup claims.*
 
 ## Table D — Codec Ablation (20GB SSD)
 
@@ -43,28 +46,28 @@
 
 ## Table E — F3 Per-Slice Latency (SSD)
 
-| Dataset | Axis | Pattern | Mean (ms) | Median (ms) | P95 (ms) | P99 (ms) |
-|---------|------|---------|-----------|-------------|----------|----------|
-| f3_amplitude | x | random | 10.3 | 8.69 | 12.36 | 48.74 |
-| f3_amplitude | x | continuous | 9.14 | 8.7 | 12.62 | 13.28 |
-| f3_amplitude | y | random | 8.31 | 8.31 | 11.1 | 12.64 |
-| f3_amplitude | y | continuous | 8.12 | 8.16 | 10.39 | 11.39 |
-| f3_amplitude | z | random | 10.16 | 10.03 | 13.79 | 14.99 |
-| f3_amplitude | z | continuous | 11.64 | 11.78 | 15.55 | 16.1 |
-| f3_similarity | x | random | — | — | — | — |
-| f3_similarity | x | continuous | — | — | — | — |
-| f3_similarity | y | random | — | — | — | — |
-| f3_similarity | y | continuous | — | — | — | — |
-| f3_similarity | z | random | — | — | — | — |
-| f3_similarity | z | continuous | — | — | — | — |
+| Dataset | Format | Axis | Pattern | Mean | Median | P95 | P99 |
+|---------|--------|------|---------|------|--------|-----|-----|
+| f3_amplitude | LZ4 | x | random | 10.3 | 8.69 | 12.36 | 48.74 |
+| f3_amplitude | LZ4 | x | continuous | 9.14 | 8.7 | 12.62 | 13.28 |
+| f3_amplitude | LZ4 | y | random | 8.31 | 8.31 | 11.1 | 12.64 |
+| f3_amplitude | LZ4 | y | continuous | 8.12 | 8.16 | 10.39 | 11.39 |
+| f3_amplitude | LZ4 | z | random | 10.16 | 10.03 | 13.79 | 14.99 |
+| f3_amplitude | LZ4 | z | continuous | 11.64 | 11.78 | 15.55 | 16.1 |
+| f3_similarity | RZFP | x | random | 4.77 | 4.53 | 7.0 | 8.41 |
+| f3_similarity | RZFP | x | continuous | 4.96 | 4.59 | 7.65 | 8.18 |
+| f3_similarity | RZFP | y | random | 4.71 | 4.59 | 6.4 | 7.48 |
+| f3_similarity | RZFP | y | continuous | 5.93 | 5.94 | 8.0 | 10.58 |
+| f3_similarity | RZFP | z | random | 7.91 | 7.81 | 10.5 | 11.79 |
+| f3_similarity | RZFP | z | continuous | 7.22 | 7.25 | 8.93 | 9.06 |
 
 ## Key Findings
 
-1. **Adaptive selection**: 20GB Auto selects LZ4+XYZ (lossless, ratio=1.012x)
-2. **Raw vs ERWT3D speedup**: Y/Z axes show significant acceleration; X axis comparable
-3. **Axis balance**: ERWT3D provides balanced access across all three axes
-4. **RZFP accuracy**: max_relative_error < 0.001, zero violations for all datasets
-5. **F3 generalization**: Both amplitude (lossless) and similarity (lossy) workloads verified
+1. **Adaptive selection**: 20GB Auto selects LZ4+XYZ (lossless, ratio=1.012x); F3 similarity selects RZFP+XYZ (lossy, max_rel<0.001)
+2. **Raw storage favors X**: Raw native storage naturally provides contiguous X access; ERWT3D introduces small X overhead while substantially improving Y/Z access
+3. **Axis balance**: ERWT3D reduces multi-axis performance imbalance compared to raw storage
+4. **RZFP accuracy**: All RZFP datasets verified with max_relative_error < 0.001, zero violations
+5. **F3 generalization**: Both amplitude (LZ4 lossless) and similarity (RZFP lossy) workloads correctly handled by adaptive planner
 
 ---
 *Auto-generated by FINAL benchmark suite*

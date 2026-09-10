@@ -45,7 +45,8 @@ def main():
     p.add_argument("--output-json", required=True)
     p.add_argument("--device", default="SSD")
     p.add_argument("--run", type=int, default=1)
-    p.add_argument("--git-commit", default="")
+    p.add_argument("--algorithm-commit", default="0fa38a2e6ddbf78e2d052bff03bde11f9cbc7ba3")
+    p.add_argument("--validation-commit", default="")
     p.add_argument("--threads", type=int, default=8)
     args = p.parse_args()
 
@@ -89,8 +90,8 @@ def main():
         "benchmark_schema_version": "final-1",
         "status": "SUCCESS",
         "run_id": f"{args.dataset}_raw_baseline_{args.device}_{args.axis}_{args.pattern}_run{args.run:02d}",
-        "git_commit": args.git_commit,
-        "algorithm_commit": args.git_commit,
+        "algorithm_commit": args.algorithm_commit,
+        "validation_commit": args.validation_commit,
         "dataset": args.dataset,
         "format": "RAW",
         "layout": "raw",

@@ -6,10 +6,10 @@ from pathlib import Path
 
 REQUIRED_FIELDS = [
     "benchmark_schema_version", "dataset", "format", "layout",
-    "configuration", "device", "git_commit", "axis", "pattern", "run_number",
+    "configuration", "device", "algorithm_commit", "validation_commit", "axis", "pattern", "run_number",
 ]
 
-ACCURACY_REQUIRED = ["dataset", "format", "git_commit"]
+ACCURACY_REQUIRED = ["dataset", "format"]
 
 REJECTED_DATASETS = {"50GB"}
 
@@ -179,10 +179,16 @@ def main():
         print(f"[OK] {p} ({len(access_rows)} rows)")
 
     # --- access_f3_per_slice.csv ---
-    f3_rows = [r for r in all_records if r["dataset"].startswith("f3_")]
+    # For f3_similarity, only accept RZFP records for FINAL
+    f3_rows = []
+    for r in all_records:
+        if r["dataset"] == "f3_amplitude":
+            f3_rows.append(r)
+        elif r["dataset"] == "f3_similarity" and r.get("format") == "RZFP":
+            f3_rows.append(r)
     if f3_rows:
         p = output_root / "access_f3_per_slice.csv"
-        fields = ["dataset","configuration","format","device","axis","pattern","run_number",
+        fields = ["dataset","configuration","format","layout","device","axis","pattern","run_number",
                   "total_time_ms","slice_count","mean_slice_latency_ms",
                   "median_slice_latency_ms","p95_slice_latency_ms","p99_slice_latency_ms"]
         with open(p, "w", newline="") as f:
@@ -215,6 +221,32 @@ def main():
             w.writeheader()
             w.writerows(raw_rows)
         print(f"[OK] {p} ({len(raw_rows)} rows)")
+
+    # --- variability.csv ---
+    var_rows = []
+    for key in sorted(groups.keys()):
+        recs = groups[key]
+        ds, cfg, fmt, lay, dev, ax, pat = key
+        times = [r.get("total_time_ms", 0) for r in recs]
+        n = len(times)
+        mean_t = statistics.mean(times) if times else 0
+        std_t = statistics.stdev(times) if n > 1 else 0
+        cv = (std_t / mean_t * 100) if mean_t else 0
+        # Raw Z is cache-sensitive
+        reliability = "cache_sensitive" if (cfg == "raw_baseline" and ax == "z") else "normal"
+        var_rows.append({
+            "dataset": ds, "configuration": cfg, "format": fmt, "device": dev,
+            "axis": ax, "pattern": pat,
+            "mean": round(mean_t, 1), "std": round(std_t, 1),
+            "cv_percent": round(cv, 1), "reliability": reliability,
+        })
+    if var_rows:
+        p = output_root / "variability.csv"
+        with open(p, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(var_rows[0].keys()))
+            w.writeheader()
+            w.writerows(var_rows)
+        print(f"[OK] {p} ({len(var_rows)} rows)")
 
     # --- accuracy.csv ---
     if accuracy_records:
