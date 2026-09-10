@@ -1,0 +1,5 @@
+dataset_id,type,dimensions,nx,ny,nz,dtype,axis_order,raw_size_bytes,raw_size_gb,min,max,mean,std,zero_fraction,nan_count,inf_count,description,sha256
+datasetA_velocity,model,,,,,,,,,,,,,,,,"3D velocity model (Vp/Vs/density), high spatial correlation",
+datasetB_seismic,seismic,,,,,,,,,,,,,,,,,"3D seismic volume, local continuity + high frequency",
+datasetC_wavefield,wavefield,,,,,,,,,,,,,,,,,"3D wavefield snapshot, wavefront structure",
+datasetD_random,random,,,,,,,,,,,,,,,,,"Gaussian random control, weak spatial correlation",

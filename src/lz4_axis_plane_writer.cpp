@@ -540,7 +540,8 @@ bool writeLz4AxisPlaneSidecar(
     double storageBudget,
     int threads,
     Lz4AxisPlaneWriterStats* stats,
-    uint64_t memoryLimitMiB
+    uint64_t memoryLimitMiB,
+    uint32_t xpStride
 ) {
     if (stats) {
         *stats = Lz4AxisPlaneWriterStats {};
@@ -567,7 +568,7 @@ bool writeLz4AxisPlaneSidecar(
                 nx,
                 ny,
                 nz,
-                1,
+                xpStride,
                 chunkZRows,
                 storageBudget,
                 false,

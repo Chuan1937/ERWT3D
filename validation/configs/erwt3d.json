@@ -1,0 +1,13 @@
+{
+  "method": "ERWT3D",
+  "description": "ERWT3D adaptive compression with RZFP + LZ4",
+  "parameters": {
+    "compress": true,
+    "rzfp": true,
+    "error_bound": 0.001,
+    "internal_threshold": 0.00075,
+    "leaf_size": [4, 4, 4],
+    "superblock_size": [64, 64, 64]
+  },
+  "notes": "Primary method under evaluation"
+}

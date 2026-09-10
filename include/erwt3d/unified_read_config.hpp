@@ -30,6 +30,10 @@ UnifiedReadConfig makeUnifiedConfig(
     uint64_t memoryLimitMib,
     uint64_t readWindowMb);
 
+// Fixed benchmark-only settings. This deliberately avoids device, rotational,
+// filesystem, and WSL detection so an ablation can disable device-aware tuning.
+UnifiedReadConfig makeGenericReadConfig(int threads, uint64_t memoryLimitMib);
+
 IOProfileType resolveIOProfile(
     IOProfileType requested,
     const std::string& inputPath,

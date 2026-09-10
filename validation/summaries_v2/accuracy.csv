@@ -1,0 +1,4 @@
+dataset,method,max_rel_error,violations,lossless_or_lossy
+f3_amplitude,LZ4,0,0,lossless
+f3_similarity,LZ4,0,0,lossless
+20GB,LZ4,0,0,lossless

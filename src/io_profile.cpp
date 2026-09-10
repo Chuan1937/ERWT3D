@@ -15,6 +15,7 @@ const char* ioProfileTypeName(IOProfileType t) {
         case IOProfileType::HDD:     return "hdd";
         case IOProfileType::SSD:     return "ssd";
         case IOProfileType::WSL_SSD: return "wsl-ssd";
+        case IOProfileType::Generic: return "generic";
     }
     return "unknown";
 }
@@ -24,6 +25,7 @@ IOProfileType parseIOProfileType(const std::string& s) {
     if (s == "hdd")      return IOProfileType::HDD;
     if (s == "ssd")      return IOProfileType::SSD;
     if (s == "wsl-ssd")  return IOProfileType::WSL_SSD;
+    if (s == "generic")  return IOProfileType::Generic;
     return IOProfileType::Auto;
 }
 

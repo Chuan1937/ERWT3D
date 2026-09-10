@@ -1,0 +1,4 @@
+dataset,shape,raw_bytes,auto_format,final_package_bytes,physical_storage_ratio,lossless_or_lossy
+f3_amplitude,201x201x51,8241804,LZ4+XYZ,29935616,3.632,lossless
+f3_similarity,191x146x51,5596896,LZ4+XYZ,16908288,3.021,lossless
+20GB,801x2405x2501,19271755620,LZ4+XYZ,19500249344,1.012,lossless

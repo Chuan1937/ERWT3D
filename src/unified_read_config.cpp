@@ -121,4 +121,31 @@ UnifiedReadConfig makeUnifiedConfig(
     return cfg;
 }
 
+UnifiedReadConfig makeGenericReadConfig(int threads, uint64_t memoryLimitMib) {
+    constexpr uint64_t MiB = 1024ULL * 1024ULL;
+    UnifiedReadConfig cfg;
+    cfg.io_profile = IOProfileType::Generic;
+    cfg.threads = threads;
+    cfg.memory_limit_mib = memoryLimitMib;
+    cfg.resolved_profile_reason = "benchmark-generic-fixed";
+    cfg.filesystem_type = "not-probed";
+    cfg.wsl_detected = false;
+
+    cfg.hdd.seek_ms = 5.0;
+    cfg.hdd.sequential_mb_s = 500.0;
+    cfg.hdd.read_window_bytes = 16ULL * MiB;
+    cfg.hdd.max_gap_bytes = 256ULL * 1024ULL;
+
+    cfg.ssd.read_threads = 1;
+    cfg.ssd.decode_threads = std::max(1, threads);
+    cfg.ssd.read_window_bytes = 16ULL * MiB;
+    cfg.ssd.max_gap_bytes = 256ULL * 1024ULL;
+    cfg.ssd.queue_depth = 1;
+    cfg.ssd.buffer_pool_bytes = 128ULL * MiB;
+    cfg.ssd.fuse_decode_scatter = false;
+    cfg.ssd.use_fadvise = false;
+    cfg.ssd.pin_workers = false;
+    return cfg;
+}
+
 } // namespace erwt3d

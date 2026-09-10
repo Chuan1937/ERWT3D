@@ -1,0 +1,9 @@
+{
+  "method": "LZ4",
+  "description": "LZ4 block compression (level 1 = fast)",
+  "parameters": {
+    "level": 1,
+    "block_size": "auto"
+  },
+  "notes": "Baseline fast compressor. Low compression ratio expected."
+}

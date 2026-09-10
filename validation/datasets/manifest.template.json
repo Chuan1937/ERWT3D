@@ -1,0 +1,18 @@
+{
+  "datasets": [
+    {
+      "dataset_id": "f3_amplitude",
+      "raw_file": "f3_amplitude.raw",
+      "metadata_file": "f3_amplitude.metadata.json",
+      "shape": [201, 201, 51],
+      "raw_sha256": "f16b0aaff41385ed91fb705293c203cf8372c654ec6912c3da73d1c03f9683a7"
+    },
+    {
+      "dataset_id": "f3_similarity",
+      "raw_file": "f3_similarity.raw",
+      "metadata_file": "f3_similarity.metadata.json",
+      "shape": [191, 146, 51],
+      "raw_sha256": "1569683d3a82b2d4c61adf262828f450a091ebd0fde70511baa725e11316201e"
+    }
+  ]
+}

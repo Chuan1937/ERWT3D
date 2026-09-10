@@ -508,6 +508,7 @@ int main(int argc, char* argv[]) {
     std::string ioProfileStr = "auto";
     int axisWorkers = 0;
     int planeWorkers = 0;
+    std::string forceFormat = "auto";
 
     for (int i = 1; i < argc; ++i) {
         const auto next = [&]() -> const char* {
@@ -548,6 +549,8 @@ int main(int argc, char* argv[]) {
         } else if (std::strcmp(argv[i], "--plane-workers") == 0) {
             const std::string value = next();
             planeWorkers = value == "auto" ? 0 : std::stoi(value);
+        } else if (std::strcmp(argv[i], "--force-format") == 0) {
+            forceFormat = next();
         } else if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             std::cerr
                 << "Usage: erwt3d_convert --input data.raw --output data.erwt3d --nx N --ny N --nz N\n\n"
@@ -563,6 +566,7 @@ int main(int argc, char* argv[]) {
                 << "  --io-profile auto|hdd|ssd|wsl-ssd  Conversion device profile\n"
                 << "  --axis-workers auto|1|2|3  RZFP axis repack concurrency\n"
                 << "  --plane-workers auto|1|2  LZ4 Y/Z generation concurrency\n"
+                << "  --force-format auto|lz4|rzfp  Select a measured format candidate (benchmark ablation only)\n"
                 << "  --to-raw              Convert ERWT3D/RZFP back to raw float32\n\n"
                 << "New optimized files must use the canonical .erwt3d extension.\n"
                 << "The internal LZ4/RZFP format is selected automatically and stored in the header.\n\n"
@@ -771,7 +775,26 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    const auto& rec = plan.recommended;
+    auto rec = plan.recommended;
+    if (forceFormat != "auto") {
+        const erwt3d::MainFormat requested = forceFormat == "lz4"
+            ? erwt3d::MainFormat::LZ4
+            : forceFormat == "rzfp" ? erwt3d::MainFormat::RZFP
+            : erwt3d::MainFormat::Unknown;
+        if (requested == erwt3d::MainFormat::Unknown) {
+            std::cerr << "Error: --force-format must be auto, lz4, or rzfp\n";
+            return 1;
+        }
+        const auto candidate = std::find_if(
+            plan.alternatives.begin(), plan.alternatives.end(),
+            [requested](const auto& value) { return value.main_format == requested; });
+        if (candidate == plan.alternatives.end()) {
+            std::cerr << "Error: requested format candidate is unavailable: " << forceFormat << "\n";
+            return 1;
+        }
+        rec = *candidate;
+        std::cout << "Benchmark override: forced format " << forceFormat << "\n";
+    }
     if (!rec.feasible) {
         std::cerr
             << "WARNING: all valid format candidates exceed the "
@@ -786,7 +809,7 @@ int main(int argc, char* argv[]) {
                   << " (upper " << c.total_ratio_upper << "x)"
                   << " T_pred=" << std::setprecision(2) << c.predicted_t_composite << "s"
                   << (c.feasible ? "" : " OVER-STORAGE-TARGET")
-                  << (&c == &rec ? " <-- SELECTED" : "")
+                  << (c.main_format == rec.main_format ? " <-- SELECTED" : "")
                   << "\n";
     }
     std::cout << "\nSelected: " << rec.name
@@ -902,9 +925,11 @@ int main(int argc, char* argv[]) {
                 AxisCandidate candidate;
                 candidate.axis = axis;
                 candidate.type =
-                    axis == erwt3d::PlaneAxis::Y
-                        ? erwt3d::EmbeddedSectionType::Lz4AxisPlaneY
-                        : erwt3d::EmbeddedSectionType::Lz4AxisPlaneZ;
+                    axis == erwt3d::PlaneAxis::X
+                        ? erwt3d::EmbeddedSectionType::Lz4AxisPlaneX
+                        : axis == erwt3d::PlaneAxis::Y
+                            ? erwt3d::EmbeddedSectionType::Lz4AxisPlaneY
+                            : erwt3d::EmbeddedSectionType::Lz4AxisPlaneZ;
                 candidate.path =
                     erwt3d::axisPlaneSidecarPath(workPath, axis);
                 erwt3d::Lz4AxisPlaneWriterStats axisStats;
@@ -929,7 +954,14 @@ int main(int argc, char* argv[]) {
             };
 
         std::vector<AxisCandidate> candidates;
-        if (resolvedPlaneWorkers == 2) {
+        // Generate X, Y, Z axis-plane sidecars.
+        // X uses the old XP format (stride from planner), Y/Z use v2 format.
+        if (resolvedPlaneWorkers >= 2) {
+            // Run X first (sequential, smaller), then Y+Z in parallel
+            candidates.push_back(buildPlane(
+                erwt3d::PlaneAxis::X,
+                threads,
+                conversionMemoryMiB));
             const int yThreads = std::max(1, threads / 2);
             const int zThreads = std::max(1, threads - yThreads);
             const uint64_t yMemoryMiB =
@@ -954,6 +986,7 @@ int main(int argc, char* argv[]) {
             candidates.push_back(zFuture.get());
         } else {
             for (const auto axis : {
+                     erwt3d::PlaneAxis::X,
                      erwt3d::PlaneAxis::Y,
                      erwt3d::PlaneAxis::Z}) {
                 candidates.push_back(buildPlane(
@@ -1022,6 +1055,11 @@ int main(int argc, char* argv[]) {
         std::cout << "LZ4 conversion complete: " << outputPath << "\n"
                   << "  Embedded axes: "
                   << (sections.empty() ? "none" : "")
+                  << (std::any_of(
+                          sections.begin(), sections.end(),
+                          [](const auto& s) {
+                              return s.type == erwt3d::EmbeddedSectionType::Lz4AxisPlaneX;
+                          }) ? "X" : "")
                   << (std::any_of(
                           sections.begin(), sections.end(),
                           [](const auto& s) {

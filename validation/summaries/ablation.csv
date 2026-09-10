@@ -1,0 +1,1 @@
+run_id,timestamp,git_commit,hostname,device,dataset,size,configuration,method_parameters,threads,cache_mode,compressed_size_bytes,storage_ratio,x_random_mean_ms,y_random_mean_ms,z_random_mean_ms,x_continuous_s,y_continuous_s,z_continuous_s,overall_time_s,axis_imbalance,exit_code

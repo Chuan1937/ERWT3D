@@ -536,15 +536,16 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
     
     // mmap output file for scatter writes without pwrite overhead
     float* outMap = static_cast<float*>(mmap(nullptr, rawSize, PROT_WRITE, MAP_SHARED, outFd, 0));
-    if (outMap == MAP_FAILED) {
-        // Fallback to pwrite if mmap fails
+    bool useMmap = (outMap != MAP_FAILED);
+    if (!useMmap) {
+        // Fallback to pwrite if mmap fails.
+        // Must use readSuperblock() to handle compressed data correctly.
         std::vector<uint8_t> superBuffer(superBytes);
         for (uint64_t szi = 0; szi < getSuperGridZ(header_); ++szi) {
             for (uint64_t syi = 0; syi < getSuperGridY(header_); ++syi) {
                 for (uint64_t sxi = 0; sxi < getSuperGridX(header_); ++sxi) {
                     uint64_t superIdx = (szi * getSuperGridY(header_) + syi) * getSuperGridX(header_) + sxi;
-                    ssize_t rd = pread(fd_, superBuffer.data(), superBytes, header_.data_offset + superIdx * superBytes);
-                    if (rd != static_cast<ssize_t>(superBytes)) { close(outFd); return false; }
+                    if (!readSuperblock(superIdx, superBuffer.data())) { close(outFd); return false; }
                     uint64_t startX = sxi * sx, startY = syi * sy, startZ = szi * sz;
                     for (uint64_t lzi = 0; lzi < leafsPerSuperZ; ++lzi) {
                         for (uint64_t lyi = 0; lyi < leafsPerSuperY; ++lyi) {
@@ -572,6 +573,11 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
             }
         }
         close(outFd);
+        // Verify output file size (WSL2 pwrite may extend file beyond expected size)
+        struct stat st;
+        if (stat(outputPath.c_str(), &st) == 0 && static_cast<uint64_t>(st.st_size) != rawSize) {
+            truncate(outputPath.c_str(), rawSize);
+        }
         return true;
     }
     
@@ -624,6 +630,14 @@ bool ERWT3DReader::readFullToFile(const std::string& outputPath, int numThreads,
     msync(outMap, rawSize, MS_ASYNC);
     munmap(outMap, rawSize);
     if (close(outFd) != 0) return false;
+    
+    // Verify output file size matches expected raw size
+    struct stat st;
+    if (stat(outputPath.c_str(), &st) == 0 && static_cast<uint64_t>(st.st_size) != rawSize) {
+        // File was extended beyond expected size; truncate back
+        truncate(outputPath.c_str(), rawSize);
+    }
+    
     return true;
 }
 
@@ -844,7 +858,7 @@ bool ERWT3DReader::tryReadSliceXPSidecar_(uint64_t x, float* output, IOProfile* 
 
         if (xpCompBuf_.size() < ci.compressed_size)
             xpCompBuf_.resize(ci.compressed_size);
-        ssize_t n = pread(xpFd_, xpCompBuf_.data(), ci.compressed_size, ci.chunk_offset);
+        ssize_t n = pread(xpFd_, xpCompBuf_.data(), ci.compressed_size, xpBaseOffset_ + ci.chunk_offset);
         if (n != static_cast<ssize_t>(ci.compressed_size)) return false;
         totalRead += ci.compressed_size;
 
@@ -902,7 +916,10 @@ bool ERWT3DReader::tryReadBatchXPSidecar_(const std::vector<SliceBatchRequest>& 
         handled[i] = false;
         if (requests[i].axis != SliceAxis::X) continue;
         uint64_t x = requests[i].index;
-        if (x % stride != 0) continue;
+        if (x % stride != 0) {
+            fprintf(stderr, "[xp_batch] index %lu misses stride %u\n", x, stride);
+            continue;
+        }
         uint64_t planeIdx = x / stride;
         if (planeIdx >= xpHeader_.plane_count) continue;
 
@@ -932,7 +949,7 @@ bool ERWT3DReader::tryReadBatchXPSidecar_(const std::vector<SliceBatchRequest>& 
             const XPChunkIndex& ci = xpIndex_[planeIdx * cpp + c];
             if (ci.compressed_size == 0) continue;
             ChunkTask ct;
-            ct.chunk_offset = ci.chunk_offset;
+            ct.chunk_offset = xpBaseOffset_ + ci.chunk_offset;
             ct.compressed_size = ci.compressed_size;
             ct.raw_size = ci.raw_size;
             ct.chunk_idx_in_plane = c;
@@ -1071,6 +1088,34 @@ void ERWT3DReader::openAxisPlaneSidecars_() {
             !validateAxisPlaneHeader(hdr, header_.nx, header_.ny, header_.nz) ||
             hdr.axis != static_cast<uint8_t>(axis) ||
             hdr.compression != AXISPLANE_COMPRESSION_LZ4) {
+            // For embedded X sections, try old XP format as fallback
+            if (axis == PlaneAxis::X && embedded) {
+                XPSidecarHeader xpHdr{};
+                if (sectionBytes >= sizeof(xpHdr) &&
+                    readFullyAt(fd, &xpHdr, sizeof(xpHdr), baseOffset) &&
+                    std::memcmp(xpHdr.magic, XPSIDECAR_MAGIC, 8) == 0 &&
+                    xpHdr.version == XPSIDECAR_VERSION &&
+                    xpHdr.nx == header_.nx && xpHdr.ny == header_.ny &&
+                    xpHdr.nz == header_.nz) {
+                    // Valid embedded XP sidecar — load it via loadSidecar_ path
+                    uint64_t idxBytes = xpHdr.total_chunks * sizeof(XPChunkIndex);
+                    if (idxBytes > 0 && idxBytes <= sectionBytes) {
+                        xpHeader_ = xpHdr;
+                        xpIndex_.resize(xpHdr.total_chunks);
+                        if (readFullyAt(fd, xpIndex_.data(), idxBytes,
+                                        baseOffset + xpHdr.index_offset)) {
+                            xpFd_ = fd;
+                            xpBaseOffset_ = baseOffset;
+                            xpAvailable_ = true;
+                            fprintf(stderr, "[reader] loaded embedded XP sidecar: stride=%u, planes=%u, chunks=%u\n",
+                                    xpHdr.stride, xpHdr.plane_count, xpHdr.total_chunks);
+                            // Don't close fd — xpFd_ owns it now
+                            continue;
+                        }
+                    }
+                }
+                fprintf(stderr, "[reader] embedded X section failed both v2 and XP validation\n");
+            }
             if (ownsFd) close(fd);
             continue;
         }
@@ -1288,6 +1333,8 @@ bool ERWT3DReader::readSliceSB(SliceAxis axis, uint64_t index, float* output,
                 bool ok = tryReadSliceXPSidecar_(index, output,
                                                   profileIO_ ? &lastProfile_ : nullptr);
                 auto readEnd = std::chrono::high_resolution_clock::now();
+                fprintf(stderr, "[readSliceSB] XP result: index=%lu, ok=%d, time=%.1fms\n",
+                        index, ok, std::chrono::duration<double, std::milli>(readEnd - readStart).count());
                 if (ok) {
                     auto planEnd = std::chrono::high_resolution_clock::now();
                     double planMs = std::chrono::duration<double, std::milli>(planEnd - planStart).count();
@@ -1515,6 +1562,9 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
                                     const HDDReadWindowConfig& wcfg) {
     if (fd_ < 0 || requests.empty()) return false;
 
+    fprintf(stderr, "[batch_readSlicesBatch] xpAvailable_=%d, apAvailable_=[%d,%d,%d]\n",
+            xpAvailable_, apAvailable_[0], apAvailable_[1], apAvailable_[2]);
+
     // Step 0: Try raw X auxiliary batch path for all X requests at once
     std::vector<bool> rawXAuxHandled(requests.size(), false);
     if (rawXAuxAvailable_) {
@@ -1524,6 +1574,8 @@ bool ERWT3DReader::readSlicesBatch(const std::vector<SliceBatchRequest>& request
     // Step 1: Try batch sidecar read for remaining X requests (old XP format)
     std::vector<bool> xpHandled(requests.size(), false);
     if (xpAvailable_ && !apAvailable_[0]) {  // skip old XP if v2 X is available
+        fprintf(stderr, "[batch] trying XP sidecar: xpAvailable_=%d, apAvailable_[0]=%d\n",
+                xpAvailable_, apAvailable_[0]);
         tryReadBatchXPSidecar_(requests, xpHandled);
     }
 

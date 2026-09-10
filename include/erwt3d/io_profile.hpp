@@ -10,6 +10,7 @@ enum class IOProfileType {
     HDD,
     SSD,
     WSL_SSD,
+    Generic,
 };
 
 enum class AccessPattern {

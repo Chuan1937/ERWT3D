@@ -1,0 +1,10 @@
+{
+  "dataset_root": "/data/erwt3d/datasets",
+  "ssd_root": "/mnt/erwt3d-ssd",
+  "hdd_root": "/mnt/erwt3d-hdd",
+  "result_root": "/data/erwt3d/results",
+  "build_dir": "/data/ERWT3D/build",
+  "threads": 8,
+  "repetitions": 5,
+  "cache_mode": "cold_os_page_cache"
+}

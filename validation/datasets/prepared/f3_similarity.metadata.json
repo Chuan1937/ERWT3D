@@ -1,0 +1,26 @@
+{
+  "dataset_id": "f3_similarity",
+  "source_format": "SEG-Y",
+  "prepared_format": "float32_raw",
+  "shape": [
+    191,
+    146,
+    51
+  ],
+  "axis_order": "xyz",
+  "fastest_axis": "z",
+  "source_sha256": "dc6da7bf5c47cf5b8fcc7e321cdb989b91e95aa3ae7aea2bf1706a21c71ab8b2",
+  "prepared_sha256": "1569683d3a82b2d4c61adf262828f450a091ebd0fde70511baa725e11316201e",
+  "source_bytes": 12384984,
+  "prepared_bytes": 5688744,
+  "source": "https://github.com/equinor/segyio-notebooks",
+  "license": "CC-BY-SA",
+  "min": 0.2964900732040405,
+  "max": 0.9840061664581299,
+  "mean": 0.8855958541682526,
+  "std": 0.0779373005367759,
+  "zero_fraction": 0.0,
+  "nan_count": 0,
+  "inf_count": 0,
+  "elements": 1422186
+}

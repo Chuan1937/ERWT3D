@@ -1,0 +1,26 @@
+{
+  "dataset_id": "f3_amplitude",
+  "source_format": "SEG-Y",
+  "prepared_format": "float32_raw",
+  "shape": [
+    201,
+    201,
+    51
+  ],
+  "axis_order": "xyz",
+  "fastest_axis": "z",
+  "source_sha256": "ed50c38db56cbdd1343ca6d06a93e2ed0de2b82946c1cb6756ef9bba207f8573",
+  "prepared_sha256": "f16b0aaff41385ed91fb705293c203cf8372c654ec6912c3da73d1c03f9683a7",
+  "source_bytes": 17941644,
+  "prepared_bytes": 8241804,
+  "source": "https://github.com/equinor/segyio-notebooks",
+  "license": "CC-BY-SA",
+  "min": -21683.0,
+  "max": 15295.0,
+  "mean": -146.0465373842911,
+  "std": 3605.690615217631,
+  "zero_fraction": 0.0001465698529108433,
+  "nan_count": 0,
+  "inf_count": 0,
+  "elements": 2060451
+}

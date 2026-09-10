@@ -189,48 +189,52 @@ PlannerResult planFormat(
         lz4DecodeMBs = result.lz4_probe.decode_throughput_mibs;
     }
 
-    // XP stride=2 sidecar ratio estimate: ~0.5 * main_ratio / stride
-    double xpStride = 2.0;
-    double xpRatioEstimate = lz4Ratio * 0.5 / xpStride;
-    double xpRatioUpper = lz4Upper * 0.55 / xpStride;
+    // XP stride=1 sidecar ratio estimate: ~0.5 * main_ratio (every X plane stored)
+    double xpStride = 1.0;
+    double xpRatioEstimate = lz4Ratio * 0.5;
+    double xpRatioUpper = lz4Upper * 0.55;
 
-    // --- Candidate A: LZ4 + XP stride=2 ---
+    // Y and Z embedded sidecar ratio estimates.
+    // Each stores whole-plane LZ4-compressed records; empirical ratio ~main_ratio.
+    double yzRatioEstimate = lz4Ratio;
+    double yzRatioUpper = lz4Upper;
+
+    // --- Candidate A: LZ4 + embedded XYZ (X stride=1, Y/Z whole-plane) ---
     {
         FormatCandidate c;
-        c.name = "LZ4 + XP stride=2";
+        c.name = "LZ4 + embedded XYZ";
         c.main_format = MainFormat::LZ4;
         c.sidecar_format = SidecarFormat::LZ4_XPlane;
-        c.sidecar_stride = 2;
+        c.sidecar_stride = 1;
         c.main_ratio_mean = lz4Ratio;
         c.main_ratio_lower = result.lz4_probe.main_ratio_lower;
         c.main_ratio_upper = lz4Upper;
-        c.sidecar_ratio_mean = xpRatioEstimate;
-        c.sidecar_ratio_upper = xpRatioUpper;
-        c.total_ratio_mean = lz4Ratio + xpRatioEstimate;
-        c.total_ratio_upper = lz4Upper + xpRatioUpper;
+        c.sidecar_ratio_mean = xpRatioEstimate + 2.0 * yzRatioEstimate;
+        c.sidecar_ratio_upper = xpRatioUpper + 2.0 * yzRatioUpper;
+        c.total_ratio_mean = lz4Ratio + xpRatioEstimate + 2.0 * yzRatioEstimate;
+        c.total_ratio_upper = lz4Upper + xpRatioUpper + 2.0 * yzRatioUpper;
         c.feasible = (c.total_ratio_upper <= storage_budget);
         c.confidence = inGrayZone ? 0.5 : 0.75;
         c.uncertain = inGrayZone;
-        c.reason = "LZ4 compressed + XP sidecar stride=2";
+        c.reason = "LZ4 compressed + embedded XYZ sections";
 
         double compressedMB = rawMB * lz4Ratio;
         double xpMB = rawMB * xpRatioEstimate;
-        double hitRate = 1.0 / xpStride;
+        double yzMB = rawMB * yzRatioEstimate;  // per-axis sidecar size
 
+        // X: always hits XP sidecar (stride=1, 100% hit rate)
+        // Y/Z: always use embedded sidecar (O(1) per slice)
         if (inGrayZone) {
-            c.predicted_x_random = hitRate * approxTCompositeWithDecode(
-                    xpMB, xpMB, ioBand, lz4DecodeMBs, nx / 2, seek, threads)
-                + (1.0 - hitRate) * approxTCompositeWithDecode(
-                    compressedMB, rawMB, ioBand, lz4DecodeMBs, 100, seek, threads);
+            c.predicted_x_random = approxTCompositeWithDecode(
+                    xpMB, xpMB, ioBand, lz4DecodeMBs, 1, seek, threads);
             c.predicted_y_random = approxTCompositeWithDecode(
-                compressedMB, rawMB, ioBand, lz4DecodeMBs, 100, seek, threads);
+                yzMB, yzMB, ioBand, lz4DecodeMBs, 1, seek, threads);
             c.predicted_z_random = approxTCompositeWithDecode(
-                compressedMB, rawMB, ioBand, lz4DecodeMBs, 100, seek, threads);
+                yzMB, yzMB, ioBand, lz4DecodeMBs, 1, seek, threads);
         } else {
-            c.predicted_x_random = hitRate * approxTComposite(xpMB, ioBand, nx / 2, seek)
-                                 + (1.0 - hitRate) * approxTComposite(compressedMB, ioBand, 100, seek);
-            c.predicted_y_random = approxTComposite(compressedMB, ioBand, 100, seek);
-            c.predicted_z_random = approxTComposite(compressedMB, ioBand, 100, seek);
+            c.predicted_x_random = approxTComposite(xpMB, ioBand, 1, seek);
+            c.predicted_y_random = approxTComposite(yzMB, ioBand, 1, seek);
+            c.predicted_z_random = approxTComposite(yzMB, ioBand, 1, seek);
         }
         c.predicted_x_cont = c.predicted_x_random * 0.08;
         c.predicted_y_cont = c.predicted_y_random * 0.06;
@@ -270,6 +274,13 @@ PlannerResult planFormat(
             double rzfpRatio = rzfpResult.main_ratio_estimate;
             double rzfpUpper = rzfpResult.main_ratio_upper;
 
+            // Axis-leaf repack: the converter always creates 3 axis-leaf
+            // replicas (X, Y, Z), each containing the full compressed payload
+            // reordered by axis.  Empirically total ≈ main × 3.1.
+            constexpr double axisLeafMultiplier = 3.1;
+            double rzfpTotalRatio = rzfpRatio * axisLeafMultiplier;
+            double rzfpTotalUpper = rzfpUpper * axisLeafMultiplier;
+
             // RZFP decode micro-benchmark in gray zone
             double rzfpDecodeMBs = 1000.0; // default ZFP decode throughput
             if (inGrayZone) {
@@ -289,26 +300,27 @@ PlannerResult planFormat(
             c.main_ratio_mean = rzfpRatio;
             c.main_ratio_lower = rzfpResult.main_ratio_lower;
             c.main_ratio_upper = rzfpUpper;
-            c.total_ratio_mean = rzfpRatio;
-            c.total_ratio_upper = rzfpUpper;
+            c.total_ratio_mean = rzfpTotalRatio;
+            c.total_ratio_upper = rzfpTotalUpper;
             c.feasible = (c.total_ratio_upper <= storage_budget);
             c.confidence = inGrayZone ? 0.5 : 0.7;
             c.uncertain = inGrayZone;
             c.reason = "RZFP compressed (" + std::to_string(rzfpResult.sampling_rounds) + " rounds)";
 
-            double compressedMB = rawMB * rzfpRatio;
+            // Per-axis I/O: each axis reads from its own axis-leaf file
+            double perAxisMB = rawMB * rzfpRatio;
 
             if (inGrayZone) {
                 c.predicted_x_random = approxTCompositeWithDecode(
-                    compressedMB, rawMB, ioBand, rzfpDecodeMBs, 100, seek, threads);
+                    perAxisMB, perAxisMB, ioBand, rzfpDecodeMBs, 1, seek, threads);
                 c.predicted_y_random = approxTCompositeWithDecode(
-                    compressedMB, rawMB, ioBand, rzfpDecodeMBs, 100, seek, threads);
+                    perAxisMB, perAxisMB, ioBand, rzfpDecodeMBs, 1, seek, threads);
                 c.predicted_z_random = approxTCompositeWithDecode(
-                    compressedMB, rawMB, ioBand, rzfpDecodeMBs, 100, seek, threads);
+                    perAxisMB, perAxisMB, ioBand, rzfpDecodeMBs, 1, seek, threads);
             } else {
-                c.predicted_x_random = approxTComposite(compressedMB, ioBand, 100, seek);
-                c.predicted_y_random = approxTComposite(compressedMB, ioBand, 100, seek);
-                c.predicted_z_random = approxTComposite(compressedMB, ioBand, 100, seek);
+                c.predicted_x_random = approxTComposite(perAxisMB, ioBand, 1, seek);
+                c.predicted_y_random = approxTComposite(perAxisMB, ioBand, 1, seek);
+                c.predicted_z_random = approxTComposite(perAxisMB, ioBand, 1, seek);
             }
             c.predicted_x_cont = c.predicted_x_random * 0.08;
             c.predicted_y_cont = c.predicted_y_random * 0.06;
