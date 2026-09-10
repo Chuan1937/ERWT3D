@@ -1,4 +1,7 @@
-"""Fig2: Adaptive representation and storage.
+"""Fig2: Adaptive selection and physical storage.
+
+(a) Physical storage ratio across datasets
+(b) Planner prediction vs measured for 20GB
 
 Source: validation/summaries_final/dataset_summary.csv
 """
@@ -16,7 +19,9 @@ def make_figure(outdir="paper_figures/output"):
 
     fig, axes = plt.subplots(1, 2, figsize=(style.WIDTH_DOUBLE, 55/25.4))
 
-    # --- (a) Dataset physical storage ratio ---
+    # ====================================================================
+    # (a) Physical storage ratio across datasets
+    # ====================================================================
     ax = axes[0]
     style.panel_label(ax, "(a)")
 
@@ -25,77 +30,80 @@ def make_figure(outdir="paper_figures/output"):
     formats = ds["auto_format"].values
 
     colors = []
+    labels = []
     for fmt in formats:
         if "LZ4" in fmt:
             colors.append(style.COLORS["lz4"])
+            labels.append("LZ4")
         elif "RZFP" in fmt:
             colors.append(style.COLORS["rzfp"])
-        else:
-            colors.append(style.COLORS["raw"])
+            labels.append("RZFP")
 
     x = np.arange(len(datasets))
-    bars = ax.bar(x, ratios, width=0.55, color=colors, edgecolor="#333333", linewidth=0.5)
+    bars = ax.bar(x, ratios, width=0.5, color=colors, edgecolor="#333333", linewidth=0.5)
 
     # Raw baseline
     ax.axhline(y=1.0, color=style.COLORS["raw"], linestyle="--", linewidth=0.8, label="Raw baseline")
 
     # Labels on bars
-    for i, (r, fmt) in enumerate(zip(ratios, formats)):
-        fmt_short = fmt.replace("+XYZ", "")
-        ax.text(i, r + 0.08, f"{r:.3f}×\n({fmt_short})", ha="center", va="bottom",
+    for i, (r, fmt_short) in enumerate(zip(ratios, labels)):
+        ax.text(i, r + 0.12, f"{r:.3f}×\n({fmt_short})", ha="center", va="bottom",
                 fontsize=5.5, fontweight="bold")
+
+    # Note for F3 amplitude high ratio
+    ax.text(0, ratios[0] + 0.7,
+            "Small volume:\nfixed overhead\ndominates",
+            ha="center", va="bottom", fontsize=4.5, fontstyle="italic",
+            color="#777777",
+            bbox=dict(boxstyle="round,pad=0.2", facecolor="#F8F8F8",
+                     edgecolor="#CCCCCC", linewidth=0.3))
 
     ax.set_xticks(x)
     ax.set_xticklabels(datasets, fontsize=6)
     ax.set_ylabel("Physical storage ratio", fontsize=7)
-    ax.set_ylim(0, max(ratios) * 1.35)
-    ax.legend(loc="upper left", fontsize=5.5)
+    ax.set_ylim(0, max(ratios) * 1.5)
+    ax.legend(loc="upper right", fontsize=5.5)
 
-    # --- (b) 20GB planner prediction vs measured ---
+    # ====================================================================
+    # (b) Planner prediction vs measured for 20GB
+    # ====================================================================
     ax = axes[1]
     style.panel_label(ax, "(b)")
 
-    # Planner predictions (from auto_plan output)
-    # These are the predicted values from the planner
-    planner_lz4_mean = 1.468
-    planner_lz4_upper = 1.548
-    planner_rzfp_mean = 0.840
-    planner_rzfp_upper = 0.841
+    # Planner predictions from erwt3d_auto_plan output
+    planner = {
+        "LZ4+XYZ":  {"mean": 2.142, "upper": 2.937, "measured": 1.012, "selected": True},
+        "RZFP+XYZ": {"mean": 0.840, "upper": 0.841, "measured": 1.768, "selected": False},
+    }
 
-    # Measured from dataset_summary
-    row_20gb = ds[ds["dataset"] == "20GB"].iloc[0]
-    measured_lz4 = row_20gb["physical_storage_ratio"]
-
-    # For RZFP, we know from the converter output
-    measured_rzfp = 1.768  # From 34068786624 / 19271755620
-
-    configs = ["LZ4+XYZ", "RZFP+XYZ"]
-    predicted_mean = [planner_lz4_mean, planner_rzfp_mean]
-    predicted_upper = [planner_lz4_upper, planner_rzfp_upper]
-    measured = [measured_lz4, measured_rzfp]
-
+    configs = list(planner.keys())
     x2 = np.arange(len(configs))
-    width = 0.3
+    width = 0.28
 
-    # Predicted bars with error caps
-    bars_pred = ax.bar(x2 - width/2, predicted_mean, width,
-                       color=[style.COLORS["lz4"], style.COLORS["rzfp"]],
-                       alpha=0.4, edgecolor="#333333", linewidth=0.5, label="Predicted")
-    # Upper bound caps
-    for i, (pm, pu) in enumerate(zip(predicted_mean, predicted_upper)):
-        ax.plot([i - width/2, i - width/2], [pm, pu], color="#333333", linewidth=0.8)
-        ax.plot(i - width/2, pu, "_", color="#333333", markersize=6, markeredgewidth=0.8)
+    for i, (cfg, vals) in enumerate(planner.items()):
+        color = style.COLORS["lz4"] if "LZ4" in cfg else style.COLORS["rzfp"]
 
-    # Measured bars
-    bars_meas = ax.bar(x2 + width/2, measured, width,
-                       color=[style.COLORS["lz4"], style.COLORS["rzfp"]],
-                       edgecolor="#333333", linewidth=0.5, label="Measured")
+        # Predicted mean (circle)
+        ax.plot(i - width, vals["mean"], "o", color=color, markersize=6,
+               markeredgecolor="#333333", markeredgewidth=0.5, zorder=3,
+               label="Predicted" if i == 0 else "")
+        # Predicted upper (cap)
+        ax.plot([i - width, i - width], [vals["mean"], vals["upper"]],
+               color="#333333", linewidth=0.8, zorder=2)
+        ax.plot(i - width, vals["upper"], "_", color="#333333", markersize=8,
+               markeredgewidth=0.8, zorder=2)
 
-    # Selection annotation
-    ax.annotate("Selected", xy=(0 + width/2, measured_lz4),
-                xytext=(0 + width/2, measured_lz4 + 0.25),
-                ha="center", fontsize=5.5, fontweight="bold", color=style.COLORS["lz4"],
-                arrowprops=dict(arrowstyle="-|>", color=style.COLORS["lz4"], lw=0.8))
+        # Measured (diamond)
+        ax.plot(i + width, vals["measured"], "D", color=color, markersize=6,
+               markeredgecolor="#333333", markeredgewidth=0.5, zorder=3,
+               label="Measured" if i == 0 else "")
+
+        # Selection annotation
+        if vals["selected"]:
+            ax.annotate("Selected", xy=(i + width, vals["measured"]),
+                       xytext=(i + width, vals["measured"] + 0.5),
+                       ha="center", fontsize=5.5, fontweight="bold", color=color,
+                       arrowprops=dict(arrowstyle="-|>", color=color, lw=0.8))
 
     # Raw baseline
     ax.axhline(y=1.0, color=style.COLORS["raw"], linestyle="--", linewidth=0.8)
@@ -103,8 +111,15 @@ def make_figure(outdir="paper_figures/output"):
     ax.set_xticks(x2)
     ax.set_xticklabels(configs, fontsize=6)
     ax.set_ylabel("Physical storage ratio", fontsize=7)
-    ax.set_ylim(0, 2.2)
-    ax.legend(loc="upper left", fontsize=5.5, ncol=2)
+    ax.set_ylim(0, 3.5)
+    ax.legend(fontsize=5.5, loc="upper left")
+
+    # Annotation: predicted vs measured gap
+    ax.text(0.98, 0.05, "Predicted ≠ Measured:\nembedded sections reduce\nLZ4 overhead in practice",
+            transform=ax.transAxes, ha="right", va="bottom", fontsize=4.5,
+            fontstyle="italic", color="#777777",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="#F8F8F8",
+                     edgecolor="#CCCCCC", linewidth=0.3))
 
     fig.subplots_adjust(wspace=0.35)
     style.savefig(fig, "Fig2_storage_selection", outdir)
